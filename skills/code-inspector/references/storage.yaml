@@ -1,0 +1,30 @@
+version: 1.1.0
+
+database:
+  engine: sqlite
+  path: ~/.agent-review/data/review.db
+  runtime_tool: ~/.agent-review/bin/review-db.py
+  direct_sql: false
+  direct_database_access: false
+
+directories:
+  data: ~/.agent-review/data
+  backups: ~/.agent-review/backups
+  exports: ~/.agent-review/exports
+  logs: ~/.agent-review/logs
+  config: ~/.agent-review/config
+
+database_pragmas:
+  foreign_keys: true
+  journal_mode: WAL
+  busy_timeout_ms: 5000
+
+history:
+  issue_activity: append_only
+  agent_audit_log: append_only
+
+domain_tables:
+  review_task: 长期检查目标。
+  review_issue: inspector 或 human 创建的正式问题。
+  issue_candidate: developer 提交、inspector 审核的新问题候选；不等同于正式 issue。
+  issue_activity: 正式问题的活动轨迹。

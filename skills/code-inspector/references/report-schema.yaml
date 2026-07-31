@@ -1,0 +1,296 @@
+version: 1.0.0
+
+enums:
+  review_level:
+    - L1
+    - L2
+    - L3
+
+  dimension:
+    - functional_correctness
+    - data_security
+    - stability_concurrency
+    - performance
+    - architecture_extensibility
+    - code_quality
+    - test_observability
+
+  severity:
+    - critical
+    - high
+    - medium
+    - low
+
+  remediation_benefit:
+    - high
+    - medium
+    - low
+
+  remediation_cost:
+    - low
+    - medium
+    - high
+    - extreme
+
+  disposition:
+    - immediate_fix
+    - current_iteration
+    - near_term_iteration
+    - special_governance
+    - opportunistic_fix
+    - observe
+    - defer
+    - business_confirmation
+
+  confidence:
+    - high
+    - medium
+    - low
+
+  issue_status:
+    - PROPOSED
+    - IN_PROGRESS
+    - ON_HOLD
+    - BLOCKED
+    - INSPECTOR_CONFIRMATION_REQUIRED
+    - IMPLEMENTED_PENDING_REVIEW
+    - REDESIGN_REQUIRED
+    - CONFIRMED
+    - CANCELLED
+
+report:
+  report_id:
+    type: string
+    required: true
+
+  project:
+    type: string
+    required: true
+
+  repository:
+    type: string
+    required: false
+
+  branch:
+    type: string
+    required: false
+
+  commit:
+    type: string
+    required: false
+
+  review_level:
+    type: enum
+    ref: review_level
+    required: true
+
+  review_scope:
+    type: string
+    required: true
+
+  generated_at:
+    type: datetime
+    required: true
+
+  summary:
+    type: object
+    required: true
+    fields:
+      total:
+        type: integer
+      confirmed:
+        type: integer
+      needs_confirmation:
+        type: integer
+      critical:
+        type: integer
+      high:
+        type: integer
+      medium:
+        type: integer
+      low:
+        type: integer
+
+  issues:
+    type: array
+    required: true
+    item:
+      issue_id:
+        type: string
+        required: true
+
+      title:
+        type: string
+        required: true
+
+      dimension:
+        type: enum
+        ref: dimension
+        required: true
+
+      secondary_tags:
+        type: array
+        item_type: string
+        required: false
+
+      severity:
+        type: enum
+        ref: severity
+        required: true
+
+      remediation_benefit:
+        type: enum
+        ref: remediation_benefit
+        required: true
+
+      remediation_cost:
+        type: enum
+        ref: remediation_cost
+        required: true
+
+      disposition:
+        type: enum
+        ref: disposition
+        required: true
+
+      confidence:
+        type: enum
+        ref: confidence
+        required: true
+
+      status:
+        type: enum
+        ref: issue_status
+        required: true
+
+      facts:
+        type: string
+        required: true
+
+      trigger_conditions:
+        type: array
+        item_type: string
+        required: true
+
+      potential_impact:
+        type: array
+        item_type: string
+        required: true
+
+      impact_scope:
+        type: array
+        item_type: string
+        required: false
+
+      rationale:
+        type: string
+        required: true
+
+      evidence:
+        type: array
+        required: true
+        item:
+          repository:
+            type: string
+            required: false
+          module:
+            type: string
+            required: false
+          file_path:
+            type: string
+            required: true
+          class_name:
+            type: string
+            required: false
+          method_name:
+            type: string
+            required: false
+          line_start:
+            type: integer
+            required: false
+          line_end:
+            type: integer
+            required: false
+          code_excerpt:
+            type: string
+            required: false
+
+      estimated_change:
+        type: object
+        required: true
+        fields:
+          file_count:
+            type: integer
+            required: false
+          modules:
+            type: array
+            item_type: string
+            required: false
+          change_points:
+            type: integer
+            required: false
+          affects_public_api:
+            type: boolean
+            required: true
+          affects_database:
+            type: boolean
+            required: true
+          requires_data_migration:
+            type: boolean
+            required: true
+          affects_upstream_downstream:
+            type: boolean
+            required: true
+          verification_scope:
+            type: array
+            item_type: string
+            required: false
+
+sorting:
+  group_by:
+    - severity
+
+  order:
+    - field: severity
+      direction: desc
+      weights:
+        critical: 4
+        high: 3
+        medium: 2
+        low: 1
+
+    - field: remediation_benefit
+      direction: desc
+      weights:
+        high: 3
+        medium: 2
+        low: 1
+
+    - field: dimension
+      direction: desc
+      weights:
+        functional_correctness: 7
+        data_security: 6
+        stability_concurrency: 5
+        performance: 4
+        architecture_extensibility: 3
+        code_quality: 2
+        test_observability: 1
+
+    - field: remediation_cost
+      direction: asc
+      weights:
+        low: 1
+        medium: 2
+        high: 3
+        extreme: 4
+
+    - field: confidence
+      direction: desc
+      weights:
+        high: 3
+        medium: 2
+        low: 1
+
+    - field: issue_id
+      direction: asc

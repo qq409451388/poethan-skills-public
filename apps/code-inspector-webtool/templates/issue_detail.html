@@ -1,0 +1,208 @@
+{% extends "base.html" %}
+{% block title %}{{ issue.issue_key }} · 问题详情{% endblock %}
+{% block content %}
+
+<div class="meta-row">
+  <span>问题键：<strong class="mono">{{ issue.issue_key }}</strong></span>
+  <span>任务：<a class="mono" href="{{ url_for('task_detail', task_key=issue.task_key) }}">{{ issue.task_key }}</a></span>
+  <span>引入版本：v{{ issue.introduced_version }}</span>
+  <span>当前尝试：{{ issue.current_attempt_no }}</span>
+  <span>状态：<span class="badge badge-status-{{ issue.status }}">{{ issue.status|label }}</span></span>
+  {% if issue.parent_issue_id %}<span>父问题ID：{{ issue.parent_issue_id }}</span>{% endif %}
+</div>
+
+<h1>{{ issue.title }}</h1>
+
+<div class="panel">
+  <h2>问题正文</h2>
+  <dl class="kv">
+    <dt>事实</dt><dd>{{ issue.facts }}</dd>
+    <dt>描述</dt><dd>{{ issue.description }}</dd>
+    <dt>判断依据</dt><dd>{{ issue.rationale }}</dd>
+  </dl>
+  <details class="collapsible">
+    <summary>检查详情</summary>
+    <dl class="kv">
+      <dt>触发条件</dt><dd><ul class="value-list">{% for item in issue.trigger_conditions %}<li>{{ item }}</li>{% else %}<li class="muted">未提供</li>{% endfor %}</ul></dd>
+      <dt>潜在影响</dt><dd><ul class="value-list">{% for item in issue.potential_impact %}<li>{{ item }}</li>{% else %}<li class="muted">未提供</li>{% endfor %}</ul></dd>
+      <dt>影响范围</dt><dd><ul class="value-list inline-list">{% for item in issue.impact_scope %}<li>{{ item }}</li>{% else %}<li class="muted">未提供</li>{% endfor %}</ul></dd>
+      <dt>证据</dt><dd>
+        {% for e in issue.evidence %}
+        <div class="evidence-card">
+          <div class="mono evidence-path">{{ e.file_path or '未定位文件' }}{% if e.line_start %}:{{ e.line_start }}{% if e.line_end and e.line_end != e.line_start %}-{{ e.line_end }}{% endif %}{% endif %}</div>
+          {% if e.code_excerpt %}<div>{{ e.code_excerpt }}</div>{% endif %}
+        </div>
+        {% else %}<span class="muted">未提供</span>{% endfor %}
+      </dd>
+      <dt>预计修改</dt><dd>
+        <div class="change-grid">
+          <span>文件 <strong>{{ issue.estimated_change.file_count or 0 }}</strong></span>
+          <span>改动点 <strong>{{ issue.estimated_change.change_points or 0 }}</strong></span>
+          <span>影响数据库：{{ issue.estimated_change.affects_database|yesno }}</span>
+          <span>影响公共接口：{{ issue.estimated_change.affects_public_api|yesno }}</span>
+          <span>需要数据迁移：{{ issue.estimated_change.requires_data_migration|yesno }}</span>
+          <span>影响上下游：{{ issue.estimated_change.affects_upstream_downstream|yesno }}</span>
+        </div>
+        {% if issue.estimated_change.modules %}<div class="muted small-label">涉及模块</div><ul class="value-list inline-list">{% for item in issue.estimated_change.modules %}<li>{{ item }}</li>{% endfor %}</ul>{% endif %}
+        {% if issue.estimated_change.verification_scope %}<div class="muted small-label">验证范围</div><ul class="value-list inline-list">{% for item in issue.estimated_change.verification_scope %}<li>{{ item }}</li>{% endfor %}</ul>{% endif %}
+      </dd>
+    </dl>
+  </details>
+</div>
+
+<div class="grid-2">
+  <div class="panel">
+    <h2>编辑评级</h2>
+    <form method="post" action="{{ url_for('issue_update_assessment', issue_key=issue.issue_key) }}">
+      <div class="field">
+        <label>维度</label>
+        <select name="dimension">
+          <option value="">（不修改）</option>
+          {% for v, label in dimensions %}
+            <option value="{{ v }}" {% if issue.dimension == v %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="field">
+        <label>严重度</label>
+        <select name="severity">
+          <option value="">（不修改）</option>
+          {% for v, label in severities %}
+            <option value="{{ v }}" {% if issue.severity == v %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="field">
+        <label>改造收益</label>
+        <select name="remediation_benefit">
+          <option value="">（不修改）</option>
+          {% for v, label in benefits %}
+            <option value="{{ v }}" {% if issue.remediation_benefit == v %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="field">
+        <label>改造成本</label>
+        <select name="remediation_cost">
+          <option value="">（不修改）</option>
+          {% for v, label in costs %}
+            <option value="{{ v }}" {% if issue.remediation_cost == v %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="field">
+        <label>建议处置</label>
+        <select name="disposition">
+          <option value="">（不修改）</option>
+          {% for v, label in dispositions %}
+            <option value="{{ v }}" {% if issue.disposition == v %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="field">
+        <label>置信度</label>
+        <select name="confidence">
+          <option value="">（不修改）</option>
+          {% for v, label in confidence %}
+            <option value="{{ v }}" {% if issue.confidence == v %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <button type="submit">保存评级</button>
+      <span class="muted" style="font-size:12px;">空值字段不修改；变更会追加一条 COMMENT_ADDED 活动并记审计。</span>
+    </form>
+  </div>
+
+  <div class="panel">
+    <h2>编辑正文</h2>
+    <form method="post" action="{{ url_for('issue_update_body', issue_key=issue.issue_key) }}">
+      <div class="field">
+        <label>标题</label>
+        <input type="text" name="title" value="{{ issue.title }}" style="width:100%">
+      </div>
+      <div class="field">
+        <label>描述</label>
+        <textarea name="description">{{ issue.description }}</textarea>
+      </div>
+      <div class="field">
+        <label>事实</label>
+        <textarea name="facts">{{ issue.facts }}</textarea>
+      </div>
+      <div class="field">
+        <label>判断依据</label>
+        <textarea name="rationale">{{ issue.rationale }}</textarea>
+      </div>
+      <button type="submit">保存正文</button>
+    </form>
+  </div>
+</div>
+
+<div class="panel">
+  <h2>变更状态</h2>
+  <form method="post" action="{{ url_for('issue_update_status', issue_key=issue.issue_key) }}"
+        style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+    <label class="muted">目标状态</label>
+    <select name="status">
+      {% for s in issue_statuses %}
+        <option value="{{ s }}" {% if issue.status == s %}selected{% endif %}>{{ s|label }}</option>
+      {% endfor %}
+    </select>
+    <input type="text" name="content" placeholder="说明（可选）" style="flex:1; min-width:200px;">
+    <button type="submit">变更状态</button>
+  </form>
+  <div class="muted" style="font-size:12px; margin-top:6px;">
+    领域工具会校验状态流转；确认问题前必须已有“验证通过”活动。
+  </div>
+</div>
+
+<div class="panel">
+  <h2>追加活动</h2>
+  <form method="post" action="{{ url_for('issue_add_activity', issue_key=issue.issue_key) }}">
+    <div class="field">
+      <label>活动类型</label>
+      <select name="activity_type">
+        {% for v, label in activity_types %}
+          <option value="{{ v }}">{{ label }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="field">
+      <label>内容</label>
+      <textarea name="content" placeholder="支持换行、列表、行内代码和 ``` 代码块"></textarea>
+    </div>
+    <button type="submit">追加</button>
+  </form>
+</div>
+
+<div class="panel">
+  <h2>活动历史（{{ activities|length }}）</h2>
+  {% if activities %}
+    {% for a in activities %}
+    <div class="activity">
+      <div class="activity-head">
+        <span>
+          <span class="activity-type">{{ a.activity_type|label }}</span>
+          · {{ a.operator_type }} / {{ a.operator_id }}
+          {% if a.result_status %}· → {{ a.result_status|label }}{% endif %}
+          · 第 {{ a.attempt_no }} 次
+        </span>
+        <span class="mono">{{ a.created_at|localtime }}</span>
+      </div>
+      <div class="activity-content">{{ a.content|markdown }}</div>
+      {% if a.code_reference %}
+        <details class="collapsible"><summary>代码引用</summary>
+          <pre class="mono">{{ a.code_reference | json_pretty }}</pre>
+        </details>
+      {% endif %}
+      {% if a.metadata %}
+        <details class="collapsible"><summary>元数据</summary>
+          <pre class="mono">{{ a.metadata | json_pretty }}</pre>
+        </details>
+      {% endif %}
+    </div>
+    {% endfor %}
+  {% else %}
+    <div class="empty">暂无活动。</div>
+  {% endif %}
+</div>
+{% endblock %}

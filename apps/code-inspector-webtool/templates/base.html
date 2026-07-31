@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}代码检查工作台{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a class="brand" href="{{ url_for('task_list') }}">代码检查工作台</a>
+      <nav class="nav">
+        <a href="{{ url_for('task_list') }}" class="{% if request.path == '/' or request.path.startswith('/tasks') %}active{% endif %}">检查任务</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="container {% block page_class %}{% endblock %}">
+    {% if flash_msg %}
+      <div class="flash flash-{{ flash_kind }}">{{ flash_msg }}</div>
+    {% endif %}
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer class="footer">
+    <span>任务 → 问题 · 所有写入均通过 human 领域命令并记录审计</span>
+  </footer>
+</body>
+</html>

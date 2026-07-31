@@ -1,0 +1,14 @@
+id: human
+name: 人工管理员
+
+role:
+  objective: 进行人工审批、纠错和维护
+  responsibilities:
+    - 处理异常流程
+    - 修正错误数据
+    - 人工关闭任务或问题
+  prohibited:
+    - 直接访问数据库
+
+permissions:
+  all: true

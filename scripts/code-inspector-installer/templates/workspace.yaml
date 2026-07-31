@@ -1,0 +1,25 @@
+version: 1.0.0
+
+project:
+  name_source: working_directory_basename
+  path_source: working_directory_absolute_path
+
+storage:
+  database: "${USER_HOME}/.agent-review/data/review.db"
+
+runtime:
+  command: "python \"${USER_HOME}/.agent-review/bin/review-db.py\""
+  direct_sql: false
+  direct_database_access: false
+
+skills:
+  required:
+    - code-inspector
+
+agents:
+  inspector:
+    config: inspector.yaml
+  developer:
+    config: developer.yaml
+  human:
+    config: human.yaml

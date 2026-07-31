@@ -1,0 +1,153 @@
+version: 1.3.0
+
+task_statuses:
+  - PENDING
+  - IN_PROGRESS
+  - ON_HOLD
+  - BLOCKED
+  - CLOSED
+  - CANCELLED
+
+task_transitions:
+  PENDING: [IN_PROGRESS, ON_HOLD, BLOCKED, CLOSED, CANCELLED]
+  IN_PROGRESS: [ON_HOLD, BLOCKED, CLOSED, CANCELLED]
+  ON_HOLD: [PENDING, IN_PROGRESS, BLOCKED, CLOSED, CANCELLED]
+  BLOCKED: [PENDING, IN_PROGRESS, ON_HOLD, CLOSED, CANCELLED]
+  CLOSED: []
+  CANCELLED: []
+
+task_identity:
+  definition: 一个长期、稳定的代码检查目标，不是一轮扫描或单个问题。
+  reuse_when:
+    - project_path、检查目标和检查范围一致
+    - task 状态为 PENDING 或 IN_PROGRESS
+    - 后续动作是继续扫描、复核修复、补充证据或处理同一治理目标
+  create_new_when:
+    - 检查目标或范围发生实质变化
+    - 基线、PR 或提交范围切换为新的独立检查对象
+    - 已有 task 已关闭且发起新的检查目标
+  scan_selection:
+    - 默认只选择 PENDING 和 IN_PROGRESS 的 task 扫描
+    - ON_HOLD、BLOCKED、CLOSED、CANCELLED task 不进入默认扫描
+    - 默认待办列表显示 PENDING、IN_PROGRESS、ON_HOLD、BLOCKED；终态默认隐藏
+
+scan_persistence:
+  collect_before_persist: true
+  steps:
+    - 扫描期间在会话内收集候选问题，不创建 issue
+    - 识别跨模块数据流，串联入口、生产、传输或存储、消费、确认、清理、保留和监控各端
+    - 初步合并后执行覆盖面回查；按模块、维度和资源生命周期寻找尚未被任何候选覆盖的空白
+    - 对覆盖空白执行补充扫描；不能以候选数量多或并行扫描完成代替覆盖面判断
+    - 扫描结束后按根因、修复边界和风险链路去重合并
+    - 仅将满足问题成立标准的候选问题批量创建为正式 issue
+  issue_identity: 同一根因、同一修复边界、同一风险链路为一个 issue；多个代码位置作为同一 issue 的 evidence。
+  duplicate_policy:
+    - 与未终态 issue 的 dedupe_key 相同则跳过创建并补充活动或证据
+    - 已 CONFIRMED 的问题在后续扫描中复发时，创建新的 issue 和版本
+
+coverage_closure:
+  mandatory_before_issue_creation: true
+  parallel_scan_rule: 若使用按模块或维度切分的并行子代理，主审核者必须额外执行横切检查；单个子代理的局部结论不能证明跨模块覆盖完整。
+  cross_module_data_flow:
+    identify:
+      - 外部入口和生产端
+      - 队列、Stream、事件表、缓存、对象存储或其他中间状态
+      - 消费端、重试端和恢复端
+      - ACK、offset、PEL、状态标记或其他确认机制
+      - 删除、截断、TTL、retention、compaction、归档或容量上限
+      - 积压、体积、处理延迟和清理失败的指标与告警
+    verify:
+      - 每类数据或资源都有明确所有者、终止条件和清理责任方
+      - 区分“已处理/已确认”与“消息实体或持久化数据已删除”；确认动作不能被默认视为清理动作
+      - 比较生产、消费和清理速率，检查无界增长、积压、磁盘或内存耗尽风险
+      - 检查失败、重试、恢复、重复消费和进程崩溃时生命周期是否仍能闭环
+  gap_questions:
+    - 哪些跨模块路径没有被任何一个扫描单元完整看到？
+    - 哪些中间件或持久化载体只检查了可靠性，却没有检查容量和生命周期？
+    - 哪些资源创建后没有对应释放、删除、过期、截断或归档路径？
+    - 哪些风险需要把生产端与消费端代码拼在一起才会暴露？
+
+issue_statuses:
+  - PROPOSED
+  - IN_PROGRESS
+  - ON_HOLD
+  - BLOCKED
+  - INSPECTOR_CONFIRMATION_REQUIRED
+  - IMPLEMENTED_PENDING_REVIEW
+  - REDESIGN_REQUIRED
+  - CONFIRMED
+  - CANCELLED
+
+transitions:
+  PROPOSED:
+    inspector: [IN_PROGRESS, ON_HOLD, BLOCKED, CONFIRMED, CANCELLED]
+    developer: [IN_PROGRESS, ON_HOLD, BLOCKED, INSPECTOR_CONFIRMATION_REQUIRED, IMPLEMENTED_PENDING_REVIEW]
+    human: [IN_PROGRESS, ON_HOLD, BLOCKED, INSPECTOR_CONFIRMATION_REQUIRED, IMPLEMENTED_PENDING_REVIEW, CANCELLED]
+  IN_PROGRESS:
+    inspector: [ON_HOLD, BLOCKED, CANCELLED]
+    developer: [ON_HOLD, BLOCKED, INSPECTOR_CONFIRMATION_REQUIRED, IMPLEMENTED_PENDING_REVIEW]
+    human: [ON_HOLD, BLOCKED, INSPECTOR_CONFIRMATION_REQUIRED, IMPLEMENTED_PENDING_REVIEW, CANCELLED]
+  ON_HOLD:
+    inspector: [IN_PROGRESS, BLOCKED, CANCELLED]
+    developer: [IN_PROGRESS, BLOCKED, INSPECTOR_CONFIRMATION_REQUIRED]
+    human: [IN_PROGRESS, BLOCKED, INSPECTOR_CONFIRMATION_REQUIRED, CANCELLED]
+  BLOCKED:
+    inspector: [IN_PROGRESS, ON_HOLD, CANCELLED]
+    developer: [IN_PROGRESS, ON_HOLD, INSPECTOR_CONFIRMATION_REQUIRED]
+    human: [IN_PROGRESS, ON_HOLD, INSPECTOR_CONFIRMATION_REQUIRED, CANCELLED]
+  INSPECTOR_CONFIRMATION_REQUIRED:
+    inspector: [IN_PROGRESS, ON_HOLD, BLOCKED, CANCELLED]
+    developer: []
+    human: [IN_PROGRESS, ON_HOLD, BLOCKED, CANCELLED]
+  IMPLEMENTED_PENDING_REVIEW:
+    inspector: [CONFIRMED, REDESIGN_REQUIRED, ON_HOLD, BLOCKED, CANCELLED]
+    developer: []
+    human: [CONFIRMED, REDESIGN_REQUIRED, ON_HOLD, BLOCKED, CANCELLED]
+  REDESIGN_REQUIRED:
+    inspector: [ON_HOLD, BLOCKED, CANCELLED]
+    developer: [IN_PROGRESS, ON_HOLD, BLOCKED, INSPECTOR_CONFIRMATION_REQUIRED, IMPLEMENTED_PENDING_REVIEW]
+    human: [IN_PROGRESS, ON_HOLD, BLOCKED, INSPECTOR_CONFIRMATION_REQUIRED, IMPLEMENTED_PENDING_REVIEW, CANCELLED]
+  CONFIRMED:
+    inspector: []
+    developer: []
+    human: []
+  CANCELLED:
+    inspector: []
+    developer: []
+    human: []
+
+confirmation_protocol:
+  developer_request:
+    status: INSPECTOR_CONFIRMATION_REQUIRED
+    required_activity: COMMENT_ADDED
+    content: 说明待确认边界、依据、可选方案与阻塞点。
+  inspector_response:
+    required_activity: INSPECTOR_CONFIRMATION_PROVIDED
+    next_status: [IN_PROGRESS, ON_HOLD, BLOCKED, CANCELLED]
+    note: INSPECTOR_CONFIRMATION_REQUIRED 不是最终关闭；只有验证通过后的 CONFIRMED 才是最终确认。
+
+direct_inspector_resolution:
+  allowed_from_proposed: [IN_PROGRESS, CONFIRMED]
+  confirmed_precondition: 必须先追加 VERIFICATION_PASSED；评级调整或用户异议本身不能替代验证记录。
+  purpose: inspector 可直接接手处理或确认已核实的问题，无需借道 ON_HOLD。
+
+implementation_submission:
+  preferred_command: implementation-submit
+  atomic_effects: [追加 IMPLEMENTATION_SUBMITTED, attempt_no 加一, 转为 IMPLEMENTED_PENDING_REVIEW]
+  rule: 单个 issue 完成实现时优先使用原子命令；多个 issue 同步提交时才使用批量状态命令并分别保证证据完整。
+
+candidate_review:
+  purpose: developer 可报告审核过程中发现的新问题，但不能创建正式 issue。
+  transitions:
+    SUBMITTED: [UNDER_REVIEW, ACCEPTED, REJECTED]
+    UNDER_REVIEW: [ACCEPTED, REJECTED]
+    ACCEPTED: []
+    REJECTED: []
+  rules:
+    - developer 仅使用 candidate-submit 提交，不调用 issue-create。
+    - inspector 使用 candidate-list 处理队列并记录接受或拒绝结论。
+    - ACCEPTED 仅表示候选成立；inspector 仍须按正式 issue 规则去重、评级并创建 issue。
+
+version_rules:
+  create_only_for_new_independent_issues: true
+  evidence_or_redesign_does_not_create_version: true

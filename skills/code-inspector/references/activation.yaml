@@ -1,0 +1,29 @@
+version: 1.0.0
+
+session_mode:
+  default: inactive
+  start_phrases:
+    - 进入代码检查模式
+    - 开启代码检查模式
+    - /code-inspector start
+  stop_phrases:
+    - 退出代码检查模式
+    - 关闭代码检查模式
+    - /code-inspector stop
+
+task_creation:
+  required: true
+  create_when:
+    - 会话已进入代码检查模式
+    - 用户明确要求开始审核、创建审核任务或对指定范围执行审核
+  do_not_create_when:
+    - 普通代码问答
+    - 普通代码修改
+    - 未显式开启代码检查模式的审查建议
+
+workflow_execution:
+  required_session_mode: active
+  developer_when:
+    - 用户要求处理审核问题、提交设计或提交实现
+  inspector_when:
+    - 用户要求创建审核任务、执行审核、验证修复或最终确认

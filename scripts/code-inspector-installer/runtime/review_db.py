@@ -1,0 +1,1266 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+from datetime import datetime, timezone
+import hashlib
+import json
+import os
+import sqlite3
+import sys
+import uuid
+from pathlib import Path
+from typing import Any
+
+DEFAULT_DB_PATH = Path(os.path.expandvars(os.path.expanduser(
+    os.environ.get("AGENT_REVIEW_DB", "~/.agent-review/data/review.db")
+)))
+
+SEVERITY_WEIGHT = {"critical": 4, "high": 3, "medium": 2, "low": 1}
+BENEFIT_WEIGHT = {"high": 3, "medium": 2, "low": 1}
+DIMENSION_WEIGHT = {
+    "functional_correctness": 7,
+    "data_security": 6,
+    "stability_concurrency": 5,
+    "performance": 4,
+    "architecture_extensibility": 3,
+    "code_quality": 2,
+    "test_observability": 1,
+}
+COST_WEIGHT = {"low": 1, "medium": 2, "high": 3, "extreme": 4}
+CONFIDENCE_WEIGHT = {"high": 3, "medium": 2, "low": 1}
+
+ALLOWED_STATUS_BY_AGENT = {
+    "inspector": {"IN_PROGRESS", "ON_HOLD", "BLOCKED", "REDESIGN_REQUIRED", "CONFIRMED", "CANCELLED"},
+    "developer": {"IN_PROGRESS", "ON_HOLD", "BLOCKED", "INSPECTOR_CONFIRMATION_REQUIRED", "IMPLEMENTED_PENDING_REVIEW"},
+    "human": {"IN_PROGRESS", "ON_HOLD", "BLOCKED", "INSPECTOR_CONFIRMATION_REQUIRED", "IMPLEMENTED_PENDING_REVIEW", "CONFIRMED", "REDESIGN_REQUIRED", "CANCELLED"},
+}
+
+ALLOWED_TRANSITIONS = {
+    "PROPOSED": {"inspector": {"IN_PROGRESS", "ON_HOLD", "BLOCKED", "CONFIRMED", "CANCELLED"}, "developer": {"IN_PROGRESS", "ON_HOLD", "BLOCKED", "INSPECTOR_CONFIRMATION_REQUIRED", "IMPLEMENTED_PENDING_REVIEW"}, "human": {"IN_PROGRESS", "ON_HOLD", "BLOCKED", "INSPECTOR_CONFIRMATION_REQUIRED", "IMPLEMENTED_PENDING_REVIEW", "CANCELLED"}},
+    "IN_PROGRESS": {"inspector": {"ON_HOLD", "BLOCKED", "CANCELLED"}, "developer": {"ON_HOLD", "BLOCKED", "INSPECTOR_CONFIRMATION_REQUIRED", "IMPLEMENTED_PENDING_REVIEW"}, "human": {"ON_HOLD", "BLOCKED", "INSPECTOR_CONFIRMATION_REQUIRED", "IMPLEMENTED_PENDING_REVIEW", "CANCELLED"}},
+    "ON_HOLD": {"inspector": {"IN_PROGRESS", "BLOCKED", "CANCELLED"}, "developer": {"IN_PROGRESS", "BLOCKED", "INSPECTOR_CONFIRMATION_REQUIRED"}, "human": {"IN_PROGRESS", "BLOCKED", "INSPECTOR_CONFIRMATION_REQUIRED", "CANCELLED"}},
+    "BLOCKED": {"inspector": {"IN_PROGRESS", "ON_HOLD", "CANCELLED"}, "developer": {"IN_PROGRESS", "ON_HOLD", "INSPECTOR_CONFIRMATION_REQUIRED"}, "human": {"IN_PROGRESS", "ON_HOLD", "INSPECTOR_CONFIRMATION_REQUIRED", "CANCELLED"}},
+    "INSPECTOR_CONFIRMATION_REQUIRED": {"inspector": {"IN_PROGRESS", "ON_HOLD", "BLOCKED", "CANCELLED"}, "developer": set(), "human": {"IN_PROGRESS", "ON_HOLD", "BLOCKED", "CANCELLED"}},
+    "IMPLEMENTED_PENDING_REVIEW": {"inspector": {"CONFIRMED", "REDESIGN_REQUIRED", "ON_HOLD", "BLOCKED", "CANCELLED"}, "developer": set(), "human": {"CONFIRMED", "REDESIGN_REQUIRED", "ON_HOLD", "BLOCKED", "CANCELLED"}},
+    "REDESIGN_REQUIRED": {"inspector": {"ON_HOLD", "BLOCKED", "CANCELLED"}, "developer": {"IN_PROGRESS", "ON_HOLD", "BLOCKED", "INSPECTOR_CONFIRMATION_REQUIRED", "IMPLEMENTED_PENDING_REVIEW"}, "human": {"IN_PROGRESS", "ON_HOLD", "BLOCKED", "INSPECTOR_CONFIRMATION_REQUIRED", "IMPLEMENTED_PENDING_REVIEW", "CANCELLED"}},
+    "CONFIRMED": {"inspector": set(), "developer": set(), "human": set()},
+    "CANCELLED": {"inspector": set(), "developer": set(), "human": set()},
+}
+
+TASK_STATUSES = {"PENDING", "IN_PROGRESS", "ON_HOLD", "BLOCKED", "CLOSED", "CANCELLED"}
+TASK_TRANSITIONS = {
+    "PENDING": {"IN_PROGRESS", "ON_HOLD", "BLOCKED", "CLOSED", "CANCELLED"},
+    "IN_PROGRESS": {"ON_HOLD", "BLOCKED", "CLOSED", "CANCELLED"},
+    "ON_HOLD": {"PENDING", "IN_PROGRESS", "BLOCKED", "CLOSED", "CANCELLED"},
+    "BLOCKED": {"PENDING", "IN_PROGRESS", "ON_HOLD", "CLOSED", "CANCELLED"},
+    "CLOSED": set(),
+    "CANCELLED": set(),
+}
+
+ALLOWED_DIMENSIONS = set(DIMENSION_WEIGHT)
+ALLOWED_SEVERITIES = set(SEVERITY_WEIGHT)
+ALLOWED_BENEFITS = set(BENEFIT_WEIGHT)
+ALLOWED_COSTS = set(COST_WEIGHT)
+ALLOWED_CONFIDENCE = set(CONFIDENCE_WEIGHT)
+ALLOWED_DISPOSITIONS = {
+    "immediate_fix", "current_iteration", "near_term_iteration", "special_governance",
+    "opportunistic_fix", "observe", "defer", "business_confirmation",
+}
+
+ALLOWED_ACTIVITY_BY_AGENT = {
+    "inspector": {
+        "ISSUE_CREATED", "EVIDENCE_ADDED", "REVIEW_APPROVED", "REVIEW_REJECTED",
+        "INSPECTOR_CONFIRMATION_PROVIDED",
+        "VERIFICATION_PASSED", "VERIFICATION_FAILED", "VERIFICATION_EVIDENCE_ADDED",
+        "STATUS_CHANGED", "COMMENT_ADDED",
+    },
+    "developer": {"DESIGN_SUBMITTED", "IMPLEMENTATION_SUBMITTED", "REDESIGN_SUBMITTED", "STATUS_CHANGED", "COMMENT_ADDED"},
+    "human": {
+        "ISSUE_CREATED", "EVIDENCE_ADDED", "DESIGN_SUBMITTED", "IMPLEMENTATION_SUBMITTED",
+        "REVIEW_APPROVED", "REVIEW_REJECTED", "REDESIGN_SUBMITTED", "INSPECTOR_CONFIRMATION_PROVIDED",
+        "VERIFICATION_PASSED", "VERIFICATION_FAILED", "VERIFICATION_EVIDENCE_ADDED",
+        "STATUS_CHANGED", "COMMENT_ADDED"
+    },
+}
+ALLOWED_ACTIVITY_TYPES = set().union(*ALLOWED_ACTIVITY_BY_AGENT.values())
+
+def configured_db_path() -> Path:
+    if os.environ.get("AGENT_REVIEW_DB"):
+        return DEFAULT_DB_PATH
+    config_dir = Path(os.path.expandvars(os.path.expanduser(
+        os.environ.get("AGENT_REVIEW_HOME", "~/.agent-review")
+    ))) / "config"
+    runtime_config = config_dir / "runtime.json"
+    if runtime_config.exists():
+        try:
+            config = json.loads(runtime_config.read_text(encoding="utf-8"))
+            return Path(os.path.expandvars(os.path.expanduser(config["database"]))).resolve()
+        except (KeyError, TypeError, ValueError, OSError) as exc:
+            raise RuntimeError(f"配置文件无效: {runtime_config}: {exc}") from exc
+    return DEFAULT_DB_PATH
+
+def configured_home() -> Path:
+    return Path(os.path.expandvars(os.path.expanduser(
+        os.environ.get("AGENT_REVIEW_HOME", "~/.agent-review")
+    ))).resolve()
+
+def validate_actor_binding(args: argparse.Namespace) -> None:
+    """阻止直接调用底层工具时伪造逻辑身份或角色。"""
+    if args.agent == "human":
+        return
+    if not args.operator_id:
+        raise PermissionError("developer/inspector 必须使用安装器生成的角色工具入口")
+    bindings_path = configured_home() / "config" / "agent-bindings.json"
+    if not bindings_path.exists():
+        raise RuntimeError(f"角色绑定配置不存在: {bindings_path}，请重新执行安装")
+    try:
+        bindings = json.loads(bindings_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f"角色绑定配置无效: {bindings_path}: {exc}") from exc
+    binding = bindings.get(args.operator_id)
+    if not binding:
+        raise PermissionError(f"未注册的逻辑身份: {args.operator_id}")
+    if binding.get("role") != args.agent:
+        raise PermissionError(
+            f"逻辑身份 {args.operator_id} 绑定角色为 {binding.get('role')}，不能作为 {args.agent} 使用"
+        )
+
+def connect() -> sqlite3.Connection:
+    db_path = configured_db_path()
+    if not db_path.exists():
+        raise RuntimeError(f"数据库不存在: {db_path}")
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA busy_timeout = 5000")
+    return conn
+
+def dumps(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False)
+
+def loads(value: str | None, default: Any) -> Any:
+    if not value:
+        return default
+    return json.loads(value)
+
+def print_json(value: Any) -> None:
+    print(json.dumps(value, ensure_ascii=False, indent=2))
+
+def audit(conn: sqlite3.Connection, agent: str, action: str, resource_type: str,
+          resource_id: str | None, success: bool, detail: str = "") -> None:
+    conn.execute(
+        """INSERT INTO agent_audit_log(agent_id, action, resource_type, resource_id, success, detail)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (agent, action, resource_type, resource_id, 1 if success else 0, detail),
+    )
+
+def require_agent(agent: str) -> None:
+    if agent not in {"inspector", "developer", "human"}:
+        raise PermissionError(f"未知 agent: {agent}")
+
+def require_choice(value: str, allowed: set[str], field: str) -> None:
+    if value not in allowed:
+        raise ValueError(f"{field} 无效: {value}")
+
+def operator_type(agent: str) -> str:
+    return {"inspector": "INSPECTOR_AGENT", "developer": "DEVELOPMENT_AGENT", "human": "HUMAN"}[agent]
+
+def actor_id(args: argparse.Namespace) -> str:
+    return args.operator_id or args.agent
+
+def task_fingerprint(project_path: str, review_level: str, objective: str, review_scope: str, baseline_ref: str | None) -> str:
+    payload = {
+        "project_path": project_path,
+        "review_level": review_level,
+        "objective": objective.strip(),
+        "review_scope": review_scope.strip(),
+        "baseline_ref": (baseline_ref or "").strip(),
+    }
+    return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+
+def issue_dedupe_key(payload: dict[str, Any]) -> str:
+    if payload.get("dedupe_key"):
+        return str(payload["dedupe_key"])
+    evidence = payload.get("evidence", [])
+    paths = sorted(item.get("file_path", "") for item in evidence if isinstance(item, dict))
+    basis = {
+        "dimension": payload["dimension"],
+        "title": " ".join(payload["title"].lower().split()),
+        "paths": paths,
+    }
+    return hashlib.sha256(json.dumps(basis, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+
+def validate_issue_payload(payload: dict[str, Any]) -> None:
+    required = {
+        "title", "dimension", "severity", "remediation_benefit", "remediation_cost",
+        "disposition", "confidence", "description", "facts", "rationale",
+    }
+    missing = sorted(required - payload.keys())
+    if missing:
+        raise ValueError(f"问题缺少字段: {', '.join(missing)}")
+    require_choice(payload["dimension"], ALLOWED_DIMENSIONS, "dimension")
+    require_choice(payload["severity"], ALLOWED_SEVERITIES, "severity")
+    require_choice(payload["remediation_benefit"], ALLOWED_BENEFITS, "remediation_benefit")
+    require_choice(payload["remediation_cost"], ALLOWED_COSTS, "remediation_cost")
+    require_choice(payload["disposition"], ALLOWED_DISPOSITIONS, "disposition")
+    require_choice(payload["confidence"], ALLOWED_CONFIDENCE, "confidence")
+
+def task_create(args: argparse.Namespace) -> None:
+    require_agent(args.agent)
+    if args.agent not in {"inspector", "human"}:
+        raise PermissionError("只有 inspector 或 human 可以创建任务")
+
+    cwd = Path.cwd().resolve()
+    project_name = cwd.name
+    task_key = args.task_key or f"RT-{uuid.uuid4().hex[:8].upper()}"
+    review_level = args.review_level
+    review_scope = args.review_scope
+    fingerprint = task_fingerprint(str(cwd), review_level, args.objective, review_scope, args.baseline_ref) if review_level and review_scope else None
+
+    with connect() as conn:
+        conn.execute(
+            """INSERT INTO review_task(
+                task_key, project_name, project_path, title, objective, review_level, review_scope,
+                baseline_ref, scope_fingerprint, status, started_at, remark
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?)""",
+            (task_key, project_name, str(cwd), args.title, args.objective, review_level, review_scope,
+             args.baseline_ref, fingerprint, args.started_at, args.remark),
+        )
+        audit(conn, actor_id(args), "task.create", "review_task", task_key, True)
+    print_json({"task_key": task_key, "project_name": project_name, "project_path": str(cwd)})
+
+def task_resolve(args: argparse.Namespace) -> None:
+    require_agent(args.agent)
+    if args.agent not in {"inspector", "human"}:
+        raise PermissionError("只有 inspector 或 human 可以创建或复用任务")
+    cwd = Path.cwd().resolve()
+    fingerprint = task_fingerprint(str(cwd), args.review_level, args.objective, args.review_scope, args.baseline_ref)
+    with connect() as conn:
+        row = conn.execute(
+            """SELECT task_key, status, current_version
+               FROM review_task
+               WHERE project_path = ? AND scope_fingerprint = ? AND status IN ('PENDING', 'IN_PROGRESS')
+               ORDER BY updated_at DESC, id DESC LIMIT 1""",
+            (str(cwd), fingerprint),
+        ).fetchone()
+        if row:
+            audit(conn, actor_id(args), "task.resolve", "review_task", row["task_key"], True, "reused")
+            print_json({"task_key": row["task_key"], "created": False, "status": row["status"], "current_version": row["current_version"]})
+            return
+        legacy = conn.execute(
+            """SELECT id, task_key, status, current_version
+               FROM review_task
+               WHERE project_path = ? AND title = ? AND objective = ?
+                 AND scope_fingerprint IS NULL AND status IN ('PENDING', 'IN_PROGRESS')
+               ORDER BY updated_at DESC, id DESC LIMIT 1""",
+            (str(cwd), args.title, args.objective),
+        ).fetchone()
+        if legacy:
+            conn.execute(
+                """UPDATE review_task
+                   SET review_level = ?, review_scope = ?, baseline_ref = ?, scope_fingerprint = ?,
+                       updated_at = CURRENT_TIMESTAMP
+                   WHERE id = ?""",
+                (args.review_level, args.review_scope, args.baseline_ref, fingerprint, legacy["id"]),
+            )
+            audit(conn, actor_id(args), "task.resolve", "review_task", legacy["task_key"], True, "reused_legacy")
+            print_json({"task_key": legacy["task_key"], "created": False, "status": legacy["status"], "current_version": legacy["current_version"]})
+            return
+        task_key = args.task_key or f"RT-{uuid.uuid4().hex[:8].upper()}"
+        conn.execute(
+            """INSERT INTO review_task(
+                task_key, project_name, project_path, title, objective, review_level, review_scope,
+                baseline_ref, scope_fingerprint, status, remark
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?)""",
+            (task_key, cwd.name, str(cwd), args.title, args.objective, args.review_level,
+             args.review_scope, args.baseline_ref, fingerprint, args.remark),
+        )
+        audit(conn, actor_id(args), "task.resolve", "review_task", task_key, True, "created")
+    print_json({"task_key": task_key, "created": True, "status": "PENDING", "current_version": 0})
+
+def task_list(args: argparse.Namespace) -> None:
+    require_agent(args.agent)
+    sql = "SELECT * FROM review_task WHERE 1=1"
+    params = []
+    if args.status:
+        sql += " AND status = ?"
+        params.append(args.status)
+    if args.project_name:
+        sql += " AND project_name = ?"
+        params.append(args.project_name)
+    if not args.status and not args.include_closed:
+        sql += " AND status IN ('PENDING', 'IN_PROGRESS', 'ON_HOLD', 'BLOCKED')"
+    sql += " ORDER BY updated_at DESC, id DESC"
+
+    with connect() as conn:
+        rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
+        audit(conn, actor_id(args), "task.list", "review_task", None, True, f"count={len(rows)}")
+    print_json(rows)
+
+def task_update_status(args: argparse.Namespace) -> None:
+    require_agent(args.agent)
+    if args.agent not in {"inspector", "human"}:
+        raise PermissionError("只有 inspector 或 human 可以修改任务状态")
+
+    with connect() as conn:
+        cur = conn.execute("SELECT id, status FROM review_task WHERE task_key = ?", (args.task_key,))
+        row = cur.fetchone()
+        if not row:
+            raise KeyError(f"任务不存在: {args.task_key}")
+        require_choice(args.status, TASK_STATUSES, "任务状态")
+        if args.status != row["status"] and args.status not in TASK_TRANSITIONS[row["status"]]:
+            raise RuntimeError(f"不允许任务状态流转: {row['status']} -> {args.status}")
+        conn.execute(
+            """UPDATE review_task
+               SET status = ?, started_at = COALESCE(?, started_at),
+                   finished_at = COALESCE(?, finished_at),
+                   close_reason = COALESCE(?, close_reason),
+                   remark = COALESCE(?, remark),
+                   updated_at = CURRENT_TIMESTAMP
+               WHERE task_key = ?""",
+            (args.status, args.started_at, args.finished_at, args.close_reason, args.remark, args.task_key),
+        )
+        audit(conn, actor_id(args), "task.update-status", "review_task", args.task_key, True)
+    print_json({"task_key": args.task_key, "status": args.status})
+
+def task_update(args: argparse.Namespace) -> None:
+    require_agent(args.agent)
+    if args.agent not in {"inspector", "human"}:
+        raise PermissionError("只有 inspector 或 human 可以更新任务")
+    fields = {name: getattr(args, name) for name in ("title", "objective", "remark", "close_reason")}
+    updates = {name: value for name, value in fields.items() if value is not None}
+    if not updates:
+        raise ValueError("至少提供一个可更新字段")
+    with connect() as conn:
+        row = conn.execute("SELECT id FROM review_task WHERE task_key = ?", (args.task_key,)).fetchone()
+        if not row:
+            raise KeyError(f"任务不存在: {args.task_key}")
+        set_clause = ", ".join(f"{name} = ?" for name in updates)
+        conn.execute(
+            f"UPDATE review_task SET {set_clause}, updated_at = CURRENT_TIMESTAMP WHERE task_key = ?",
+            [*updates.values(), args.task_key],
+        )
+        audit(conn, actor_id(args), "task.update", "review_task", args.task_key, True, json.dumps(updates, ensure_ascii=False))
+    print_json({"task_key": args.task_key, "updated": updates})
+
+def version_create(args: argparse.Namespace) -> None:
+    require_agent(args.agent)
+    if args.agent not in {"inspector", "human"}:
+        raise PermissionError("只有 inspector 或 human 可以创建版本")
+
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT id, current_version FROM review_task WHERE task_key = ?",
+            (args.task_key,),
+        ).fetchone()
+        if not row:
+            raise KeyError(f"任务不存在: {args.task_key}")
+
+        next_version = row["current_version"] + 1
+        conn.execute(
+            """INSERT INTO review_task_version(task_id, version_no, reason, created_by)
+               VALUES (?, ?, ?, ?)""",
+            (row["id"], next_version, args.reason, actor_id(args)),
+        )
+        conn.execute(
+            """UPDATE review_task
+               SET current_version = ?, status = CASE WHEN status='PENDING' THEN 'IN_PROGRESS' ELSE status END,
+                   started_at = COALESCE(started_at, CURRENT_TIMESTAMP),
+                   updated_at = CURRENT_TIMESTAMP
+               WHERE id = ?""",
+            (next_version, row["id"]),
+        )
+        audit(conn, actor_id(args), "version.create", "review_task_version", f"{args.task_key}:v{next_version}", True)
+    print_json({"task_key": args.task_key, "version": next_version})
+
+def issue_create(args: argparse.Namespace) -> None:
+    require_agent(args.agent)
+    if args.agent not in {"inspector", "human"}:
+        raise PermissionError("只有 inspector 或 human 可以创建问题")
+    payload = vars(args)
+    validate_issue_payload(payload)
+
+    with connect() as conn:
+        task = conn.execute(
+            "SELECT id, current_version FROM review_task WHERE task_key = ?",
+            (args.task_key,),
+        ).fetchone()
+        if not task:
+            raise KeyError(f"任务不存在: {args.task_key}")
+        if task["current_version"] <= 0:
+            raise RuntimeError("请先创建任务版本")
+
+        issue_key = args.issue_key or f"RI-{uuid.uuid4().hex[:8].upper()}"
+        conn.execute(
+            """INSERT INTO review_issue(
+                issue_key, task_id, introduced_version, parent_issue_id, title, dimension,
+                severity, remediation_benefit, remediation_cost, disposition, confidence,
+                status, description, facts, trigger_conditions_json, potential_impact_json,
+                impact_scope_json, rationale, evidence_json, estimated_change_json, dedupe_key
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PROPOSED', ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                issue_key, task["id"], task["current_version"], args.parent_issue_id,
+                args.title, args.dimension, args.severity, args.remediation_benefit,
+                args.remediation_cost, args.disposition, args.confidence,
+                args.description, args.facts,
+                dumps(json.loads(args.trigger_conditions)),
+                dumps(json.loads(args.potential_impact)),
+                dumps(json.loads(args.impact_scope)),
+                args.rationale,
+                dumps(json.loads(args.evidence)),
+                dumps(json.loads(args.estimated_change)),
+                args.dedupe_key or issue_dedupe_key({
+                    "dimension": args.dimension, "title": args.title, "evidence": json.loads(args.evidence),
+                }),
+            ),
+        )
+        issue_id = conn.execute("SELECT id FROM review_issue WHERE issue_key = ?", (issue_key,)).fetchone()["id"]
+        conn.execute(
+            """INSERT INTO issue_activity(
+                issue_id, attempt_no, activity_type, operator_type, operator_id, content
+            ) VALUES (?, 0, 'ISSUE_CREATED', ?, ?, ?)""",
+            (issue_id, {"inspector": "INSPECTOR_AGENT", "human": "HUMAN"}[args.agent], actor_id(args), args.description),
+        )
+        audit(conn, actor_id(args), "issue.create", "review_issue", issue_key, True)
+    print_json({"issue_key": issue_key, "version": task["current_version"]})
+
+def issue_create_batch(args: argparse.Namespace) -> None:
+    require_agent(args.agent)
+    if args.agent not in {"inspector", "human"}:
+        raise PermissionError("只有 inspector 或 human 可以批量创建问题")
+    payloads = json.loads(args.issues)
+    if not isinstance(payloads, list) or not payloads:
+        raise ValueError("issues 必须是非空 JSON 数组")
+    for payload in payloads:
+        if not isinstance(payload, dict):
+            raise ValueError("issues 中每项必须是对象")
+        validate_issue_payload(payload)
+
+    with connect() as conn:
+        task = conn.execute("SELECT id, current_version, status FROM review_task WHERE task_key = ?", (args.task_key,)).fetchone()
+        if not task:
+            raise KeyError(f"任务不存在: {args.task_key}")
+        if task["status"] == "CLOSED":
+            raise RuntimeError("已关闭任务不能创建新问题")
+
+        new_payloads: list[tuple[dict[str, Any], str]] = []
+        skipped: list[dict[str, str]] = []
+        seen_keys: set[str] = set()
+        for payload in payloads:
+            dedupe_key = issue_dedupe_key(payload)
+            if dedupe_key in seen_keys:
+                skipped.append({"title": payload["title"], "reason": "duplicate_in_batch"})
+                continue
+            seen_keys.add(dedupe_key)
+            existing = conn.execute(
+                """SELECT issue_key FROM review_issue
+                   WHERE task_id = ? AND dedupe_key = ?
+                     AND status NOT IN ('CONFIRMED', 'CANCELLED')
+                   ORDER BY id DESC LIMIT 1""",
+                (task["id"], dedupe_key),
+            ).fetchone()
+            if existing:
+                skipped.append({"title": payload["title"], "reason": f"duplicate_of:{existing['issue_key']}"})
+                continue
+            new_payloads.append((payload, dedupe_key))
+
+        if not new_payloads:
+            audit(conn, actor_id(args), "issue.create-batch", "review_task", args.task_key, True, "no_new_issues")
+            print_json({"task_key": args.task_key, "created": [], "skipped": skipped, "version": task["current_version"]})
+            return
+
+        version = task["current_version"] + 1
+        conn.execute(
+            "INSERT INTO review_task_version(task_id, version_no, reason, created_by) VALUES (?, ?, ?, ?)",
+            (task["id"], version, args.reason, actor_id(args)),
+        )
+        conn.execute(
+            """UPDATE review_task
+               SET current_version = ?, status = CASE WHEN status='PENDING' THEN 'IN_PROGRESS' ELSE status END,
+                   started_at = COALESCE(started_at, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP
+               WHERE id = ?""",
+            (version, task["id"]),
+        )
+        created: list[str] = []
+        for payload, dedupe_key in new_payloads:
+            issue_key = payload.get("issue_key") or f"RI-{uuid.uuid4().hex[:8].upper()}"
+            conn.execute(
+                """INSERT INTO review_issue(
+                    issue_key, task_id, introduced_version, parent_issue_id, title, dimension,
+                    severity, remediation_benefit, remediation_cost, disposition, confidence,
+                    status, description, facts, trigger_conditions_json, potential_impact_json,
+                    impact_scope_json, rationale, evidence_json, estimated_change_json, dedupe_key
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PROPOSED', ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    issue_key, task["id"], version, payload.get("parent_issue_id"), payload["title"], payload["dimension"],
+                    payload["severity"], payload["remediation_benefit"], payload["remediation_cost"],
+                    payload["disposition"], payload["confidence"], payload["description"], payload["facts"],
+                    dumps(payload.get("trigger_conditions", [])), dumps(payload.get("potential_impact", [])),
+                    dumps(payload.get("impact_scope", [])), payload["rationale"], dumps(payload.get("evidence", [])),
+                    dumps(payload.get("estimated_change", {})), dedupe_key,
+                ),
+            )
+            issue_id = conn.execute("SELECT id FROM review_issue WHERE issue_key = ?", (issue_key,)).fetchone()["id"]
+            conn.execute(
+                """INSERT INTO issue_activity(issue_id, attempt_no, activity_type, operator_type, operator_id, content)
+                   VALUES (?, 0, 'ISSUE_CREATED', ?, ?, ?)""",
+                (issue_id, operator_type(args.agent), actor_id(args), payload["description"]),
+            )
+            created.append(issue_key)
+        audit(conn, actor_id(args), "issue.create-batch", "review_task", args.task_key, True, f"created={len(created)}")
+    print_json({"task_key": args.task_key, "created": created, "skipped": skipped, "version": version})
+
+ISSUE_OUTPUT_FIELDS = {
+    "id", "issue_key", "task_id", "introduced_version", "parent_issue_id", "title",
+    "dimension", "severity", "remediation_benefit", "remediation_cost", "disposition",
+    "confidence", "status", "description", "facts", "trigger_conditions_json",
+    "potential_impact_json", "impact_scope_json", "rationale", "evidence_json",
+    "estimated_change_json", "current_attempt_no", "confirmed_at", "cancelled_at",
+    "created_at", "updated_at", "dedupe_key", "task_key", "project_name",
+    "last_activity_at", "last_comment_at",
+}
+
+def selected_issue_fields(value: str | None) -> list[str] | None:
+    if value is None:
+        return None
+    fields = [field.strip() for field in value.split(",") if field.strip()]
+    if not fields:
+        raise ValueError("fields 至少包含一个字段")
+    unknown = sorted(set(fields) - ISSUE_OUTPUT_FIELDS)
+    if unknown:
+        raise ValueError(f"未知 issue 输出字段: {', '.join(unknown)}")
+    if len(fields) != len(set(fields)):
+        raise ValueError("fields 不能包含重复字段")
+    return fields
+
+def issue_query(conn: sqlite3.Connection, args: argparse.Namespace) -> list[dict[str, Any]]:
+    sql = """
+        SELECT i.*, t.task_key, t.project_name,
+               (SELECT MAX(a.created_at) FROM issue_activity a WHERE a.issue_id = i.id) AS last_activity_at,
+               (SELECT MAX(a.created_at) FROM issue_activity a
+                WHERE a.issue_id = i.id AND a.activity_type = 'COMMENT_ADDED') AS last_comment_at
+        FROM review_issue i
+        JOIN review_task t ON t.id = i.task_id
+        WHERE 1=1
+    """
+    params = []
+    for field in ("task_key", "status", "severity", "dimension"):
+        value = getattr(args, field, None)
+        if value:
+            column = f"t.{field}" if field == "task_key" else f"i.{field}"
+            sql += f" AND {column} = ?"
+            params.append(value)
+    if getattr(args, "updated_after", None):
+        sql += " AND i.updated_at >= ?"
+        params.append(normalize_since(args.updated_after))
+
+    sql += """
+      ORDER BY
+        CASE severity WHEN 'critical' THEN 4 WHEN 'high' THEN 3 WHEN 'medium' THEN 2 ELSE 1 END DESC,
+        CASE remediation_benefit WHEN 'high' THEN 3 WHEN 'medium' THEN 2 ELSE 1 END DESC,
+        CASE dimension
+          WHEN 'functional_correctness' THEN 7
+          WHEN 'data_security' THEN 6
+          WHEN 'stability_concurrency' THEN 5
+          WHEN 'performance' THEN 4
+          WHEN 'architecture_extensibility' THEN 3
+          WHEN 'code_quality' THEN 2
+          ELSE 1
+        END DESC,
+        CASE remediation_cost WHEN 'low' THEN 1 WHEN 'medium' THEN 2 WHEN 'high' THEN 3 ELSE 4 END ASC,
+        CASE confidence WHEN 'high' THEN 3 WHEN 'medium' THEN 2 ELSE 1 END DESC,
+        issue_key ASC
+    """
+    limit = getattr(args, "limit", None)
+    if limit is not None:
+        if not 1 <= limit <= 1000:
+            raise ValueError("limit 必须在 1 到 1000 之间")
+        sql += " LIMIT ?"
+        params.append(limit)
+    fields = selected_issue_fields(getattr(args, "fields", None))
+    rows = []
+    for r in conn.execute(sql, params).fetchall():
+        item = dict(r)
+        for key in (
+            "trigger_conditions_json", "potential_impact_json", "impact_scope_json",
+            "evidence_json", "estimated_change_json"
+        ):
+            item[key] = loads(item[key], [] if key != "estimated_change_json" else {})
+        rows.append({field: item[field] for field in fields} if fields else item)
+    return rows
+
+def issue_list(args: argparse.Namespace) -> None:
+    require_agent(args.agent)
+    with connect() as conn:
+        rows = issue_query(conn, args)
+        audit(conn, actor_id(args), "issue.list", "review_issue", getattr(args, "task_key", None), True, f"count={len(rows)}")
+    print_json(rows)
+
+def issue_list_pending_review(args: argparse.Namespace) -> None:
+    args.status = "IMPLEMENTED_PENDING_REVIEW"
+    args.severity = None
+    args.dimension = None
+    issue_list(args)
+
+def issue_get(args: argparse.Namespace) -> None:
+    require_agent(args.agent)
+    with connect() as conn:
+        row = conn.execute(
+            """SELECT i.*, t.task_key, t.project_name,
+                      (SELECT MAX(a.created_at) FROM issue_activity a WHERE a.issue_id = i.id) AS last_activity_at,
+                      (SELECT MAX(a.created_at) FROM issue_activity a
+                       WHERE a.issue_id = i.id AND a.activity_type = 'COMMENT_ADDED') AS last_comment_at
+               FROM review_issue i
+               JOIN review_task t ON t.id = i.task_id
+               WHERE i.issue_key = ?""",
+            (args.issue_key,),
+        ).fetchone()
+        if not row:
+            raise KeyError(f"问题不存在: {args.issue_key}")
+        item = dict(row)
+        for key in (
+            "trigger_conditions_json", "potential_impact_json", "impact_scope_json",
+            "evidence_json", "estimated_change_json"
+        ):
+            item[key] = loads(item[key], [] if key != "estimated_change_json" else {})
+        audit(conn, actor_id(args), "issue.get", "review_issue", args.issue_key, True)
+    print_json(item)
+
+ASSESSMENT_FIELDS = {
+    "dimension": ALLOWED_DIMENSIONS,
+    "severity": ALLOWED_SEVERITIES,
+    "remediation_benefit": ALLOWED_BENEFITS,
+    "remediation_cost": ALLOWED_COSTS,
+    "disposition": ALLOWED_DISPOSITIONS,
+    "confidence": ALLOWED_CONFIDENCE,
+}
+
+def validate_assessment_values(values: dict[str, Any]) -> dict[str, str]:
+    unknown = sorted(set(values) - set(ASSESSMENT_FIELDS))
+    if unknown:
+        raise ValueError(f"未知评级字段: {', '.join(unknown)}")
+    changed = {field: value for field, value in values.items() if value is not None}
+    if not changed:
+        raise ValueError("至少提供一个评级字段")
+    for field, value in changed.items():
+        require_choice(value, ASSESSMENT_FIELDS[field], field)
+    return changed
+
+def apply_assessment_update(
+    conn: sqlite3.Connection, args: argparse.Namespace, issue_key: str, values: dict[str, Any]
+) -> dict[str, str]:
+    changed = validate_assessment_values(values)
+    row = conn.execute("SELECT id FROM review_issue WHERE issue_key = ?", (issue_key,)).fetchone()
+    if not row:
+        raise KeyError(f"问题不存在: {issue_key}")
+    conn.execute(
+        f"UPDATE review_issue SET {', '.join(f'{field} = ?' for field in changed)}, "
+        "updated_at = CURRENT_TIMESTAMP WHERE issue_key = ?",
+        [*changed.values(), issue_key],
+    )
+    conn.execute(
+        """INSERT INTO issue_activity(issue_id, attempt_no, activity_type, operator_type, operator_id, content, metadata_json)
+           SELECT id, current_attempt_no, 'COMMENT_ADDED', ?, ?, ?, ? FROM review_issue WHERE issue_key = ?""",
+        (operator_type(args.agent), actor_id(args), "更新问题评级", dumps({"assessment": changed}), issue_key),
+    )
+    audit(conn, actor_id(args), "issue.update-assessment", "review_issue", issue_key, True)
+    return changed
+
+def issue_update_assessment(args: argparse.Namespace) -> None:
+    if args.agent not in {"inspector", "human"}:
+        raise PermissionError("只有 inspector 或 human 可以修改问题评级")
+    require_agent(args.agent)
+    values = {field: getattr(args, field) for field in ASSESSMENT_FIELDS}
+    with connect() as conn:
+        changed = apply_assessment_update(conn, args, args.issue_key, values)
+    print_json({"issue_key": args.issue_key, "updated": changed})
+
+def issue_update_assessment_batch(args: argparse.Namespace) -> None:
+    require_agent(args.agent)
+    if args.agent not in {"inspector", "human"}:
+        raise PermissionError("只有 inspector 或 human 可以批量修改问题评级")
+    updates = json.loads(args.updates)
+    if not isinstance(updates, list) or not updates:
+        raise ValueError("updates 必须是非空 JSON 数组")
+    seen: set[str] = set()
+    prepared = []
+    for update in updates:
+        if not isinstance(update, dict) or not update.get("issue_key"):
+            raise ValueError("updates 中每项必须是包含 issue_key 的对象")
+        issue_key = str(update["issue_key"])
+        if issue_key in seen:
+            raise ValueError(f"同一批次不能重复更新问题: {issue_key}")
+        seen.add(issue_key)
+        values = {key: value for key, value in update.items() if key != "issue_key"}
+        validate_assessment_values(values)
+        prepared.append((issue_key, values))
+    result = []
+    with connect() as conn:
+        for issue_key, values in prepared:
+            changed = apply_assessment_update(conn, args, issue_key, values)
+            result.append({"issue_key": issue_key, "updated": changed})
+        audit(conn, actor_id(args), "issue.update-assessment-batch", "review_issue", None, True, f"count={len(result)}")
+    print_json({"updated": result})
+
+def issue_update_body(args: argparse.Namespace) -> None:
+    require_agent(args.agent)
+    if args.agent not in {"inspector", "human"}:
+        raise PermissionError("只有 inspector 或 human 可以更新问题正文")
+    fields = {name: getattr(args, name) for name in ("title", "description", "facts", "rationale")}
+    updates = {name: value for name, value in fields.items() if value is not None}
+    if not updates:
+        raise ValueError("至少提供一个可更新字段")
+    with connect() as conn:
+        row = conn.execute("SELECT id, current_attempt_no FROM review_issue WHERE issue_key = ?", (args.issue_key,)).fetchone()
+        if not row:
+            raise KeyError(f"问题不存在: {args.issue_key}")
+        set_clause = ", ".join(f"{name} = ?" for name in updates)
+        conn.execute(
+            f"UPDATE review_issue SET {set_clause}, updated_at = CURRENT_TIMESTAMP WHERE issue_key = ?",
+            [*updates.values(), args.issue_key],
+        )
+        conn.execute(
+            """INSERT INTO issue_activity(issue_id, attempt_no, activity_type, operator_type, operator_id, content, metadata_json)
+               VALUES (?, ?, 'COMMENT_ADDED', ?, ?, ?, ?)""",
+            (row["id"], row["current_attempt_no"], operator_type(args.agent), actor_id(args),
+             "更新问题正文", dumps({"body": sorted(updates)})),
+        )
+        audit(conn, actor_id(args), "issue.update-body", "review_issue", args.issue_key, True, json.dumps(updates, ensure_ascii=False))
+    print_json({"issue_key": args.issue_key, "updated": updates})
+
+def apply_status_update(
+    conn: sqlite3.Connection, args: argparse.Namespace, issue_key: str, status: str, content: str | None
+) -> dict[str, Any]:
+    if status not in ALLOWED_STATUS_BY_AGENT[args.agent]:
+        raise PermissionError(f"agent {args.agent} 无权设置状态 {status}")
+    if status == "INSPECTOR_CONFIRMATION_REQUIRED" and args.agent == "developer" and not (content or "").strip():
+        raise ValueError("开发端请求审核确认时必须通过 --content 说明待确认边界或疑问")
+    row = conn.execute(
+        "SELECT id, status, current_attempt_no FROM review_issue WHERE issue_key = ?",
+        (issue_key,),
+    ).fetchone()
+    if not row:
+        raise KeyError(f"问题不存在: {issue_key}")
+    if status not in ALLOWED_TRANSITIONS[row["status"]][args.agent]:
+        raise RuntimeError(f"不允许状态流转: {row['status']} -> {status} ({args.agent})")
+    if row["status"] == "INSPECTOR_CONFIRMATION_REQUIRED" and args.agent in {"inspector", "human"}:
+        confirmation = conn.execute(
+            """SELECT 1 FROM issue_activity
+               WHERE issue_id = ? AND activity_type = 'INSPECTOR_CONFIRMATION_PROVIDED'
+               LIMIT 1""",
+            (row["id"],),
+        ).fetchone()
+        if not confirmation:
+            raise RuntimeError("审核端结束待审核确认前必须追加 INSPECTOR_CONFIRMATION_PROVIDED 活动")
+    if status == "CONFIRMED":
+        verified = conn.execute(
+            "SELECT 1 FROM issue_activity WHERE issue_id = ? AND activity_type = 'VERIFICATION_PASSED' LIMIT 1",
+            (row["id"],),
+        ).fetchone()
+        if not verified:
+            raise RuntimeError("问题确认前必须存在 VERIFICATION_PASSED 验证活动")
+
+    attempt_no = row["current_attempt_no"]
+    if status == "IMPLEMENTED_PENDING_REVIEW":
+        attempt_no += 1
+
+    conn.execute(
+        """UPDATE review_issue
+           SET status = ?, current_attempt_no = ?,
+               confirmed_at = CASE WHEN ?='CONFIRMED' THEN CURRENT_TIMESTAMP ELSE confirmed_at END,
+               cancelled_at = CASE WHEN ?='CANCELLED' THEN CURRENT_TIMESTAMP ELSE cancelled_at END,
+               updated_at = CURRENT_TIMESTAMP
+           WHERE issue_key = ?""",
+        (status, attempt_no, status, status, issue_key),
+    )
+    conn.execute(
+        """INSERT INTO issue_activity(
+            issue_id, attempt_no, activity_type, operator_type, operator_id, content, result_status
+        ) VALUES (?, ?, 'STATUS_CHANGED', ?, ?, ?, ?)""",
+        (
+            row["id"], attempt_no, operator_type(args.agent), actor_id(args),
+            content or f"状态变更为 {status}", status,
+        ),
+    )
+    audit(conn, actor_id(args), "issue.update-status", "review_issue", issue_key, True)
+    return {"issue_key": issue_key, "status": status, "attempt_no": attempt_no}
+
+def issue_update_status(args: argparse.Namespace) -> None:
+    require_agent(args.agent)
+    with connect() as conn:
+        result = apply_status_update(conn, args, args.issue_key, args.status, args.content)
+    print_json(result)
+
+def issue_update_status_batch(args: argparse.Namespace) -> None:
+    require_agent(args.agent)
+    updates = json.loads(args.updates)
+    if not isinstance(updates, list) or not updates:
+        raise ValueError("updates 必须是非空 JSON 数组")
+    seen: set[str] = set()
+    prepared = []
+    for update in updates:
+        if not isinstance(update, dict) or not update.get("issue_key") or not update.get("status"):
+            raise ValueError("updates 中每项必须是包含 issue_key 和 status 的对象")
+        unknown = sorted(set(update) - {"issue_key", "status", "content"})
+        if unknown:
+            raise ValueError(f"未知状态更新字段: {', '.join(unknown)}")
+        issue_key = str(update["issue_key"])
+        if issue_key in seen:
+            raise ValueError(f"同一批次不能重复更新问题: {issue_key}")
+        seen.add(issue_key)
+        status = str(update["status"])
+        if status not in ALLOWED_STATUS_BY_AGENT[args.agent]:
+            raise PermissionError(f"agent {args.agent} 无权设置状态 {status}")
+        prepared.append((issue_key, status, update.get("content")))
+    result = []
+    with connect() as conn:
+        for issue_key, status, content in prepared:
+            result.append(apply_status_update(conn, args, issue_key, status, content))
+        audit(conn, actor_id(args), "issue.update-status-batch", "review_issue", None, True, f"count={len(result)}")
+    print_json({"updated": result})
+
+def implementation_submit(args: argparse.Namespace) -> None:
+    require_agent(args.agent)
+    if args.agent not in {"developer", "human"}:
+        raise PermissionError("只有 developer 或 human 可以提交实现")
+    code_reference = json.loads(args.code_reference)
+    metadata = json.loads(args.metadata)
+    if not isinstance(code_reference, list):
+        raise ValueError("code-reference 必须是 JSON 数组")
+    if not isinstance(metadata, dict):
+        raise ValueError("metadata 必须是 JSON 对象")
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT id, current_attempt_no FROM review_issue WHERE issue_key = ?",
+            (args.issue_key,),
+        ).fetchone()
+        if not row:
+            raise KeyError(f"问题不存在: {args.issue_key}")
+        next_attempt = row["current_attempt_no"] + 1
+        conn.execute(
+            """INSERT INTO issue_activity(
+                issue_id, attempt_no, activity_type, operator_type, operator_id,
+                content, code_reference_json, metadata_json
+            ) VALUES (?, ?, 'IMPLEMENTATION_SUBMITTED', ?, ?, ?, ?, ?)""",
+            (
+                row["id"], next_attempt, operator_type(args.agent), actor_id(args), args.content,
+                dumps(code_reference), dumps(metadata),
+            ),
+        )
+        result = apply_status_update(
+            conn, args, args.issue_key, "IMPLEMENTED_PENDING_REVIEW", args.status_content
+        )
+        audit(conn, actor_id(args), "implementation.submit", "review_issue", args.issue_key, True)
+    print_json({**result, "activity_type": "IMPLEMENTATION_SUBMITTED"})
+
+def activity_append(args: argparse.Namespace) -> None:
+    require_agent(args.agent)
+    if args.activity_type not in ALLOWED_ACTIVITY_BY_AGENT[args.agent]:
+        raise PermissionError(f"agent {args.agent} 无权追加活动 {args.activity_type}")
+
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT id, current_attempt_no FROM review_issue WHERE issue_key = ?",
+            (args.issue_key,),
+        ).fetchone()
+        if not row:
+            raise KeyError(f"问题不存在: {args.issue_key}")
+        if args.attempt_no is not None and args.attempt_no < 0:
+            raise ValueError("attempt_no 不能为负数")
+        attempt_no = args.attempt_no if args.attempt_no is not None else row["current_attempt_no"]
+        if attempt_no > row["current_attempt_no"]:
+            raise ValueError("attempt_no 不能大于当前尝试次数")
+
+        conn.execute(
+            """INSERT INTO issue_activity(
+                issue_id, attempt_no, activity_type, operator_type, operator_id,
+                content, result_status, code_reference_json, metadata_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                row["id"], attempt_no,
+                args.activity_type,
+                {"inspector":"INSPECTOR_AGENT","developer":"DEVELOPMENT_AGENT","human":"HUMAN"}[args.agent],
+                actor_id(args), args.content, args.result_status,
+                dumps(json.loads(args.code_reference)),
+                dumps(json.loads(args.metadata)),
+            ),
+        )
+        audit(conn, actor_id(args), "activity.append", "issue_activity", args.issue_key, True)
+    print_json({"issue_key": args.issue_key, "activity_type": args.activity_type})
+
+def activity_list(args: argparse.Namespace) -> None:
+    require_agent(args.agent)
+    with connect() as conn:
+        rows = conn.execute(
+            """SELECT a.*
+               FROM issue_activity a
+               JOIN review_issue i ON i.id = a.issue_id
+               WHERE i.issue_key = ?
+               ORDER BY a.created_at ASC, a.id ASC""",
+            (args.issue_key,),
+        ).fetchall()
+        audit(conn, actor_id(args), "activity.list", "issue_activity", args.issue_key, True, f"count={len(rows)}")
+    result = []
+    for r in rows:
+        item = dict(r)
+        item["code_reference_json"] = loads(item["code_reference_json"], [])
+        item["metadata_json"] = loads(item["metadata_json"], {})
+        result.append(item)
+    print_json(result)
+
+def normalize_since(value: str) -> str:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("since 必须是 ISO 8601 时间，例如 2026-07-22T10:30:00+08:00") from exc
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+    return parsed.isoformat(sep=" ", timespec="seconds")
+
+def activity_list_recent(args: argparse.Namespace) -> None:
+    require_agent(args.agent)
+    if not 1 <= args.limit <= 1000:
+        raise ValueError("limit 必须在 1 到 1000 之间")
+    sql = """
+        SELECT a.*, i.issue_key, i.title AS issue_title, i.status AS issue_status, t.task_key
+        FROM issue_activity a
+        JOIN review_issue i ON i.id = a.issue_id
+        JOIN review_task t ON t.id = i.task_id
+        WHERE 1=1
+    """
+    params: list[Any] = []
+    if args.task_key:
+        sql += " AND t.task_key = ?"
+        params.append(args.task_key)
+    if args.activity_type:
+        sql += " AND a.activity_type = ?"
+        params.append(args.activity_type)
+    if args.since:
+        sql += " AND a.created_at >= ?"
+        params.append(normalize_since(args.since))
+    sql += " ORDER BY a.created_at DESC, a.id DESC LIMIT ?"
+    params.append(args.limit)
+    with connect() as conn:
+        rows = conn.execute(sql, params).fetchall()
+        audit(conn, actor_id(args), "activity.list-recent", "issue_activity", args.task_key, True, f"count={len(rows)}")
+    result = []
+    for row in rows:
+        item = dict(row)
+        item["code_reference_json"] = loads(item["code_reference_json"], [])
+        item["metadata_json"] = loads(item["metadata_json"], {})
+        result.append(item)
+    print_json(result)
+
+CANDIDATE_STATUSES = {"SUBMITTED", "UNDER_REVIEW", "ACCEPTED", "REJECTED"}
+CANDIDATE_TRANSITIONS = {
+    "SUBMITTED": {"UNDER_REVIEW", "ACCEPTED", "REJECTED"},
+    "UNDER_REVIEW": {"ACCEPTED", "REJECTED"},
+    "ACCEPTED": set(),
+    "REJECTED": set(),
+}
+
+def candidate_submit(args: argparse.Namespace) -> None:
+    require_agent(args.agent)
+    if args.agent not in {"developer", "human"}:
+        raise PermissionError("只有 developer 或 human 可以提交候选问题")
+    evidence = json.loads(args.evidence)
+    if not isinstance(evidence, list):
+        raise ValueError("evidence 必须是 JSON 数组")
+    candidate_key = args.candidate_key or f"RC-{uuid.uuid4().hex[:8].upper()}"
+    with connect() as conn:
+        task = conn.execute(
+            "SELECT id, status FROM review_task WHERE task_key = ?", (args.task_key,)
+        ).fetchone()
+        if not task:
+            raise KeyError(f"任务不存在: {args.task_key}")
+        if task["status"] in {"CLOSED", "CANCELLED"}:
+            raise RuntimeError("已关闭或取消的任务不能提交候选问题")
+        conn.execute(
+            """INSERT INTO issue_candidate(
+                candidate_key, task_id, title, description, facts, rationale, evidence_json,
+                suggested_dimension, suggested_severity, suggested_confidence, submitted_by
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                candidate_key, task["id"], args.title, args.description, args.facts, args.rationale,
+                dumps(evidence), args.suggested_dimension, args.suggested_severity,
+                args.suggested_confidence, actor_id(args),
+            ),
+        )
+        audit(conn, actor_id(args), "candidate.submit", "issue_candidate", candidate_key, True)
+    print_json({"candidate_key": candidate_key, "task_key": args.task_key, "status": "SUBMITTED"})
+
+def candidate_list(args: argparse.Namespace) -> None:
+    require_agent(args.agent)
+    if not 1 <= args.limit <= 1000:
+        raise ValueError("limit 必须在 1 到 1000 之间")
+    sql = """
+        SELECT c.*, t.task_key, t.project_name
+        FROM issue_candidate c
+        JOIN review_task t ON t.id = c.task_id
+        WHERE 1=1
+    """
+    params: list[Any] = []
+    if args.task_key:
+        sql += " AND t.task_key = ?"
+        params.append(args.task_key)
+    if args.status:
+        sql += " AND c.status = ?"
+        params.append(args.status)
+    else:
+        sql += " AND c.status IN ('SUBMITTED', 'UNDER_REVIEW')"
+    if args.updated_after:
+        sql += " AND c.updated_at >= ?"
+        params.append(normalize_since(args.updated_after))
+    sql += " ORDER BY c.updated_at DESC, c.id DESC LIMIT ?"
+    params.append(args.limit)
+    with connect() as conn:
+        rows = conn.execute(sql, params).fetchall()
+        audit(conn, actor_id(args), "candidate.list", "issue_candidate", args.task_key, True, f"count={len(rows)}")
+    result = []
+    for row in rows:
+        item = dict(row)
+        item["evidence_json"] = loads(item["evidence_json"], [])
+        result.append(item)
+    print_json(result)
+
+def candidate_update_status(args: argparse.Namespace) -> None:
+    require_agent(args.agent)
+    if args.agent not in {"inspector", "human"}:
+        raise PermissionError("只有 inspector 或 human 可以审核候选问题")
+    if args.status in {"ACCEPTED", "REJECTED"} and not (args.content or "").strip():
+        raise ValueError("接受或拒绝候选问题时必须通过 --content 记录审核结论")
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT status FROM issue_candidate WHERE candidate_key = ?", (args.candidate_key,)
+        ).fetchone()
+        if not row:
+            raise KeyError(f"候选问题不存在: {args.candidate_key}")
+        if args.status not in CANDIDATE_TRANSITIONS[row["status"]]:
+            raise RuntimeError(f"不允许候选问题状态流转: {row['status']} -> {args.status}")
+        final = args.status in {"ACCEPTED", "REJECTED"}
+        conn.execute(
+            """UPDATE issue_candidate
+               SET status = ?, reviewed_by = ?, review_comment = ?,
+                   reviewed_at = CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE reviewed_at END,
+                   updated_at = CURRENT_TIMESTAMP
+               WHERE candidate_key = ?""",
+            (args.status, actor_id(args), args.content, 1 if final else 0, args.candidate_key),
+        )
+        audit(conn, actor_id(args), "candidate.update-status", "issue_candidate", args.candidate_key, True)
+    print_json({"candidate_key": args.candidate_key, "status": args.status})
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Code Inspector 本地数据工具")
+    parser.add_argument("--agent", required=True, choices=["inspector", "developer", "human"])
+    parser.add_argument("--operator-id", help="安装器传入的逻辑执行身份")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p = sub.add_parser("task-create")
+    p.add_argument("--task-key")
+    p.add_argument("--title", required=True)
+    p.add_argument("--objective", required=True)
+    p.add_argument("--review-level", choices=["L1", "L2", "L3"])
+    p.add_argument("--review-scope")
+    p.add_argument("--baseline-ref")
+    p.add_argument("--started-at")
+    p.add_argument("--remark")
+    p.set_defaults(func=task_create)
+
+    p = sub.add_parser("task-resolve")
+    p.add_argument("--task-key")
+    p.add_argument("--title", required=True)
+    p.add_argument("--objective", required=True)
+    p.add_argument("--review-level", required=True, choices=["L1", "L2", "L3"])
+    p.add_argument("--review-scope", required=True)
+    p.add_argument("--baseline-ref")
+    p.add_argument("--remark")
+    p.set_defaults(func=task_resolve)
+
+    p = sub.add_parser("task-list")
+    p.add_argument("--status", choices=sorted(TASK_STATUSES))
+    p.add_argument("--project-name")
+    p.add_argument("--include-closed", action="store_true")
+    p.set_defaults(func=task_list)
+
+    p = sub.add_parser("task-update-status")
+    p.add_argument("--task-key", required=True)
+    p.add_argument("--status", required=True, choices=sorted(TASK_STATUSES))
+    p.add_argument("--started-at")
+    p.add_argument("--finished-at")
+    p.add_argument("--close-reason")
+    p.add_argument("--remark")
+    p.set_defaults(func=task_update_status)
+
+    p = sub.add_parser("task-update")
+    p.add_argument("--task-key", required=True)
+    p.add_argument("--title")
+    p.add_argument("--objective")
+    p.add_argument("--remark")
+    p.add_argument("--close-reason")
+    p.set_defaults(func=task_update)
+
+    p = sub.add_parser("version-create")
+    p.add_argument("--task-key", required=True)
+    p.add_argument("--reason", required=True)
+    p.set_defaults(func=version_create)
+
+    p = sub.add_parser("issue-create")
+    p.add_argument("--task-key", required=True)
+    p.add_argument("--issue-key")
+    p.add_argument("--parent-issue-id", type=int)
+    p.add_argument("--title", required=True)
+    p.add_argument("--dimension", required=True)
+    p.add_argument("--severity", required=True)
+    p.add_argument("--remediation-benefit", required=True)
+    p.add_argument("--remediation-cost", required=True)
+    p.add_argument("--disposition", required=True)
+    p.add_argument("--confidence", required=True)
+    p.add_argument("--description", required=True)
+    p.add_argument("--facts", required=True)
+    p.add_argument("--trigger-conditions", default="[]")
+    p.add_argument("--potential-impact", default="[]")
+    p.add_argument("--impact-scope", default="[]")
+    p.add_argument("--rationale", required=True)
+    p.add_argument("--evidence", default="[]")
+    p.add_argument("--estimated-change", default="{}")
+    p.add_argument("--dedupe-key")
+    p.set_defaults(func=issue_create)
+
+    p = sub.add_parser("issue-create-batch")
+    p.add_argument("--task-key", required=True)
+    p.add_argument("--reason", required=True)
+    p.add_argument("--issues", required=True, help="JSON array of issue objects")
+    p.set_defaults(func=issue_create_batch)
+
+    p = sub.add_parser("issue-list")
+    p.add_argument("--task-key")
+    p.add_argument("--status")
+    p.add_argument("--severity")
+    p.add_argument("--dimension")
+    p.add_argument("--updated-after")
+    p.add_argument("--limit", type=int)
+    p.add_argument("--fields", help="comma-separated output fields")
+    p.set_defaults(func=issue_list)
+
+    p = sub.add_parser("issue-list-pending-review")
+    p.add_argument("--task-key")
+    p.add_argument("--updated-after")
+    p.add_argument("--limit", type=int)
+    p.add_argument("--fields", help="comma-separated output fields")
+    p.set_defaults(func=issue_list_pending_review)
+
+    p = sub.add_parser("issue-get")
+    p.add_argument("--issue-key", required=True)
+    p.set_defaults(func=issue_get)
+
+    p = sub.add_parser("issue-update-status")
+    p.add_argument("--issue-key", required=True)
+    p.add_argument("--status", required=True, choices=sorted({s for values in ALLOWED_TRANSITIONS.values() for role in values.values() for s in role}))
+    p.add_argument("--content")
+    p.set_defaults(func=issue_update_status)
+
+    p = sub.add_parser("issue-update-status-batch")
+    p.add_argument("--updates", required=True, help="JSON array of status updates")
+    p.set_defaults(func=issue_update_status_batch)
+
+    p = sub.add_parser("implementation-submit")
+    p.add_argument("--issue-key", required=True)
+    p.add_argument("--content", required=True)
+    p.add_argument("--status-content")
+    p.add_argument("--code-reference", default="[]")
+    p.add_argument("--metadata", default="{}")
+    p.set_defaults(func=implementation_submit)
+
+    p = sub.add_parser("issue-update-assessment")
+    p.add_argument("--issue-key", required=True)
+    p.add_argument("--dimension")
+    p.add_argument("--severity")
+    p.add_argument("--remediation-benefit")
+    p.add_argument("--remediation-cost")
+    p.add_argument("--disposition")
+    p.add_argument("--confidence")
+    p.set_defaults(func=issue_update_assessment)
+
+    p = sub.add_parser("issue-update-assessment-batch")
+    p.add_argument("--updates", required=True, help="JSON array of assessment updates")
+    p.set_defaults(func=issue_update_assessment_batch)
+
+    p = sub.add_parser("issue-update-body")
+    p.add_argument("--issue-key", required=True)
+    p.add_argument("--title")
+    p.add_argument("--description")
+    p.add_argument("--facts")
+    p.add_argument("--rationale")
+    p.set_defaults(func=issue_update_body)
+
+    p = sub.add_parser("activity-append")
+    p.add_argument("--issue-key", required=True)
+    p.add_argument("--activity-type", required=True)
+    p.add_argument("--attempt-no", type=int)
+    p.add_argument("--content", required=True)
+    p.add_argument("--result-status")
+    p.add_argument("--code-reference", default="[]")
+    p.add_argument("--metadata", default="{}")
+    p.set_defaults(func=activity_append)
+
+    p = sub.add_parser("activity-list")
+    p.add_argument("--issue-key", required=True)
+    p.set_defaults(func=activity_list)
+
+    p = sub.add_parser("activity-list-recent")
+    p.add_argument("--task-key")
+    p.add_argument("--activity-type", choices=sorted(ALLOWED_ACTIVITY_TYPES))
+    p.add_argument("--since")
+    p.add_argument("--limit", type=int, default=100)
+    p.set_defaults(func=activity_list_recent)
+
+    p = sub.add_parser("candidate-submit")
+    p.add_argument("--task-key", required=True)
+    p.add_argument("--candidate-key")
+    p.add_argument("--title", required=True)
+    p.add_argument("--description", required=True)
+    p.add_argument("--facts", required=True)
+    p.add_argument("--rationale", required=True)
+    p.add_argument("--evidence", default="[]")
+    p.add_argument("--suggested-dimension", choices=sorted(ALLOWED_DIMENSIONS))
+    p.add_argument("--suggested-severity", choices=sorted(ALLOWED_SEVERITIES))
+    p.add_argument("--suggested-confidence", choices=sorted(ALLOWED_CONFIDENCE))
+    p.set_defaults(func=candidate_submit)
+
+    p = sub.add_parser("candidate-list")
+    p.add_argument("--task-key")
+    p.add_argument("--status", choices=sorted(CANDIDATE_STATUSES))
+    p.add_argument("--updated-after")
+    p.add_argument("--limit", type=int, default=100)
+    p.set_defaults(func=candidate_list)
+
+    p = sub.add_parser("candidate-update-status")
+    p.add_argument("--candidate-key", required=True)
+    p.add_argument("--status", required=True, choices=["UNDER_REVIEW", "ACCEPTED", "REJECTED"])
+    p.add_argument("--content")
+    p.set_defaults(func=candidate_update_status)
+
+    return parser
+
+def main() -> int:
+    parser = build_parser()
+    args = parser.parse_args()
+    try:
+        validate_actor_binding(args)
+        args.func(args)
+        return 0
+    except Exception as exc:
+        try:
+            with connect() as conn:
+                audit(
+                    conn, actor_id(args), "command.failed", "command", getattr(args, "command", None),
+                    False, str(exc),
+                )
+        except Exception:
+            pass
+        print(json.dumps({"error": str(exc)}, ensure_ascii=False), file=sys.stderr)
+        return 1
+
+if __name__ == "__main__":
+    raise SystemExit(main())

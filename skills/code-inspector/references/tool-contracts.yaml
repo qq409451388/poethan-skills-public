@@ -1,0 +1,158 @@
+version: 1.2.0
+
+command: review-db.py
+identity:
+  required_argument: --agent
+  values: [inspector, developer, human]
+  installed_entrypoint:
+    rule: developer 和 inspector 必须使用安装器按 alias 生成的专用入口。
+    enforced_arguments: [--agent, --operator-id]
+    direct_runtime_call: forbidden
+  audit_identity: agent_audit_log.agent_id、版本 created_by 和活动 operator_id 使用逻辑 alias。
+
+commands:
+  task-create:
+    roles: [inspector, human]
+    required: [--title, --objective]
+    optional: [--task-key, --review-level, --review-scope, --baseline-ref, --started-at, --remark]
+  task-resolve:
+    roles: [inspector, human]
+    purpose: 按项目绝对路径、等级、目标、范围和基线复用活动 task；不存在时创建。
+    required: [--title, --objective, --review-level, --review-scope]
+    optional: [--task-key, --baseline-ref, --remark]
+  task-list:
+    roles: [inspector, developer, human]
+    optional: [--status, --project-name, --include-closed]
+    default: 仅返回 PENDING、IN_PROGRESS、ON_HOLD、BLOCKED。
+  task-update:
+    roles: [inspector, human]
+    required: [--task-key]
+    optional_one_or_more: [--title, --objective, --remark, --close-reason]
+  task-update-status:
+    roles: [inspector, human]
+    required: [--task-key, --status]
+    optional: [--started-at, --finished-at, --close-reason, --remark]
+  version-create:
+    roles: [inspector, human]
+    required: [--task-key, --reason]
+    note: 通常使用 issue-create-batch 自动创建版本；仅在确有独立新问题且需分步操作时使用。
+  issue-create:
+    roles: [inspector, human]
+    required: [--task-key, --title, --dimension, --severity, --remediation-benefit, --remediation-cost, --disposition, --confidence, --description, --facts, --rationale]
+    optional: [--issue-key, --parent-issue-id, --trigger-conditions, --potential-impact, --impact-scope, --evidence, --estimated-change, --dedupe-key]
+    json_arguments: [--trigger-conditions, --potential-impact, --impact-scope, --evidence, --estimated-change]
+  issue-create-batch:
+    roles: [inspector, human]
+    required: [--task-key, --reason, --issues]
+    json_arguments: [--issues]
+    note: 一轮扫描的首选落库命令；自动去重，并且只在存在新 issue 时创建版本。
+  issue-list:
+    roles: [inspector, developer, human]
+    optional: [--task-key, --status, --severity, --dimension, --updated-after, --limit, --fields]
+    constraints: {updated-after: ISO-8601 inclusive lower bound to avoid same-second misses, limit: 1..1000, fields: comma-separated allowlisted fields}
+    recommended_compact_fields: [issue_key, title, status, severity, dimension, updated_at, last_activity_at, last_comment_at]
+    fields_note: 可选择任意 issue-get 返回字段；JSON 字段沿用 evidence_json 等现有响应名。
+    returns_activity_summary: [last_activity_at, last_comment_at]
+  issue-list-pending-review:
+    roles: [inspector, developer, human]
+    purpose: 快速返回 IMPLEMENTED_PENDING_REVIEW 问题。
+    optional: [--task-key, --updated-after, --limit, --fields]
+  issue-get:
+    roles: [inspector, developer, human]
+    required: [--issue-key]
+    note: 返回单条 issue 的完整正文、证据、评级、状态和最近活动时间。
+  issue-update-assessment:
+    roles: [inspector, human]
+    required: [--issue-key]
+    optional_one_or_more: [--dimension, --severity, --remediation-benefit, --remediation-cost, --disposition, --confidence]
+  issue-update-assessment-batch:
+    roles: [inspector, human]
+    required: [--updates]
+    json_arguments: [--updates]
+    item_required: [issue_key]
+    item_optional_one_or_more: [dimension, severity, remediation_benefit, remediation_cost, disposition, confidence]
+    note: 整批在同一事务中更新；任一项失败则全部回滚；同一批次不得重复 issue_key。
+  issue-update-body:
+    roles: [inspector, human]
+    required: [--issue-key]
+    optional_one_or_more: [--title, --description, --facts, --rationale]
+  issue-update-status:
+    roles: [inspector, developer, human]
+    required: [--issue-key, --status]
+    optional: [--content]
+    note: developer 请求 INSPECTOR_CONFIRMATION_REQUIRED 时 --content 必填；所有流转受 workflow.yaml 强制校验。
+  issue-update-status-batch:
+    roles: [inspector, developer, human]
+    required: [--updates]
+    json_arguments: [--updates]
+    item_required: [issue_key, status]
+    item_optional: [content]
+    note: 整批在同一事务中更新；任一项失败则全部回滚；同一批次不得重复 issue_key。
+  implementation-submit:
+    roles: [developer, human]
+    purpose: 原子追加 IMPLEMENTATION_SUBMITTED 证据并转为 IMPLEMENTED_PENDING_REVIEW。
+    required: [--issue-key, --content]
+    optional: [--status-content, --code-reference, --metadata]
+    json_arguments: [--code-reference, --metadata]
+    note: 实现证据与状态变更使用同一新 attempt 和同一事务；任一步失败则全部回滚。
+  activity-append:
+    roles: [inspector, developer, human]
+    required: [--issue-key, --activity-type, --content]
+    optional: [--attempt-no, --result-status, --code-reference, --metadata]
+    json_arguments: [--code-reference, --metadata]
+    content_format:
+      short: 单行纯文本，不添加 Markdown 装饰。
+      multiline: 多个独立说明可直接换行；无需强制使用列表。
+      markdown: 仅在包含代码、命令、真正的项目列表或复杂层级时使用；代码必须使用 fenced code block。
+      principle: 以清晰可读为准，不为格式而格式。
+  activity-list:
+    roles: [inspector, developer, human]
+    required: [--issue-key]
+  activity-list-recent:
+    roles: [inspector, developer, human]
+    purpose: 跨 issue 查询近期活动，避免逐条遍历 issue。
+    optional: [--task-key, --activity-type, --since, --limit]
+    defaults: {limit: 100}
+    constraints: {limit: 1..1000, since: ISO-8601}
+    examples:
+      - activity-list-recent --task-key RT-TEST --activity-type COMMENT_ADDED
+      - activity-list-recent --since 2026-07-22T09:00:00+08:00 --limit 200
+  candidate-submit:
+    roles: [developer, human]
+    purpose: 将新发现提交到独立候选审核队列，不创建正式 issue。
+    required: [--task-key, --title, --description, --facts, --rationale]
+    optional: [--candidate-key, --evidence, --suggested-dimension, --suggested-severity, --suggested-confidence]
+    json_arguments: [--evidence]
+  candidate-list:
+    roles: [inspector, developer, human]
+    optional: [--task-key, --status, --updated-after, --limit]
+    default: 仅返回 SUBMITTED 和 UNDER_REVIEW；limit 为 100。
+    constraints: {updated-after: ISO-8601 inclusive lower bound, limit: 1..1000}
+  candidate-update-status:
+    roles: [inspector, human]
+    required: [--candidate-key, --status]
+    optional: [--content]
+    note: ACCEPTED 或 REJECTED 时 --content 必填；接受候选不自动创建正式 issue。
+
+enum_values:
+  dimension: [functional_correctness, data_security, stability_concurrency, performance, architecture_extensibility, code_quality, test_observability]
+  severity: [critical, high, medium, low]
+  remediation_benefit: [high, medium, low]
+  remediation_cost: [low, medium, high, extreme]
+  disposition: [immediate_fix, current_iteration, near_term_iteration, special_governance, opportunistic_fix, observe, defer, business_confirmation]
+  confidence: [high, medium, low]
+
+response:
+  success: stdout JSON
+  failure: stderr JSON with non-zero exit code
+
+restrictions:
+  raw_sql: forbidden
+  delete_history: forbidden
+  direct_sqlite_access: forbidden
+  forged_alias_or_role: forbidden
+
+workflow_statuses:
+  task: [PENDING, IN_PROGRESS, ON_HOLD, BLOCKED, CLOSED, CANCELLED]
+  issue: [PROPOSED, IN_PROGRESS, ON_HOLD, BLOCKED, INSPECTOR_CONFIRMATION_REQUIRED, IMPLEMENTED_PENDING_REVIEW, REDESIGN_REQUIRED, CONFIRMED, CANCELLED]
+  candidate: [SUBMITTED, UNDER_REVIEW, ACCEPTED, REJECTED]

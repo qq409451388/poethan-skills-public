@@ -1,0 +1,144 @@
+{% extends "base.html" %}
+{% block title %}{{ task.task_key }} · 检查任务{% endblock %}
+{% block content %}
+
+<div class="meta-row">
+  <span>任务键：<strong class="mono">{{ task.task_key }}</strong></span>
+  <span>项目：<span class="mono">{{ task.project_name }}</span></span>
+  <span>当前版本：v{{ task.current_version }}</span>
+  <span>状态：<span class="badge badge-status-{{ task.status }}">{{ task.status|label }}</span></span>
+  <span>创建：{{ task.created_at|localtime }}</span>
+  <span>更新：{{ task.updated_at|localtime }}</span>
+</div>
+
+<h1>{{ task.title }}</h1>
+<div class="muted" style="margin-bottom: 16px;">{{ task.objective }}</div>
+
+<div class="metrics">
+  <span><strong>{{ summary.open }}</strong> 待处理</span><span><strong>{{ summary.total }}</strong> 问题总数</span>
+  <span class="sev-critical"><strong>{{ summary.critical }}</strong> 致命</span><span class="sev-high"><strong>{{ summary.high }}</strong> 高</span>
+</div>
+
+<div class="panel compact-panel">
+  <dl class="kv">
+    <dt>检查级别</dt><dd>{{ task.review_level or '未设置' }}</dd>
+    <dt>检查范围</dt><dd>{{ task.review_scope or '未填写' }}</dd>
+    <dt>基线版本</dt><dd class="mono">{{ task.baseline_ref or '未设置' }}</dd>
+    <dt>项目路径</dt><dd class="mono">{{ task.project_path }}</dd>
+  </dl>
+</div>
+
+<div class="grid-2">
+  <div class="panel">
+    <h2>编辑任务</h2>
+    <form method="post" action="{{ url_for('task_update', task_key=task.task_key) }}">
+      <div class="field">
+        <label>标题</label>
+        <input type="text" name="title" value="{{ task.title }}" style="width:100%">
+      </div>
+      <div class="field">
+        <label>目标</label>
+        <textarea name="objective">{{ task.objective }}</textarea>
+      </div>
+      <div class="field">
+        <label>备注</label>
+        <textarea name="remark">{{ task.remark or '' }}</textarea>
+      </div>
+      <div class="field">
+        <label>关闭原因（可选）</label>
+        <input type="text" name="close_reason" value="{{ task.close_reason or '' }}" style="width:100%">
+      </div>
+      <button type="submit">保存</button>
+    </form>
+  </div>
+
+  <div class="panel">
+    <h2>变更状态</h2>
+    <form method="post" action="{{ url_for('task_update_status', task_key=task.task_key) }}">
+      <div class="field">
+        <label>目标状态</label>
+        <select name="status">
+          {% for s in statuses %}
+            <option value="{{ s }}" {% if task.status == s %}selected{% endif %}>{{ s|label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="field">
+        <label>备注（可选）</label>
+        <input type="text" name="remark" style="width:100%">
+      </div>
+      <div class="field">
+        <label>关闭原因（CLOSED 时建议填）</label>
+        <input type="text" name="close_reason" style="width:100%">
+      </div>
+      <button type="submit">变更状态</button>
+    </form>
+
+    {% if versions %}
+    <h2 style="margin-top:18px;">版本历史</h2>
+    <table>
+      <thead><tr><th>版本</th><th>原因</th><th>发起人</th><th>时间</th></tr></thead>
+      <tbody>
+        {% for v in versions %}
+        <tr>
+          <td class="nowrap">v{{ v.version_no }}</td>
+          <td>{{ v.reason }}</td>
+          <td class="mono muted">{{ v.created_by }}</td>
+          <td class="mono muted nowrap">{{ v.created_at|localtime }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+  </div>
+</div>
+
+<div class="panel">
+  <div class="section-head"><h2>问题（{{ issues|length }}）</h2></div>
+  <form method="get" class="toolbar">
+    <label class="muted">问题状态</label><select name="issue_status"><option value="">全部</option>{% for s in issue_statuses %}<option value="{{ s }}" {% if filters.issue_status == s %}selected{% endif %}>{{ s|label }}</option>{% endfor %}</select>
+    <label class="muted">严重度</label><select name="severity"><option value="">全部</option>{% for v, name in severities %}<option value="{{ v }}" {% if filters.severity == v %}selected{% endif %}>{{ name }}</option>{% endfor %}</select>
+    <button type="submit">筛选</button><a class="btn btn-ghost" href="{{ url_for('task_detail', task_key=task.task_key) }}">重置</a>
+  </form>
+  {% if issues %}
+  <div class="table-scroll">
+  <table class="issue-table">
+    <thead>
+      <tr>
+        <th>问题</th>
+        <th>标题</th>
+        <th>维度</th>
+        <th>严重度</th>
+        <th>改造收益</th>
+        <th>改造成本</th>
+        <th>建议处置</th>
+        <th>置信度</th>
+        <th>状态</th>
+        <th>尝试</th>
+        <th>更新</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for i in issues %}
+      <tr>
+        <td class="mono"><a href="{{ url_for('issue_detail', issue_key=i.issue_key) }}">{{ i.issue_key }}</a></td>
+        <td><a href="{{ url_for('issue_detail', issue_key=i.issue_key) }}">{{ i.title }}</a></td>
+        <td class="muted nowrap">{{ i.dimension|label }}</td>
+        <td class="sev-{{ i.severity }} nowrap">{{ i.severity|label }}</td>
+        <td class="nowrap">{{ i.remediation_benefit|label }}</td>
+        <td class="nowrap">{{ i.remediation_cost|label }}</td>
+        <td class="nowrap">{{ i.disposition|label }}</td>
+        <td class="nowrap">{{ i.confidence|label }}</td>
+        <td><span class="badge badge-status-{{ i.status }}">{{ i.status|label }}</span></td>
+        <td class="nowrap">{{ i.current_attempt_no }}</td>
+        <td class="mono muted nowrap">{{ i.updated_at|localtime }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+    <div class="empty">该任务暂无问题。</div>
+  {% endif %}
+</div>
+{% endblock %}
