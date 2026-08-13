@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "DeepSeek 会话管理器",
+  "description": "在 chat.deepseek.com 增加批量选择、删除和导出历史会话功能。",
+  "version": "0.1.0",
+  "content_scripts": [
+    {
+      "matches": ["https://chat.deepseek.com/*"],
+      "js": ["content.js"],
+      "css": ["styles.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "host_permissions": ["https://chat.deepseek.com/*"]
+}
