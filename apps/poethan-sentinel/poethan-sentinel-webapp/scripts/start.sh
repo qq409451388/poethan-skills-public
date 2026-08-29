@@ -8,10 +8,15 @@ LOG_FILE="${DATA_ROOT}/controller.log"
 PORT="${POETHAN_SENTINEL_PORT:-8765}"
 URL="http://127.0.0.1:${PORT}"
 
-open_browser() {
-  if [[ "${POETHAN_SENTINEL_NO_OPEN:-0}" != "1" ]] && command -v open >/dev/null 2>&1; then
-    open "${URL}" >/dev/null 2>&1 || true
-  fi
+print_runtime_info() {
+  local state="$1"
+  local process_id="$2"
+  printf '%s\n' \
+    "Poethan Sentinel ${state}" \
+    "  地址：${URL}" \
+    "  PID：${process_id}" \
+    "  日志：${LOG_FILE}" \
+    "  停止：${ROOT}/scripts/stop.sh"
 }
 
 is_controller_process() {
@@ -62,8 +67,7 @@ fi
 EXISTING_PID="$(read_pid_file || true)"
 if [[ -n "${EXISTING_PID}" ]] && is_controller_process "${EXISTING_PID}"; then
   if is_ready; then
-    echo "Poethan Sentinel 已运行：${URL}（PID ${EXISTING_PID}）"
-    open_browser
+    print_runtime_info "已在后台运行" "${EXISTING_PID}"
     exit 0
   fi
   echo "Poethan Sentinel 进程存在但健康检查未通过（PID ${EXISTING_PID}，${URL}）" >&2
@@ -80,8 +84,7 @@ if [[ -n "${EXISTING_PID}" ]]; then
     echo "Poethan Sentinel 正在监听但健康检查未通过（PID ${EXISTING_PID}，${URL}）" >&2
     exit 1
   fi
-  echo "Poethan Sentinel 已运行：${URL}（PID ${EXISTING_PID}，已修复 PID 文件）"
-  open_browser
+  print_runtime_info "已在后台运行（已修复 PID 文件）" "${EXISTING_PID}"
   exit 0
 fi
 
@@ -100,8 +103,7 @@ printf '%s\n' "${PID}" > "${PID_FILE}"
 
 for ((attempt = 0; attempt < 50; attempt++)); do
   if is_controller_process "${PID}" && is_ready; then
-    echo "Poethan Sentinel 已启动：${URL}（PID ${PID}）"
-    open_browser
+    print_runtime_info "已启动并在后台运行" "${PID}"
     exit 0
   fi
   if ! kill -0 "${PID}" 2>/dev/null; then
