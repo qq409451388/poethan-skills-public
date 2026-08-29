@@ -157,7 +157,9 @@ fi
             sftp.chmod(f"{remote_run}/config.env", 0o600)
             sftp.close()
             result_path = f"{remote_run}/result.txt"
-            command = f"chmod +x {shlex.quote(remote_plugin + '/' + plugin.entrypoint)} && POETHAN_CONFIG_FILE={shlex.quote(remote_run + '/config.env')} {shlex.quote(remote_plugin + '/' + plugin.entrypoint)} {shlex.quote(mode)} > {shlex.quote(result_path)} 2>&1"
+            command = self._plugin_command(
+                remote_plugin, plugin.entrypoint, remote_run + "/config.env", mode, result_path,
+            )
             exit_code, control_output = self._stream_command(client, command, cancel, on_output, 64_000)
             output = self._download_result(client, result_path, output_limit)
             on_output(f"诊断结果已从服务器临时文件下载：{len(output.encode('utf-8'))} bytes")
@@ -171,6 +173,16 @@ fi
                 client.close()
                 if archive_path:
                     archive_path.unlink(missing_ok=True)
+
+    @staticmethod
+    def _plugin_command(remote_plugin: str, entrypoint: str, config_file: str, mode: str, result_path: str) -> str:
+        executable = shlex.quote(f"{remote_plugin}/{entrypoint}")
+        return f"""set -e
+if [ ! -x {executable} ]; then
+  chmod +x {executable} 2>/dev/null || sudo -n chmod +x {executable}
+fi
+POETHAN_CONFIG_FILE={shlex.quote(config_file)} {executable} {shlex.quote(mode)} > {shlex.quote(result_path)} 2>&1
+"""
 
     def _archive(self, root: Path) -> tuple[Path, str]:
         handle = tempfile.NamedTemporaryFile(prefix="poethan-plugin-", suffix=".tgz", delete=False)
