@@ -1,4 +1,4 @@
 interface:
   display_name: "代码检查"
   short_description: "按开发与审核职责边界管理代码检查和整改闭环。"
-  default_prompt: "进入代码检查模式，按当前 Agent 绑定的角色执行 Code Inspector 流程。"
+  default_prompt: "启动 Code Inspector 代码检查模式；若当前 Agent 配置多个角色，根据 dev 或 insp 参数选择并锁定会话角色。"

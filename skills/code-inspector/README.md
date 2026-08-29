@@ -9,11 +9,13 @@
 | 机器 Agent | 平台 | Code Inspector 角色 |
 | --- | --- | --- |
 | `codex-dev` | Codex | `developer`：分析、修改代码、提交设计和实现 |
+| `codex-insp` | Codex | `inspector`：创建任务和问题、验证修复、最终确认 |
 | `trae-inspector` | Trae-CN | `inspector`：创建任务和问题、验证修复、最终确认 |
+| `claude-inspector` | Claude | `inspector`：创建任务和问题、验证修复、最终确认 |
 
 `inspector` 同时承担验证职责，不使用独立 `verifier` Agent。
 
-同一个实际 Agent 可以承担多个角色，但每个角色必须配置不同 alias，以便权限校验和审计日志明确区分逻辑身份。同一平台、同一角色配置多个 alias 时，必须且只能有一个绑定设置 `"default": true`。
+同一个实际 Agent 可以承担多个角色，但每个角色必须配置不同 alias，以便权限校验和审计日志明确区分逻辑身份。同一平台、同一角色配置多个 alias 时，必须且只能有一个绑定设置 `"default": true`。角色的会话启动参数由 `session_selector` 配置；当前 `dev` 表示 developer，`insp` 表示 inspector。
 
 ## 安装
 
@@ -67,10 +69,17 @@ Code Inspector 默认不创建任务，也不写数据库。必须先在当前�
 或：
 
 ```text
-/code-inspector start
+$code-inspector start
 ```
 
-开启后，明确要求“开始审核”“创建审核任务”“处理审核问题”“提交实现”“验证修复”或“最终确认”时，才进入对应工作流。退出模式使用：
+当当前 Agent 只配置一个角色时，`start` 可以不带参数。配置多个角色时必须显式选择：
+
+```text
+$code-inspector start dev
+$code-inspector start insp
+```
+
+`/code-inspector` 形式也兼容。角色在启动时锁定，不会根据后续任务自动切换；需切换时先退出再重新启动。开启后，明确要求“开始审核”“创建审核任务”“处理审核问题”“提交实现”“验证修复”或“最终确认”时，才进入对应工作流。退出模式使用：
 
 ```text
 退出代码检查模式
@@ -79,7 +88,7 @@ Code Inspector 默认不创建任务，也不写数据库。必须先在当前�
 或：
 
 ```text
-/code-inspector stop
+$code-inspector stop
 ```
 
 完整触发规则见 [references/activation.yaml](references/activation.yaml)。

@@ -75,6 +75,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 "tools": {
                     "codex": {"enabled": True, "skills_dir": str(root / ".codex" / "skills")},
                     "trae-cn": {"enabled": True, "skills_dir": str(root / ".trae-cn" / "skills")},
+                    "claude": {"enabled": True, "skills_dir": str(root / ".claude" / "skills")},
                 }
             }
             INSTALLER_MODULE.ensure_dirs(review_home)
@@ -141,6 +142,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             self.assertTrue((home / ".agent-review" / "bin" / "review-db.py").is_file())
             bindings = json.loads((home / ".agent-review" / "config" / "agent-bindings.json").read_text())
             self.assertEqual(bindings["codex-dev"]["role"], "developer")
+            self.assertEqual(bindings["codex-insp"]["role"], "inspector")
             self.assertEqual(bindings["trae-inspector"]["role"], "inspector")
             self.assertTrue((home / ".agent-review" / "bin" / "review-db-trae-inspector.py").exists())
             wrapper_text = (
@@ -151,7 +153,13 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             codex_skill_text = (codex_skill / "SKILL.md").read_text(encoding="utf-8")
             trae_skill_text = (trae_skill / "SKILL.md").read_text(encoding="utf-8")
             self.assertIn(str(codex_skill / "tools" / "review-db-codex-dev.py"), codex_skill_text)
+            self.assertIn(str(codex_skill / "tools" / "review-db-codex-insp.py"), codex_skill_text)
             self.assertIn(str(trae_skill / "tools" / "review-db-trae-inspector.py"), trae_skill_text)
+            self.assertIn("$code-inspector start dev", codex_skill_text)
+            self.assertIn("$code-inspector start insp", codex_skill_text)
+            self.assertIn("缺少参数", codex_skill_text)
+            self.assertIn("当前平台仅配置 `inspector` 角色", trae_skill_text)
+            self.assertIn("$code-inspector start` 即可启动", trae_skill_text)
             self.assertIn('固定工具：`python "', codex_skill_text)
             self.assertNotIn("modify-business-code", codex_skill_text.split("可执行命令：", 1)[1].split("。", 1)[0])
             self.assertIn("短结论使用单行纯文本", codex_skill_text)

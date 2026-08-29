@@ -41,11 +41,18 @@ def load_skill_config(source: Path) -> dict[str, Any]:
     if not isinstance(config["agents"], list):
         raise ValueError("Skill 配置 agents 必须为通用工具名称数组")
     aliases: set[str] = set()
+    selectors: set[str] = set()
     grouped_bindings: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for role, assignments in config["bindings"].items():
         if role not in config["roles"]:
             raise ValueError(f"角色 {role} 缺少权限配置")
         policy = config["roles"][role]
+        selector = policy.get("session_selector")
+        if not isinstance(selector, str) or not selector.strip():
+            raise ValueError(f"角色 {role} 缺少有效的 session_selector")
+        if selector in selectors:
+            raise ValueError(f"角色会话 selector 必须唯一: {selector}")
+        selectors.add(selector)
         for key in ("commands", "responsibilities", "prohibited"):
             if not isinstance(policy.get(key), list):
                 raise ValueError(f"角色 {role} 的 {key} 必须为数组")
@@ -188,6 +195,34 @@ def create_skill_link(source: Path, target: Path, force: bool) -> None:
         print(f"[links] 无法创建软链接，已复制 {source} -> {target}: {exc}", file=sys.stderr)
 
 def generated_skill_text(platform: str, identities: list[dict[str, Any]], target: Path) -> str:
+    roles: dict[str, dict[str, Any]] = {}
+    for item in identities:
+        roles.setdefault(item["role"], item)
+
+    selector_pairs = [
+        (item["role_policy"]["session_selector"], role)
+        for role, item in roles.items()
+    ]
+    selector_summary = "、".join(f"`{selector}` = `{role}`" for selector, role in selector_pairs)
+    if len(roles) == 1:
+        selector, role = selector_pairs[0]
+        activation = (
+            f"当前平台仅配置 `{role}` 角色（selector: `{selector}`）。"
+            f"使用 `$code-inspector start` 即可启动，也可显式使用 `$code-inspector start {selector}`；"
+            "`/code-inspector` 形式同样兼容。"
+        )
+    else:
+        commands = " 或 ".join(f"`$code-inspector start {selector}`" for selector, _ in selector_pairs)
+        activation = (
+            f"当前平台配置了多个角色：{selector_summary}。必须使用 {commands} 显式选择；"
+            "`/code-inspector` 形式同样兼容。缺少参数、参数未知或角色未配置时，不得激活模式，"
+            "应要求用户从上述 selector 中选择。"
+        )
+    activation += (
+        "启动后将角色和逻辑身份锁定到当前模式，不得根据后续任务自动切换；切换前必须先退出。"
+        "同一角色存在多个逻辑身份时，使用标记为“默认身份”的入口。"
+    )
+
     rows = []
     for item in identities:
         role = item["role"]
@@ -215,13 +250,13 @@ def generated_skill_text(platform: str, identities: list[dict[str, Any]], target
 """
         default_label = "（默认身份）" if item.get("default") else ""
         rows.append(
-            f"## {item['alias']} · {role}{default_label}\n\n"
+            f"## {item['alias']} · {role} · {policy['session_selector']}{default_label}\n\n"
             f"固定工具：`{tool}`。该入口已经固化角色和逻辑身份，不要另传 `--agent` 或 `--operator-id`。\n\n"
             f"可执行命令：{', '.join(policy['commands'])}。\n\n"
             f"职责：{'；'.join(policy['responsibilities'])}。\n\n"
             f"禁止：{', '.join(policy['prohibited'])}。\n\n{workflow}"
         )
-    return "---\nname: code-inspector\ndescription: 已安装的 Code Inspector 角色 Skill。仅在用户明确开启代码检查模式后，按当前逻辑身份执行。\n---\n\n# Code Inspector\n\n当前平台：`" + platform + "`。只有用户说“进入代码检查模式”、“开启代码检查模式”或 `/code-inspector start` 后才使用本流程；退出规则见 `references/activation.yaml`。\n\n根据用户任务选择下列逻辑身份，不得越权。所有状态流转先以 `references/workflow.yaml` 为准；工具参数以 `references/tool-contracts.yaml` 为准；不得直接操作 SQLite。\n\n" + "\n\n".join(rows) + "\n\n需要审核等级时读取 `references/review-levels.yaml`；仅在用户要求导出时读取 `references/report-schema.yaml`。\n\n活动内容格式：短结论使用单行纯文本；多个说明可直接换行；只有代码、命令、真正的列表或复杂层级才使用 Markdown。以清晰可读为准，不为格式而格式。\n"
+    return "---\nname: code-inspector\ndescription: 已安装的 Code Inspector 角色 Skill。仅在用户明确开启代码检查模式后，按启动时选定的逻辑身份执行。\n---\n\n# Code Inspector\n\n当前平台：`" + platform + "`。仅在用户明确开启后使用本流程；完整规则见 `references/activation.yaml`。\n\n## 会话角色选择\n\n" + activation + "\n\n只使用启动时选定的下列逻辑身份，不得越权。所有状态流转先以 `references/workflow.yaml` 为准；工具参数以 `references/tool-contracts.yaml` 为准；不得直接操作 SQLite。\n\n" + "\n\n".join(rows) + "\n\n需要审核等级时读取 `references/review-levels.yaml`；仅在用户要求导出时读取 `references/report-schema.yaml`。\n\n活动内容格式：短结论使用单行纯文本；多个说明可直接换行；只有代码、命令、真正的列表或复杂层级才使用 Markdown。以清晰可读为准，不为格式而格式。\n"
 
 def install_generated_skill(source: Path, target: Path, platform: str, identities: list[dict[str, Any]], home: Path, force: bool) -> None:
     if target.is_symlink():

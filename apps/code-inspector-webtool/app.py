@@ -209,6 +209,11 @@ def task_list():
                            filters={"status": status, "project_name": project, "include_closed": include_closed})
 
 
+@app.get("/healthz")
+def healthcheck():
+    return {"status": "ok"}
+
+
 @app.route("/tasks/<task_key>")
 def task_detail(task_key: str):
     task = query_one("SELECT * FROM review_task WHERE task_key = ?", (task_key,))

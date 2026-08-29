@@ -1,15 +1,32 @@
-version: 1.0.0
+version: 1.1.0
 
 session_mode:
   default: inactive
-  start_phrases:
+  canonical_start_commands:
+    - $code-inspector start
+    - $code-inspector start <role-selector>
+  compatible_start_commands:
+    - /code-inspector start
+    - /code-inspector start <role-selector>
+  natural_start_phrases:
     - 进入代码检查模式
     - 开启代码检查模式
-    - /code-inspector start
   stop_phrases:
     - 退出代码检查模式
     - 关闭代码检查模式
+    - $code-inspector stop
     - /code-inspector stop
+  role_selection:
+    selector_source: 安装后 SKILL.md 中当前平台的“会话角色选择”
+    one_configured_role:
+      argument: optional
+      behavior: 未传参时使用当前平台唯一配置的角色；也接受该角色的显式 selector。
+    multiple_configured_roles:
+      argument: required
+      behavior: 未传 selector、selector 未知或 selector 对应角色未配置时，不激活模式，并要求用户在当前可用 selector 中明确选择。
+    natural_language: 多角色平台使用自然语言开启时也必须明确指定角色或 selector，否则不激活。
+    session_lock: 激活后将角色和逻辑身份固定到当前会话模式；后续任务不得触发自动切换。
+    switch_role: 先退出当前模式，再用新 selector 重新启动。
 
 task_creation:
   required: true

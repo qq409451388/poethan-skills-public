@@ -5,18 +5,24 @@
     "local_home": "${HOME}/.agent-review",
     "database": "${HOME}/.agent-review/data/review.db"
   },
-  "agents": ["codex", "trae-cn"],
+  "agents": ["codex", "trae-cn", "claude"],
   "bindings": {
     "developer": [{"agent": "codex", "alias": "codex-dev"}],
-    "inspector": [{"agent": "trae-cn", "alias": "trae-inspector"}]
+    "inspector": [
+      {"agent": "codex", "alias": "codex-insp"},
+      {"agent": "trae-cn", "alias": "trae-inspector"},
+      {"agent": "claude", "alias": "claude-inspector"}
+    ]
   },
   "roles": {
     "developer": {
+      "session_selector": "dev",
       "commands": ["task-list", "issue-list", "issue-list-pending-review", "issue-get", "activity-list", "activity-list-recent", "issue-update-status", "issue-update-status-batch", "implementation-submit", "activity-append", "candidate-submit", "candidate-list"],
       "responsibilities": ["修改业务代码", "提交设计和实现证据", "请求 inspector 确认边界", "提交新问题候选"],
       "prohibited": ["task-create", "version-create", "issue-create", "issue-update-assessment", "confirm-issue", "direct-sql"]
     },
     "inspector": {
+      "session_selector": "insp",
       "includes": ["verification"],
       "commands": ["task-create", "task-resolve", "task-list", "task-update", "task-update-status", "version-create", "issue-create", "issue-create-batch", "issue-list", "issue-list-pending-review", "issue-get", "issue-update-assessment", "issue-update-assessment-batch", "issue-update-body", "issue-update-status", "issue-update-status-batch", "activity-append", "activity-list", "activity-list-recent", "candidate-list", "candidate-update-status"],
       "responsibilities": ["创建和执行检查任务", "发现并记录问题", "审核 developer 提交的问题候选", "执行修复验证", "确认问题或要求重新设计", "回答开发端边界疑问"],
