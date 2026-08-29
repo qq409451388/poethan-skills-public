@@ -1,0 +1,14 @@
+.build/
+node_modules/
+dist/
+.venv/
+.npm-cache/
+.pytest_cache/
+.keys/
+.release/
+*.tsbuildinfo
+poethan-sentinel-webapp/frontend/vite.config.js
+poethan-sentinel-webapp/frontend/vite.config.d.ts
+.DS_Store
+__pycache__/
+*.pyc

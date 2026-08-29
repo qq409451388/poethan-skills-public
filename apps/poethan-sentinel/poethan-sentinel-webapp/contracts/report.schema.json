@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://poethan.dev/sentinel/report.schema.json",
+  "title": "Poethan Sentinel Diagnostic Report",
+  "type": "object",
+  "required": ["id", "server", "plugin", "status", "createdAt", "summary", "findings", "rawOutput"],
+  "properties": {
+    "id": {"type": "string"},
+    "server": {"type": "object"},
+    "plugin": {"type": "object"},
+    "status": {"enum": ["completed", "failed", "cancelled"]},
+    "createdAt": {"type": "string", "format": "date-time"},
+    "summary": {"type": "string"},
+    "findings": {"type": "array"},
+    "rawOutput": {"type": "string"},
+    "ai": {"type": ["object", "null"]},
+    "audit": {"type": "object"}
+  }
+}

@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Poethan Sentinel · 诊断工作台</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" id="sidebar" aria-label="主导航">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 40 40"><rect x="5" y="7" width="30" height="8" rx="3"/><rect x="5" y="17" width="30" height="8" rx="3"/><rect x="5" y="27" width="30" height="8" rx="3"/><path d="M10 11h9m-9 10h15m-15 10h12"/></svg>
+        </div>
+        <div><strong>Poethan Sentinel</strong><span>远程诊断工作台</span></div>
+      </div>
+      <button class="button primary add-server" data-modal="server-modal"><span>＋</span>新建服务器</button>
+      <nav class="sidebar-nav">
+        <p class="nav-heading">服务器</p>
+        <button class="nav-item active" data-page="server" data-server="Doris 生产机" data-address="doris · root@10.0.0.2:22"><i class="dot online"></i><span><b>Doris 生产机</b><small>doris · 10.0.0.2</small></span></button>
+        <button class="nav-item" data-page="server" data-server="交易服务测试机" data-address="trade · deploy@10.0.0.8:22"><i class="dot online"></i><span><b>交易服务测试机</b><small>trade · 10.0.0.8</small></span></button>
+        <button class="nav-item" data-page="server" data-server="归档节点" data-address="archive · ops@10.0.0.12:22"><i class="dot idle"></i><span><b>归档节点</b><small>archive · 未检测</small></span></button>
+        <p class="nav-heading tools-heading">工具</p>
+        <button class="nav-item compact" data-page="plugins"><span class="nav-icon">⬡</span><span><b>插件库</b><small>3 个可用 · 1 个需处理</small></span></button>
+        <button class="nav-item compact" data-page="reports"><span class="nav-icon">≡</span><span><b>历史报告</b><small>最近 7 天</small></span></button>
+      </nav>
+      <button class="nav-item compact settings-link" data-page="settings"><span class="nav-icon">⚙</span><span><b>设置</b><small>AI、插件目录与缓存</small></span></button>
+    </aside>
+
+    <main class="workspace">
+      <header class="topbar">
+        <button class="icon-button mobile-menu" id="mobile-menu" aria-label="打开导航">☰</button>
+        <div class="breadcrumb"><span>Poethan Sentinel</span><b id="page-title">Doris 生产机</b></div>
+        <div class="top-actions"><span class="connection-chip"><i></i>SSH 可用</span><button class="icon-button notification" aria-label="通知">◌<i></i></button></div>
+      </header>
+
+      <div class="pages">
+        <section class="page active" id="page-server">
+          <div class="page-content server-page">
+            <header class="page-heading server-heading"><div><span class="eyebrow">服务器概览</span><h1 id="server-name">Doris 生产机</h1><p class="address"><i class="dot online"></i><span id="server-address">doris · root@10.0.0.2:22</span></p></div><button class="button quiet">编辑服务器</button></header>
+            <section class="diagnostic-hero">
+              <div class="signal-bars" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+              <div><span class="eyebrow">准备就绪</span><h2>从一个明确的问题开始诊断</h2><p>选择一个插件，确认检查范围，然后由 Sentinel 完成远程执行、结果收集和报告生成。</p></div>
+              <button class="button primary large" id="start-diagnostic">开始新诊断 <span>→</span></button>
+            </section>
+            <div class="overview-grid">
+              <section class="panel recent-run">
+                <div class="panel-heading"><div><span class="eyebrow">最近一次诊断</span><h3>Doris 综合诊断</h3></div><span class="severity warning">2 项需要关注</span></div>
+                <p>BE 存在一个持续热线程；Flink CDC 作业最近一次状态为 FAILED。</p>
+                <div class="metadata"><div><span>完成时间</span><b>今天 14:20</b></div><div><span>运行模式</span><b>标准</b></div><div><span>耗时</span><b>38 秒</b></div><div><span>AI 分析</span><b>已完成</b></div></div>
+                <button class="text-button" data-report>查看完整报告 →</button>
+              </section>
+              <section class="panel server-health">
+                <div class="panel-heading"><div><span class="eyebrow">连接状态</span><h3>服务器可访问</h3></div><span class="status-symbol success">✓</span></div>
+                <div class="fact-list"><div><span>SSH 别名</span><b>doris</b></div><div><span>远程用户</span><b>root</b></div><div><span>最后测试</span><b>2 分钟前</b></div><div><span>响应时间</span><b>42 ms</b></div></div>
+                <button class="button quiet full" id="retest-server">重新测试连接</button>
+              </section>
+            </div>
+          </div>
+        </section>
+
+        <section class="page" id="page-diagnostic">
+          <header class="diagnostic-heading"><button class="back-button" id="leave-diagnostic">← 返回服务器</button><div><span class="eyebrow" id="diagnostic-server">Doris 生产机</span><h1>新建诊断</h1></div></header>
+          <div class="diagnostic-rail">
+            <div class="rail-track"><span id="rail-progress"></span><i id="rail-pulse"></i></div>
+            <button class="rail-step active" data-stage="select"><b>1</b><span>选择插件<small>明确诊断目标</small></span></button>
+            <button class="rail-step" data-stage="configure"><b>2</b><span>配置检查<small>确认范围与参数</small></span></button>
+            <button class="rail-step" data-stage="running"><b>3</b><span>远程执行<small>采集诊断事实</small></span></button>
+            <button class="rail-step" data-stage="result"><b>4</b><span>查看结果<small>结论、输出与 AI</small></span></button>
+          </div>
+          <div class="diagnostic-body">
+            <section class="stage active" id="stage-select">
+              <header class="stage-heading"><div><span class="eyebrow">步骤 1 / 4</span><h2>这次要检查什么？</h2><p>一次只运行一个插件，让配置、输出和报告保持清晰。</p></div><label class="search"><span>⌕</span><input id="plugin-search" placeholder="搜索插件"></label></header>
+              <div class="plugin-options" role="radiogroup">
+                <label class="plugin-option selected" data-plugin="doris"><input type="radio" name="plugin" value="doris" checked><i class="radio"></i><span class="plugin-mark">D</span><span><b>Doris 综合诊断</b><small>FE/BE、systemd、SQL、线程、日志与 Flink CDC</small><em>0.3.0 · Python · 3 种模式</em></span><strong>已配置</strong></label>
+                <label class="plugin-option" data-plugin="host"><input type="radio" name="plugin" value="host"><i class="radio"></i><span class="plugin-mark">H</span><span><b>主机性能诊断</b><small>CPU、内存、系统负载和高占用进程</small><em>1.0.0 · Python · 2 种模式</em></span><strong>已配置</strong></label>
+                <label class="plugin-option" data-plugin="network"><input type="radio" name="plugin" value="network"><i class="radio"></i><span class="plugin-mark">N</span><span><b>网络诊断</b><small>网卡吞吐、连接摘要和监听端口</small><em>1.0.0 · Python · 2 种模式</em></span><strong>默认配置</strong></label>
+              </div>
+              <footer class="stage-actions"><span></span><button class="button primary" id="to-configure">下一步：配置检查 →</button></footer>
+            </section>
+
+            <section class="stage" id="stage-configure">
+              <header class="stage-heading"><div><span class="eyebrow">步骤 2 / 4</span><h2>配置检查</h2><p>已读取这台服务器上次使用的配置。</p></div><div class="manifest-chip"><span class="plugin-mark small">D</span><span><b id="config-name">Doris 综合诊断</b><small id="config-version">plugin.yaml · 0.3.0</small></span></div></header>
+              <form id="diagnostic-form" class="configuration-form">
+                <section class="form-section"><header><b>检查范围</b><small>来自 plugin.yaml</small></header><div class="form-grid" id="plugin-fields"></div></section>
+                <section class="form-section"><header><b>报告增强</b><small>可选</small></header><div class="form-grid one-column">
+                  <label class="switch-row"><span><b>使用 AI 增强分析</b><small>DeepSeek · deepseek-v4-flash · 连接可用</small></span><input type="checkbox" id="ai-enabled" checked><i></i></label>
+                  <label class="switch-row"><span><b>记住这台服务器的配置</b><small>下次选择此插件时自动填入</small></span><input type="checkbox" checked><i></i></label>
+                </div></section>
+                <details class="execution-preview"><summary>查看实际执行信息</summary><div><code id="execution-command">/opt/poethan-sentinel/plugins/doris-diagnostic/0.3.0/run.sh standard</code><p>插件已安装，无需重新上传。配置将通过本次运行的临时文件传入。</p></div></details>
+              </form>
+              <footer class="stage-actions"><button class="button quiet" data-back="select">返回选择插件</button><button class="button primary" id="start-run">开始检查 →</button></footer>
+            </section>
+
+            <section class="stage" id="stage-running">
+              <header class="run-heading"><div class="orbit"><span></span><i></i></div><div><span class="eyebrow">步骤 3 / 4</span><h2 id="run-title">正在诊断 Doris 生产机</h2><p><b id="run-plugin">Doris 综合诊断</b> · <span id="run-mode-label">标准模式</span> · 已运行 <time id="run-timer">00:00</time></p></div><button class="button danger" id="stop-run">停止检查</button></header>
+              <div class="run-grid">
+                <ol class="run-steps" id="run-steps">
+                  <li class="current"><i></i><span><b>检查 SSH 连接</b><small>正在连接 doris</small></span><time>—</time></li>
+                  <li><i></i><span><b>确认插件版本</b><small>检查远程插件缓存</small></span><time>—</time></li>
+                  <li><i></i><span><b>执行诊断脚本</b><small>远程采集诊断事实</small></span><time>—</time></li>
+                  <li><i></i><span><b>下载检查结果</b><small>收集服务器临时结果</small></span><time>—</time></li>
+                  <li><i></i><span><b>生成诊断报告</b><small>整理 Schema、模板和 AI</small></span><time>—</time></li>
+                </ol>
+                <details class="live-output" open><summary><span>实时输出</span><small id="output-lines">3 行</small></summary><pre id="live-output">[14:32:04] Connecting to doris...&#10;[14:32:04] SSH handshake accepted&#10;[14:32:04] Remote host: VM-0-2-ubuntu</pre></details>
+              </div>
+            </section>
+
+            <section class="stage" id="stage-result">
+              <header class="result-heading"><span class="result-symbol warning">!</span><div><span class="eyebrow">诊断完成 · 用时 38 秒</span><h2 id="result-plugin">Doris 综合诊断</h2><p><span id="result-server">Doris 生产机</span> · <span id="result-mode">标准模式</span> · 2026-08-29 14:32</p></div><div><button class="button quiet" id="rerun">再次检查</button><button class="button primary">导出报告⌄</button></div></header>
+              <div class="result-summary"><div><span>严重</span><b class="danger-text">0</b></div><div><span>警告</span><b class="warning-text">2</b></div><div><span>正常</span><b class="success-text">9</b></div><div><span>采集区段</span><b>12</b></div></div>
+              <div class="tabs" role="tablist"><button class="active" data-tab="conclusion">诊断结论</button><button data-tab="raw">原始输出</button><button data-tab="ai">AI 分析 <i id="ai-status">生成中</i></button></div>
+              <div class="tab-panel active" id="tab-conclusion">
+                <article class="finding warning"><span>!</span><div><header><h3>BE 存在持续热线程</h3><i>警告</i></header><p>线程 <code>rs_normal / TID 17797</code> 连续 3 次采样的平均 CPU 为 98.4%。</p><aside><b>建议</b>结合当前查询和 perf 栈确认是否与 two-phase read 路径相关，再决定是否调整参数。</aside></div></article>
+                <article class="finding warning"><span>!</span><div><header><h3>Flink CDC 作业处于失败状态</h3><i>警告</i></header><p><code>trade-event-storage-to-doris</code> 当前状态为 FAILED，最近完成检查点仍可用。</p><aside><b>建议</b>先确认 Doris 后端恢复稳定，再从 chk-1890 恢复该作业。</aside></div></article>
+                <article class="finding success"><span>✓</span><div><header><h3>FE/BE 均由 systemd 正常托管</h3><i>正常</i></header><p>MainPID、实际 PID 和 cgroup 一致，最近 24 小时未发现重启循环。</p></div></article>
+              </div>
+              <div class="tab-panel" id="tab-raw"><div class="raw-toolbar"><label class="search"><span>⌕</span><input placeholder="搜索原始输出"></label><button class="button quiet" data-copy="raw-report">复制全部</button></div><pre class="raw-report" id="raw-report">===== SECTION: HOST =====&#10;hostname=VM-0-2-ubuntu&#10;cpu_cores=8&#10;memory_total_mb=31207&#10;load1=3.22&#10;&#10;===== SECTION: DORIS_PROCESS =====&#10;fe_main_pid=1111845&#10;fe_actual_pids=1111845&#10;fe_managed_by_systemd=true&#10;be_main_pid=1112895&#10;be_actual_pids=1112895&#10;be_managed_by_systemd=true&#10;&#10;===== SECTION: HOT_THREADS =====&#10;tid=17797&#10;name=rs_normal&#10;cpu_samples=98.2,99.1,97.8&#10;avg=98.4&#10;persistent_hot=true&#10;&#10;===== SECTION: FLINK =====&#10;job_name=trade-event-storage-to-doris&#10;job_state=FAILED&#10;latest_completed_checkpoint=chk-1890</pre></div>
+              <div class="tab-panel" id="tab-ai"><div class="ai-loading" id="ai-loading"><div class="ai-scanner"><i></i></div><h3>AI 正在关联诊断证据</h3><p>DeepSeek 正在分析热线程、Doris 参数、日志和 Flink 状态。</p></div><div class="ai-report" id="ai-report" hidden><header><span>AI</span><div><h3>问题可能由前台读取负载与 CDC 恢复压力叠加引起</h3><p>以下内容是基于诊断事实的推断，需要结合业务窗口确认。</p></div></header><ol><li><b>先恢复 Flink CDC 链路</b><span>确认 Doris BE 稳定后，从 chk-1890 恢复失败作业。</span></li><li><b>检查持续热线程对应查询</b><span>rs_normal 长时间满核，栈集中在 RowIdStorageReader。</span></li><li><b>在低峰期验证参数影响</b><span>先在测试环境验证 two-phase read 参数。</span></li></ol></div></div>
+            </section>
+          </div>
+        </section>
+
+        <section class="page" id="page-plugins">
+          <div class="page-content library-page">
+            <header class="page-heading"><div><span class="eyebrow">可扩展诊断能力</span><h1>插件库</h1><p>从外部目录读取清单；无效目录保留并显示具体原因。</p></div><div><button class="button quiet" id="rescan">重新扫描</button><button class="button primary" data-modal="plugin-modal">导入插件</button></div></header>
+            <div class="library-layout"><div class="library-list"><p>已安装 · 3</p><button class="library-item active" data-library="doris"><span class="plugin-mark">D</span><span><b>Doris 综合诊断</b><small>doris-diagnostic · 0.3.0</small></span><i class="valid">有效</i></button><button class="library-item" data-library="host"><span class="plugin-mark">H</span><span><b>主机性能诊断</b><small>host-performance · 1.0.0</small></span><i class="valid">有效</i></button><button class="library-item" data-library="network"><span class="plugin-mark">N</span><span><b>网络诊断</b><small>network-diagnostic · 1.0.0</small></span><i class="valid">有效</i></button><p class="error-label">需要处理 · 1</p><button class="library-item invalid" data-library="invalid"><span class="plugin-mark error">!</span><span><b>custom-check</b><small>手动放入 · 校验失败</small></span><i>失败</i></button></div><div class="library-detail" id="library-detail"></div></div>
+          </div>
+        </section>
+
+        <section class="page" id="page-reports">
+          <div class="page-content"><header class="page-heading"><div><span class="eyebrow">诊断记录</span><h1>历史报告</h1><p>按服务器和插件查找已完成的诊断。</p></div><label class="search"><span>⌕</span><input placeholder="搜索报告"></label></header><div class="report-list panel"><button class="report-row" data-report><span class="result-symbol warning small">!</span><span><b>Doris 综合诊断</b><small>Doris 生产机 · 今天 14:32</small></span><strong>2 项警告</strong><em>38 秒</em><i>查看 →</i></button><button class="report-row"><span class="result-symbol success small">✓</span><span><b>主机性能诊断</b><small>交易服务测试机 · 昨天 17:08</small></span><strong>全部正常</strong><em>12 秒</em><i>查看 →</i></button><button class="report-row"><span class="result-symbol warning small">!</span><span><b>网络诊断</b><small>Doris 生产机 · 8 月 27 日 10:21</small></span><strong>1 项警告</strong><em>16 秒</em><i>查看 →</i></button></div></div>
+        </section>
+
+        <section class="page" id="page-settings">
+          <div class="page-content settings-page"><header class="page-heading"><div><span class="eyebrow">应用设置</span><h1>设置</h1><p>管理插件来源、AI 接口和可重新生成的本机缓存。</p></div></header>
+            <section class="panel setting-card"><header><span>⬡</span><div><h3>插件目录</h3><p>扫描、导入和新建的插件统一放在这里。</p></div></header><label class="path-input"><b>目录</b><input value="~/Library/Application Support/Poethan Sentinel/plugins"><button>选择…</button></label><footer><button class="button quiet">打开目录</button><button class="button quiet">重新扫描</button><span class="inline-success">3 个有效，1 个失败</span></footer></section>
+            <section class="panel setting-card"><header><span>AI</span><div><h3>AI 增强分析</h3><p>兼容 OpenAI Chat Completions 接口。</p></div></header><div class="settings-form"><label><span>接口地址</span><input value="https://api.deepseek.com"></label><label><span>模型</span><input value="deepseek-v4-flash"></label><label><span>API Key</span><input type="password" value="saved-api-key"></label></div><footer><button class="button quiet" id="test-ai">测试连接</button><span class="inline-success" id="ai-test-result">上次测试成功</span></footer></section>
+            <section class="panel setting-card"><header><span>↺</span><div><h3>本机缓存</h3><p>诊断结果包、AI JSON 和生成的 HTML 报告。</p></div></header><div class="cache-row"><span><small>当前占用</small><b id="cache-size">38.4 MB</b></span><button class="button danger" id="clear-cache">清空缓存</button></div></section>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <div class="modal" id="server-modal" role="dialog" aria-modal="true"><div class="modal-card"><header><div><span class="eyebrow">服务器</span><h2>新建服务器</h2></div><button class="icon-button" data-close>×</button></header><form id="server-form"><label><span>服务器名称</span><input id="new-server-name" placeholder="例如：Doris 生产机" required></label><fieldset><legend>登录方式</legend><div class="segmented"><label><input type="radio" name="auth" value="alias" checked><span>SSH 别名</span></label><label><input type="radio" name="auth" value="key"><span>密钥登录</span></label><label><input type="radio" name="auth" value="password"><span>密码登录</span></label></div></fieldset><div id="auth-fields"></div><div class="connection-test" id="server-test"><span>先测试连接，确认当前配置可以登录服务器。</span><button type="button" class="button quiet" id="test-server">测试连接</button></div><footer><button type="button" class="button quiet" data-close>取消</button><button class="button primary" id="save-server" disabled>保存服务器</button></footer></form></div></div>
+  <div class="modal" id="plugin-modal" role="dialog" aria-modal="true"><div class="modal-card wide"><header><div><span class="eyebrow">插件库</span><h2>导入插件</h2></div><button class="icon-button" data-close>×</button></header><div class="dropzone" id="dropzone"><input type="file" id="plugin-folder" webkitdirectory multiple><span>⇩</span><h3>选择插件根目录</h3><p>目录中必须包含 plugin.yaml 和声明的入口文件。</p><label for="plugin-folder" class="button quiet">选择目录…</label><button class="text-button" id="invalid-demo">查看失败示例</button></div><div class="validation" id="validation" hidden></div><footer><button class="button quiet" data-close>取消</button><button class="button primary" id="confirm-import" disabled>导入插件</button></footer></div></div>
+  <div class="toast" id="toast" role="status"><span>✓</span><p></p></div>
+  <div class="scrim" id="scrim"></div>
+  <script src="app.js"></script>
+</body>
+</html>

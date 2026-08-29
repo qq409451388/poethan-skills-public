@@ -1,0 +1,89 @@
+{
+  "formatVersion": 1,
+  "plugin": {
+    "id": "doris-diagnostic",
+    "version": "0.3.0"
+  },
+  "publisher": {
+    "id": "poethan-official",
+    "keyId": "poethan-beta1-2026"
+  },
+  "files": [
+    {
+      "path": "plugin.yaml",
+      "sha256": "998f07320b5f3f609bfc87c8c7dad7bbad18ed5c97aa687046f8881813d26855"
+    },
+    {
+      "path": "report/report-schema.json",
+      "sha256": "a2b8f20dbb55cee4a91f61660dd99451607728dac9bd44714882b81d104fc33a"
+    },
+    {
+      "path": "report/report-template.html",
+      "sha256": "5c0ff4ed1d2d8833fa2c6bc3be0e629663a798d9c643f2c0005a00b60bc48c7a"
+    },
+    {
+      "path": "run.sh",
+      "sha256": "647703e16baca3952c951e500cffc61d346144293018f41d3f6bbb299bf87c83"
+    },
+    {
+      "path": "src/__init__.py",
+      "sha256": "21e664c80d9447fa4d70cada9c0c6589f935daa3cfdb509fb00dfa29d6713bbe"
+    },
+    {
+      "path": "src/checks/__init__.py",
+      "sha256": "76374ced2a6cd0bf1fca43f458695f2d880ef1f60ebf09b587f0375a8c580282"
+    },
+    {
+      "path": "src/checks/process_consistency.py",
+      "sha256": "134a54d8350c0c758965517a67bdc15e82b0f9c748f3a8d99b487e48b36cc8f3"
+    },
+    {
+      "path": "src/collectors/__init__.py",
+      "sha256": "8d8bde1efa83891e5a608198abc23f874fa7d4e35fcb5d846513c0f84e8975f0"
+    },
+    {
+      "path": "src/collectors/doris_sql.py",
+      "sha256": "bd82577d303f42a5480aeb7ae6c872087992f25c4a7c2f91dd79b4a913c36a35"
+    },
+    {
+      "path": "src/collectors/flink.py",
+      "sha256": "b0bb2b8f401d07877fb743388060010432d5a60fe7a4d79a5f29cef3079a52ab"
+    },
+    {
+      "path": "src/collectors/host.py",
+      "sha256": "a39624f7fccc0330e5a9c136ba614674253793fe9c859efed7f51485e2fa386f"
+    },
+    {
+      "path": "src/collectors/logs.py",
+      "sha256": "34809d3cd5461b2ff3379d880dcd734520b7ea64472c3ac585c1866c95f0ee84"
+    },
+    {
+      "path": "src/collectors/perf.py",
+      "sha256": "0745557d7b2533ad586be9579f3a55047ea5a9a4091545842eb9a33ae2b6775f"
+    },
+    {
+      "path": "src/collectors/process.py",
+      "sha256": "e1b1e8120ee0fb7f0786845fd77c735570f3019e6527756d22d4956d3771ddad"
+    },
+    {
+      "path": "src/collectors/resources.py",
+      "sha256": "f116b74b8e62d884e66918054ba78eb733b8308788b0bb9807e13603d625fa7a"
+    },
+    {
+      "path": "src/collectors/systemd.py",
+      "sha256": "7af7cecc32fa2d87429ef26f5733f234f9d9633a0f43a99879990a5625e94f62"
+    },
+    {
+      "path": "src/collectors/threads.py",
+      "sha256": "393526f4adba659957758c1f3752ba18cd182134b6c31de8b2f4128054a7dc59"
+    },
+    {
+      "path": "src/main.py",
+      "sha256": "840051fd07fa13eb3076ee0aab5fa59f54f45c97f22093ef6b8b334268e28c96"
+    },
+    {
+      "path": "src/util.py",
+      "sha256": "993344fdcd4c167ea93c83b74a5a2dbc1d409dfc20e198ff72e6fcc7f747ad33"
+    }
+  ]
+}

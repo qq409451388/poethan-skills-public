@@ -1,0 +1,19 @@
+{
+  "schemaVersion":1,
+  "id":"network-diagnostic",
+  "name":"网络占用",
+  "description":"采样 Linux 网卡吞吐、连接摘要和监听端口。",
+  "version":"1.0.0",
+  "entrypoint":"run.sh",
+  "language":"python",
+  "outputLimit":200000,
+  "publisher":{"id":"poethan-official","keyId":"poethan-beta1-2026"},
+  "permissions":{"sudo":false,"perf":false,"network":true,"readLogs":false,"databaseReadOnly":false},
+  "defaultMode":"standard",
+  "modes":[{"id":"quick","label":"快速 · Quick","help":"采样网卡吞吐。"},{"id":"standard","label":"标准 · Standard（推荐）","help":"增加连接摘要和监听端口。"}],
+  "configuration":{"fields":[
+    {"key":"POETHAN_PLUGIN_HOME","label":"服务器插件目录","type":"path","section":"插件运行","default":"/opt/poethan-sentinel/plugins","required":true},
+    {"key":"NETWORK_WARNING_MBPS","label":"单网卡吞吐告警 Mbps","type":"text","section":"检查阈值","default":"100","required":true},
+    {"key":"NETWORK_SAMPLE_SECONDS","label":"采样秒数","type":"integer","section":"采样","default":"2","required":true}
+  ]}
+}

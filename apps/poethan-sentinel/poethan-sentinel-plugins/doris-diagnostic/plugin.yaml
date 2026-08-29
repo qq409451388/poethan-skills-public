@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "id": "doris-diagnostic",
+  "name": "Doris 综合诊断",
+  "description": "检查 FE/BE 托管状态、Doris SQL、日志、持续热线程、perf 与 Flink CDC。",
+  "version": "0.3.0",
+  "entrypoint": "run.sh",
+  "language": "python",
+  "outputLimit": 1000000,
+  "publisher": {"id":"poethan-official","keyId":"poethan-beta1-2026"},
+  "permissions": {"sudo":true,"perf":true,"network":true,"readLogs":true,"databaseReadOnly":true},
+  "defaultMode": "standard",
+  "modes": [
+    {"id": "quick", "label": "快速 · Quick", "help": "只检查环境、服务和进程一致性。"},
+    {"id": "standard", "label": "标准 · Standard（推荐）", "help": "增加 SQL、日志、线程采样和 Flink 检查。"},
+    {"id": "deep", "label": "深度 · Deep", "help": "满足高 CPU 和持续热线程条件时运行 perf。"}
+  ],
+  "configuration": {
+    "fields": [
+      {"key":"POETHAN_PLUGIN_HOME","label":"服务器插件目录","type":"path","section":"插件运行","default":"/opt/poethan-sentinel/plugins","required":true,"help":"插件按 ID 和版本长期保存；版本未变化时不会重复上传。"},
+      {"key":"DORIS_HOST","label":"连接地址","type":"text","section":"Doris 连接","default":"127.0.0.1","required":true},
+      {"key":"DORIS_PORT","label":"查询端口","type":"integer","section":"Doris 连接","default":"9030","required":true},
+      {"key":"DORIS_USER","label":"管理用户","type":"text","section":"Doris 连接","default":"root","required":true},
+      {"key":"DORIS_PASSWORD","label":"数据库密码","type":"password","section":"Doris 连接","help":"仅保存在 Mac 钥匙串，单次运行时写入远程临时配置。"},
+      {"key":"DORIS_DATABASE","label":"业务数据库","type":"text","section":"Doris 连接","placeholder":"例如 trade_warehouse"},
+      {"key":"DORIS_HOME","label":"Doris 当前目录","type":"path","section":"Doris 服务","default":"/opt/doris/current","required":true},
+      {"key":"DORIS_FE_UNIT","label":"FE systemd 服务","type":"text","section":"Doris 服务","default":"doris-fe.service","required":true},
+      {"key":"DORIS_BE_UNIT","label":"BE systemd 服务","type":"text","section":"Doris 服务","default":"doris-be.service","required":true},
+      {"key":"DORIS_FE_LOG","label":"FE 日志路径","type":"path","section":"日志","placeholder":"留空则使用 Doris 当前目录推断"},
+      {"key":"DORIS_BE_LOG","label":"BE 日志路径","type":"path","section":"日志","placeholder":"留空则使用 Doris 当前目录推断"},
+      {"key":"FLINK_ENABLED","label":"联动检查 Flink","type":"boolean","section":"Flink CDC","default":"false"},
+      {"key":"FLINK_URL","label":"Flink REST 地址","type":"url","section":"Flink CDC","default":"http://127.0.0.1:8081"}
+    ]
+  },
+  "report": {
+    "schema": "report/report-schema.json",
+    "template": "report/report-template.html"
+  }
+}

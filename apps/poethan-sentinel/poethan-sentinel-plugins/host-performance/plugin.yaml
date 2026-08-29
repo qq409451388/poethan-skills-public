@@ -1,0 +1,19 @@
+{
+  "schemaVersion":1,
+  "id":"host-performance",
+  "name":"卡顿与资源",
+  "description":"采集 Linux 负载、CPU、内存和高占用进程。",
+  "version":"1.0.0",
+  "entrypoint":"run.sh",
+  "language":"python",
+  "outputLimit":200000,
+  "publisher":{"id":"poethan-official","keyId":"poethan-beta1-2026"},
+  "permissions":{"sudo":false,"perf":false,"network":false,"readLogs":false,"databaseReadOnly":false},
+  "defaultMode":"standard",
+  "modes":[{"id":"quick","label":"快速 · Quick","help":"采集基础负载和内存。"},{"id":"standard","label":"标准 · Standard（推荐）","help":"增加高占用进程和 vmstat 采样。"}],
+  "configuration":{"fields":[
+    {"key":"POETHAN_PLUGIN_HOME","label":"服务器插件目录","type":"path","section":"插件运行","default":"/opt/poethan-sentinel/plugins","required":true},
+    {"key":"LOAD_PER_CORE_WARNING","label":"每核负载告警阈值","type":"text","section":"检查阈值","default":"1.0","required":true},
+    {"key":"MEMORY_AVAILABLE_WARNING_PERCENT","label":"可用内存告警百分比","type":"integer","section":"检查阈值","default":"10","required":true}
+  ]}
+}

@@ -1,0 +1,25 @@
+{
+  "formatVersion": 1,
+  "plugin": {
+    "id": "host-performance",
+    "version": "1.0.0"
+  },
+  "publisher": {
+    "id": "poethan-official",
+    "keyId": "poethan-beta1-2026"
+  },
+  "files": [
+    {
+      "path": "main.py",
+      "sha256": "2fb40a751771656c33c1cfd0df7c044ae3b4b4946f7c10c145bbbaaea85542ea"
+    },
+    {
+      "path": "plugin.yaml",
+      "sha256": "c0fa4fc68e0da4f4a6f086c867423d0f1537ef6792ccf67196aeeb2e2f2e49c7"
+    },
+    {
+      "path": "run.sh",
+      "sha256": "3b9e8744323940589a503b5596f0874390c1452f95f9935e66a2292f2367683d"
+    }
+  ]
+}

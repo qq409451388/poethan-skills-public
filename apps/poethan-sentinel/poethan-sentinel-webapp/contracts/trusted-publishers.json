@@ -1,0 +1,13 @@
+{
+  "publishers": [
+    {
+      "id": "poethan-official",
+      "name": "Poethan Official Beta",
+      "keyId": "poethan-beta1-2026",
+      "algorithm": "Ed25519",
+      "publicKey": "k/bn41B/chUkDYMT0BYARzkyzbzv8ObbPUs2ZmfTBSU=",
+      "fingerprint": "SHA256:1e823f16fa8b9e797a3e734e91b7f6e5b61b7d15f2f82526e8e93e43859d8776",
+      "pluginScopes": ["doris-diagnostic", "host-performance", "network-diagnostic"]
+    }
+  ]
+}

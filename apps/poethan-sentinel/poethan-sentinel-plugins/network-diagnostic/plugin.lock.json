@@ -1,0 +1,25 @@
+{
+  "formatVersion": 1,
+  "plugin": {
+    "id": "network-diagnostic",
+    "version": "1.0.0"
+  },
+  "publisher": {
+    "id": "poethan-official",
+    "keyId": "poethan-beta1-2026"
+  },
+  "files": [
+    {
+      "path": "main.py",
+      "sha256": "37483c7d9f18a561410ae08acbc73e36fc7fe960326cfc0b6e2a01ebf60357e9"
+    },
+    {
+      "path": "plugin.yaml",
+      "sha256": "9a3ca7e61a3ab16bb7bfed4a63e38f0b8a9dbc96990628497a6e17d882f27493"
+    },
+    {
+      "path": "run.sh",
+      "sha256": "3b9e8744323940589a503b5596f0874390c1452f95f9935e66a2292f2367683d"
+    }
+  ]
+}
