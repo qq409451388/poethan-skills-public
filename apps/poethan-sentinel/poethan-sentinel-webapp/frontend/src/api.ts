@@ -46,7 +46,7 @@ export const api = {
   createServer: (value: ServerProfile) => request<ServerProfile>('/api/v1/servers', { method: 'POST', body: JSON.stringify(value) }),
   updateServer: (value: ServerProfile) => request<ServerProfile>(`/api/v1/servers/${value.id}`, { method: 'PUT', body: JSON.stringify(value) }),
   deleteServer: (id: string) => request<void>(`/api/v1/servers/${id}`, { method: 'DELETE' }),
-  testServer: (server: ServerProfile, acceptHostKey = false) => request<{ ok: boolean; message: string; latencyMs?: number; hostKeyRequired?: boolean; fingerprint?: string }>('/api/v1/servers/test', { method: 'POST', body: JSON.stringify({ server, acceptHostKey }) }),
+  testServer: (server: ServerProfile, acceptHostKey = false) => request<{ ok: boolean; message: string; latencyMs?: number; hostKeyRequired?: boolean; fingerprint?: string }>('/api/v1/servers/test', { method: 'POST', body: JSON.stringify({ server, acceptHostKey: acceptHostKey === true }) }),
   plugins: () => request<PluginScanResponse>('/api/v1/plugins'),
   rescanPlugins: () => request<PluginScanResponse>('/api/v1/plugins/rescan', { method: 'POST' }),
   openPluginDirectory: () => request<{ ok: boolean; directory: string }>('/api/v1/plugins/open-directory', { method: 'POST' }),
