@@ -1,3 +1,5 @@
+import time
+
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -25,6 +27,38 @@ def test_mutations_require_local_request_marker() -> None:
         assert response.status_code == 403
         response = web.post("/api/v1/plugins/rescan", headers={"X-Poethan-Request": "1"})
         assert response.status_code == 200
+
+
+def test_start_demo_run_from_http_route() -> None:
+    with client() as web:
+        plugins = web.get("/api/v1/plugins").json()["items"]
+        plugin = next(item["plugin"] for item in plugins if item["valid"])
+        response = web.post(
+            "/api/v1/runs",
+            headers={"X-Poethan-Request": "1"},
+            json={
+                "serverId": "demo-server",
+                "pluginId": plugin["id"],
+                "pluginVersion": plugin["version"],
+                "mode": plugin["defaultMode"],
+                "values": {},
+                "secrets": {},
+                "remember": False,
+                "aiEnabled": False,
+            },
+        )
+        assert response.status_code == 200
+
+        run_id = response.json()["id"]
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            run = web.get(f"/api/v1/runs/{run_id}").json()
+            if run["status"] in {"completed", "failed", "cancelled"}:
+                break
+            time.sleep(0.05)
+
+        assert run["status"] == "completed"
+        assert run["reportId"]
 
 
 def test_spa_is_served() -> None:

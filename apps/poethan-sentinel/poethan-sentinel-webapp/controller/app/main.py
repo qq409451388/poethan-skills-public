@@ -196,7 +196,7 @@ def get_run_config(server_id: str, plugin_id: str):
 
 
 @app.post("/api/v1/runs", dependencies=[Depends(require_mutation)])
-def start_run(payload: RunRequest):
+async def start_run(payload: RunRequest):
     server = next((item for item in store.servers() if item.id == payload.server_id), None)
     if not server:
         raise HTTPException(status_code=404, detail="服务器不存在")
