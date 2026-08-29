@@ -21,6 +21,9 @@ const emptyServer = (): ServerProfile => ({
 const formatDate = (value?: string) => value ? new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value)) : '—'
 const formatBytes = (bytes: number) => bytes < 1024 ? `${bytes} B` : bytes < 1024 ** 2 ? `${(bytes / 1024).toFixed(1)} KB` : `${(bytes / 1024 ** 2).toFixed(1)} MB`
 const pluginLetter = (plugin?: PluginPackage) => plugin?.name.slice(0, 1).toUpperCase() || '?'
+const toolTypeLabel = (plugin?: PluginPackage) => plugin?.toolType === 'local_script' ? '本机脚本' : plugin?.toolType === 'server_script' ? '服务器脚本' : '插件'
+export interface ScriptToolDraft { kind: 'local_script' | 'server_script'; name: string; description: string; runtime: 'bash' | 'python'; scriptPath: string }
+const emptyScriptTool = (kind: ScriptToolDraft['kind']): ScriptToolDraft => ({ kind, name: '', description: '', runtime: 'bash', scriptPath: '' })
 const serverTarget = (server?: ServerProfile) => {
   if (!server) return '—'
   if (server.authentication === 'demo') return '本机演示环境'
@@ -51,6 +54,8 @@ function App() {
   const [selectedPluginId, setSelectedPluginId] = useState('')
   const [libraryIndex, setLibraryIndex] = useState(0)
   const importRef = useRef<HTMLInputElement>(null)
+  const [scriptToolDraft, setScriptToolDraft] = useState<ScriptToolDraft | null>(null)
+  const [localScriptFile, setLocalScriptFile] = useState<File | null>(null)
 
   const [diagnosticStage, setDiagnosticStage] = useState<DiagnosticStage>('select')
   const [mode, setMode] = useState('standard')
@@ -215,9 +220,24 @@ function App() {
   const importPlugin = async (files: FileList | null) => {
     if (!files?.length) return
     setBusy('import')
-    try { const plugin = await api.importPlugin(files); showToast(`已导入 ${plugin.name} ${plugin.version}`); setPlugins(await api.rescanPlugins()); setSelectedPluginId(plugin.id) }
+    try { const plugin = await api.importPlugin(files); showToast(`已导入插件 ${plugin.name} ${plugin.version}`); const next = await api.rescanPlugins(); setPlugins(next); setSelectedPluginId(plugin.id); setLibraryIndex(Math.max(0, next.items.findIndex((item) => item.plugin?.id === plugin.id))) }
     catch (error) { showToast(`导入失败：${(error as Error).message}`) }
     finally { setBusy(''); if (importRef.current) importRef.current.value = '' }
+  }
+
+  const createScriptTool = async () => {
+    if (!scriptToolDraft?.name.trim()) { showToast('请填写工具名称'); return }
+    if (scriptToolDraft.kind === 'local_script' && !localScriptFile) { showToast('请选择本机脚本文件'); return }
+    if (scriptToolDraft.kind === 'server_script' && !scriptToolDraft.scriptPath.trim()) { showToast('请填写服务器脚本路径'); return }
+    setBusy('create-tool')
+    try {
+      const created = scriptToolDraft.kind === 'local_script'
+        ? await api.createLocalScriptTool({ name: scriptToolDraft.name, description: scriptToolDraft.description, runtime: scriptToolDraft.runtime, script: localScriptFile! })
+        : await api.createServerScriptTool({ name: scriptToolDraft.name, description: scriptToolDraft.description, runtime: scriptToolDraft.runtime, scriptPath: scriptToolDraft.scriptPath })
+      const next = await api.rescanPlugins()
+      setPlugins(next); setSelectedPluginId(created.id); setLibraryIndex(Math.max(0, next.items.findIndex((item) => item.plugin?.id === created.id)))
+      setScriptToolDraft(null); setLocalScriptFile(null); showToast(`已新增${toolTypeLabel(created)}“${created.name}”`)
+    } catch (error) { showToast(`新增失败：${(error as Error).message}`) } finally { setBusy('') }
   }
 
   const saveApplicationSettings = async () => {
@@ -244,14 +264,14 @@ function App() {
             onDelete={() => void deleteServer(server)}
           />)}
           <p className="nav-heading tools-heading">工具</p>
-          <button className={`nav-item compact ${page === 'plugins' ? 'active' : ''}`} onClick={() => navigate('plugins')}><span className="nav-icon">⬡</span><span><b>插件库</b><small>{plugins.validCount} 个可用{plugins.invalidCount ? ` · ${plugins.invalidCount} 个失败` : ''}</small></span></button>
+          <button className={`nav-item compact ${page === 'plugins' ? 'active' : ''}`} onClick={() => navigate('plugins')}><span className="nav-icon">⬡</span><span><b>诊断工具库</b><small>{plugins.validCount} 个可用{plugins.invalidCount ? ` · ${plugins.invalidCount} 个失败` : ''}</small></span></button>
           <button className={`nav-item compact ${page === 'reports' ? 'active' : ''}`} onClick={() => navigate('reports')}><span className="nav-icon">≡</span><span><b>历史报告</b><small>{reports.length} 份本机报告</small></span></button>
         </nav>
         <button className={`nav-item compact settings-link ${page === 'settings' ? 'active' : ''}`} onClick={() => navigate('settings')}><span className="nav-icon">⚙</span><span><b>设置</b><small>AI、插件目录与缓存</small></span></button>
       </aside>
 
       <main className="workspace">
-        <header className="topbar"><button className="icon-button mobile-menu" onClick={() => setMobileNav(true)}>☰</button><div className="breadcrumb"><span>Poethan Sentinel</span><b>{page === 'server' ? selectedServer?.name : page === 'diagnostic' ? '新建诊断' : page === 'plugins' ? '插件库' : page === 'reports' ? '历史报告' : '设置'}</b></div><div className="top-actions"><span className="connection-chip"><i/>本机控制器已连接</span></div></header>
+        <header className="topbar"><button className="icon-button mobile-menu" onClick={() => setMobileNav(true)}>☰</button><div className="breadcrumb"><span>Poethan Sentinel</span><b>{page === 'server' ? selectedServer?.name : page === 'diagnostic' ? '新建诊断' : page === 'plugins' ? '诊断工具库' : page === 'reports' ? '历史报告' : '设置'}</b></div><div className="top-actions"><span className="connection-chip"><i/>本机控制器已连接</span></div></header>
         <div className="pages">
           {page === 'server' && <ServerPage
             server={selectedServer} report={recentServerReport} busy={busy}
@@ -277,15 +297,11 @@ function App() {
             rawSearch={rawSearch} setRawSearch={setRawSearch} openReport={openReport}
             goServer={() => navigate('server')} showToast={showToast}
           />}
-          {page === 'plugins' && <PluginLibrary
+          {page === 'plugins' && <ToolLibrary
             scan={plugins} selectedIndex={libraryIndex} setSelectedIndex={setLibraryIndex}
-            onRescan={async () => {
-              setBusy('rescan')
-              try { setPlugins(await api.rescanPlugins()); showToast('插件扫描完成') }
-              catch (error) { showToast((error as Error).message) }
-              finally { setBusy('') }
-            }}
-            onImport={() => importRef.current?.click()} busy={busy}
+            onLocalScript={() => { setScriptToolDraft(emptyScriptTool('local_script')); setLocalScriptFile(null) }}
+            onServerScript={() => { setScriptToolDraft(emptyScriptTool('server_script')); setLocalScriptFile(null) }}
+            onImportPlugin={() => importRef.current?.click()} busy={busy}
           />}
           {page === 'reports' && <ReportsPage
             reports={reports}
@@ -321,6 +337,10 @@ function App() {
       connectionResult={connectionResult} close={() => setServerModal(false)}
       save={saveServer} test={testServer}
     />}
+    {scriptToolDraft && <ScriptToolModal
+      draft={scriptToolDraft} setDraft={setScriptToolDraft} file={localScriptFile} setFile={setLocalScriptFile}
+      saving={busy === 'create-tool'} close={() => { setScriptToolDraft(null); setLocalScriptFile(null) }} save={createScriptTool}
+    />}
     <input ref={importRef} className="visually-hidden" type="file" multiple {...({ webkitdirectory: '' } as React.InputHTMLAttributes<HTMLInputElement>)} onChange={(event) => void importPlugin(event.target.files)}/>
     <div className={`toast ${toast ? 'show' : ''}`}><span>✓</span><p>{toast}</p></div>
   </>
@@ -343,7 +363,7 @@ function ServerPage({ server, report, onStart, onEdit, onDelete, onOpenReport, o
     <header className="page-heading server-heading"><div><span className="eyebrow">服务器概览</span><h1>{server?.name || '尚未添加服务器'}</h1><p className="address"><i className="dot online"/><span>{serverTarget(server)}</span></p></div><div className="heading-actions"><button className="button quiet" onClick={onEdit}>编辑服务器</button>{server?.authentication !== 'demo' && <button className="button danger subtle" onClick={onDelete}>删除</button>}</div></header>
     <section className="diagnostic-hero"><div className="signal-bars">{Array.from({ length: 7 }, (_, i) => <i key={i}/>)}</div><div><span className="eyebrow">准备就绪</span><h2>从一个明确的问题开始诊断</h2><p>选择一个插件，确认检查范围，然后由 Sentinel 完成远程执行、结果收集和报告生成。</p></div><button className="button primary large" disabled={!server} onClick={onStart}>开始新诊断 <span>→</span></button></section>
     <div className="overview-grid"><section className="panel recent-run"><div className="panel-heading"><div><span className="eyebrow">最近一次诊断</span><h3>{report?.plugin.name || '暂无诊断记录'}</h3></div>{report && <span className={`severity ${issueCount ? 'warning' : 'success'}`}>{issueCount ? `${issueCount} 项需要关注` : '全部正常'}</span>}</div><p>{report?.summary || '完成一次检查后，结论和原始输出会保存在这里。'}</p>{report && <div className="metadata"><div><span>完成时间</span><b>{formatDate(report.createdAt)}</b></div><div><span>运行模式</span><b>{report.plugin.mode}</b></div><div><span>耗时</span><b>{report.durationSeconds.toFixed(1)} 秒</b></div><div><span>AI 分析</span><b>{report.ai?.status === 'completed' ? '已完成' : report.ai ? '失败' : '未启用'}</b></div></div>}{report && <button className="text-button" onClick={() => onOpenReport(report)}>查看完整报告 →</button>}</section>
-      <section className="panel server-health"><div className="panel-heading"><div><span className="eyebrow">连接配置</span><h3>{server?.authentication === 'demo' ? '演示模式可用' : '等待连接测试'}</h3></div><span className="status-symbol success">✓</span></div><div className="fact-list"><div><span>登录方式</span><b>{server?.authentication || '—'}</b></div><div><span>连接目标</span><b>{serverTarget(server)}</b></div><div><span>插件执行</span><b>远端版本缓存</b></div><div><span>主机密钥</span><b>严格校验</b></div></div><button className="button quiet full" disabled={!server || busy === 'test-server'} onClick={onTest}>{busy === 'test-server' ? '测试中…' : '测试连接'}</button></section></div>
+      <section className="panel server-health"><div className="panel-heading"><div><span className="eyebrow">连接配置</span><h3>{server?.authentication === 'demo' ? '演示模式可用' : '等待连接测试'}</h3></div><span className="status-symbol success">✓</span></div><div className="fact-list"><div><span>登录方式</span><b>{server?.authentication || '—'}</b></div><div><span>连接目标</span><b>{serverTarget(server)}</b></div><div><span>工具执行</span><b>远端版本缓存</b></div><div><span>主机密钥</span><b>严格校验</b></div></div><button className="button quiet full" disabled={!server || busy === 'test-server'} onClick={onTest}>{busy === 'test-server' ? '测试中…' : '测试连接'}</button></section></div>
   </div></section>
 }
 
@@ -369,7 +389,7 @@ export function DiagnosticPage(props: DiagnosticProps) {
     </div>
   </div></header>
     <div className="diagnostic-body">
-      {props.stage === 'select' && <section className="stage active"><header className="stage-heading stage-intro"><p>一次只运行一个插件，让配置、输出和报告保持清晰。</p><label className="search"><span>⌕</span><input value={props.pluginSearch} onChange={(e) => props.setPluginSearch(e.target.value)} placeholder="搜索插件"/></label></header><div className="plugin-options" role="radiogroup">{props.plugins.filter((plugin) => `${plugin.name}${plugin.description}${plugin.id}`.toLowerCase().includes(props.pluginSearch.toLowerCase())).map((plugin) => <label key={plugin.id} className={`plugin-option ${props.selectedPlugin?.id === plugin.id ? 'selected' : ''}`}><input type="radio" name="plugin" checked={props.selectedPlugin?.id === plugin.id} onChange={() => props.selectPlugin(plugin)}/><i className="radio"/><span className="plugin-mark">{pluginLetter(plugin)}</span><span><b>{plugin.name}</b><small>{plugin.description || '由 plugin.yaml 定义的诊断流程'}</small><em>{plugin.version} · {plugin.language} · {plugin.modes.length} 种模式</em></span><strong>{plugin.trust.status === 'trusted' ? '签名有效' : '开发模式'}</strong></label>)}</div>{!props.plugins.length && <Empty title="没有可用插件" text="请先到插件库导入并通过校验。"/>}</section>}
+      {props.stage === 'select' && <section className="stage active"><header className="stage-heading stage-intro"><p>一次只运行一个诊断工具，让配置、输出和报告保持清晰。</p><label className="search"><span>⌕</span><input value={props.pluginSearch} onChange={(e) => props.setPluginSearch(e.target.value)} placeholder="搜索诊断工具"/></label></header><div className="plugin-options" role="radiogroup">{props.plugins.filter((plugin) => `${plugin.name}${plugin.description}${plugin.id}${toolTypeLabel(plugin)}`.toLowerCase().includes(props.pluginSearch.toLowerCase())).map((plugin) => <label key={plugin.id} className={`plugin-option ${props.selectedPlugin?.id === plugin.id ? 'selected' : ''}`}><input type="radio" name="plugin" checked={props.selectedPlugin?.id === plugin.id} onChange={() => props.selectPlugin(plugin)}/><i className="radio"/><span className="plugin-mark">{pluginLetter(plugin)}</span><span><b>{plugin.name}</b><small>{plugin.description || '由工具清单定义的诊断流程'}</small><em>{toolTypeLabel(plugin)} · {plugin.version} · {plugin.language} · {plugin.modes.length} 种模式</em></span><strong>{plugin.trust.status === 'trusted' ? '签名有效' : plugin.trust.status === 'local' ? '本机创建' : '开发模式'}</strong></label>)}</div>{!props.plugins.length && <Empty title="没有可用诊断工具" text="请先到诊断工具库新增脚本或导入插件。"/>}</section>}
       {props.stage === 'configure' && props.selectedPlugin && (
         <ConfigureStage {...props}/>
       )}
@@ -425,15 +445,16 @@ function ResultStage(props: DiagnosticProps & { report: DiagnosticReport }) {
   </section>
 }
 
-function PluginLibrary({ scan, selectedIndex, setSelectedIndex, onRescan, onImport, busy }: { scan: PluginScanResponse; selectedIndex: number; setSelectedIndex: (value: number) => void; onRescan: () => void; onImport: () => void; busy: string }) {
+export function ToolLibrary({ scan, selectedIndex, setSelectedIndex, onLocalScript, onServerScript, onImportPlugin, busy }: { scan: PluginScanResponse; selectedIndex: number; setSelectedIndex: (value: number) => void; onLocalScript: () => void; onServerScript: () => void; onImportPlugin: () => void; busy: string }) {
   const item = scan.items[selectedIndex] || scan.items[0]
-  return <section className="page active"><div className="page-content library-page"><header className="page-heading"><div><span className="eyebrow">可扩展诊断能力</span><h1>插件库</h1><p>插件来自外部目录；无效目录会保留并显示具体校验原因。</p></div><div><button className="button quiet" disabled={busy === 'rescan'} onClick={onRescan}>{busy === 'rescan' ? '扫描中…' : '重新扫描'}</button><button className="button primary" disabled={busy === 'import'} onClick={onImport}>{busy === 'import' ? '导入中…' : '导入插件目录'}</button></div></header><div className="library-layout"><div className="library-list"><p>扫描结果 · {scan.items.length}</p>{scan.items.map((entry, index) => <button key={entry.directory} className={`library-item ${index === selectedIndex ? 'active' : ''} ${entry.valid ? '' : 'invalid'}`} onClick={() => setSelectedIndex(index)}><span className={`plugin-mark ${entry.valid ? '' : 'error'}`}>{entry.valid ? pluginLetter(entry.plugin) : '!'}</span><span><b>{entry.plugin?.name || entry.directory.split('/').at(-1)}</b><small>{entry.plugin ? `${entry.plugin.id} · ${entry.plugin.version}` : '插件校验失败'}</small></span><i className={entry.valid ? 'valid' : ''}>{entry.valid ? '有效' : '失败'}</i></button>)}</div><div className="library-detail">{item ? <PluginDetail item={item}/> : <Empty title="插件目录为空" text="点击“导入插件目录”，或将插件包放入设置中的插件目录。"/>}</div></div></div></section>
+  const closeMenu = (event: React.MouseEvent<HTMLButtonElement>, action: () => void) => { event.currentTarget.closest('details')?.removeAttribute('open'); action() }
+  return <section className="page active"><div className="page-content library-page"><header className="page-heading"><div><span className="eyebrow">可扩展诊断能力</span><h1>诊断工具库</h1><p>统一管理本机脚本、服务器已有脚本和完整插件包。</p></div><details className="tool-add-menu"><summary className="button primary">＋ 新增工具</summary><div className="tool-add-popover"><button onClick={(event) => closeMenu(event, onLocalScript)}><span>⌘</span><b>本机脚本</b><small>选择 Mac 上的 Bash 或 Python 文件</small></button><button onClick={(event) => closeMenu(event, onServerScript)}><span>⌁</span><b>服务器脚本</b><small>登记目标服务器上已有的绝对路径</small></button><button disabled={busy === 'import'} onClick={(event) => closeMenu(event, onImportPlugin)}><span>⬡</span><b>插件</b><small>导入包含 plugin.yaml 的完整目录</small></button></div></details></header><div className="library-layout"><div className="library-list"><p>诊断工具 · {scan.items.length}</p>{scan.items.map((entry, index) => <button key={entry.directory} className={`library-item ${index === selectedIndex ? 'active' : ''} ${entry.valid ? '' : 'invalid'}`} onClick={() => setSelectedIndex(index)}><span className={`plugin-mark ${entry.valid ? '' : 'error'}`}>{entry.valid ? pluginLetter(entry.plugin) : '!'}</span><span><b>{entry.plugin?.name || entry.directory.split('/').at(-1)}</b><small>{entry.plugin ? `${entry.plugin.id} · ${entry.plugin.version}` : '工具校验失败'}</small></span><em className={`tool-type ${entry.plugin?.toolType || 'invalid'}`}>{entry.valid ? toolTypeLabel(entry.plugin) : '失败'}</em></button>)}</div><div className="library-detail">{item ? <ToolDetail item={item}/> : <Empty title="诊断工具库为空" text="点击“新增工具”，添加本机脚本、服务器脚本或插件。"/>}</div></div></div></section>
 }
 
-function PluginDetail({ item }: { item: PluginScanItem }) {
-  if (!item.valid || !item.plugin) return <><span className="eyebrow">校验失败</span><h2>{item.directory.split('/').at(-1)}</h2><div className="validation-error"><b>该目录不会出现在诊断插件选择中</b>{item.errors.map((error) => <p key={error}>{error}</p>)}</div><dl className="plugin-facts"><div><dt>目录</dt><dd>{item.directory}</dd></div></dl></>
+function ToolDetail({ item }: { item: PluginScanItem }) {
+  if (!item.valid || !item.plugin) return <><span className="eyebrow">校验失败</span><h2>{item.directory.split('/').at(-1)}</h2><div className="validation-error"><b>该目录不会出现在诊断工具选择中</b>{item.errors.map((error) => <p key={error}>{error}</p>)}</div><dl className="plugin-facts"><div><dt>目录</dt><dd>{item.directory}</dd></div></dl></>
   const plugin = item.plugin
-  return <><span className="eyebrow">插件详情</span><h2>{plugin.name}</h2><p>{plugin.description || '该插件未填写说明。'}</p><div className={`trust-banner ${plugin.trust.status}`}><b>{plugin.trust.status === 'trusted' ? '✓ 数字签名有效' : '⚠ 开发者模式插件'}</b><span>{plugin.trust.message}</span></div><dl className="plugin-facts"><div><dt>插件 ID</dt><dd>{plugin.id}</dd></div><div><dt>版本</dt><dd>{plugin.version}</dd></div><div><dt>入口</dt><dd>{plugin.entrypoint}</dd></div><div><dt>运行环境</dt><dd>{plugin.language}</dd></div><div><dt>发布者</dt><dd>{plugin.trust.publisherId || '未签名'}</dd></div><div><dt>配置字段</dt><dd>{plugin.fields.length} 个</dd></div><div><dt>报告模板</dt><dd>{plugin.report ? 'Schema + HTML' : '使用应用默认模板'}</dd></div><div><dt>目录</dt><dd>{plugin.directory}</dd></div></dl><h3 className="detail-heading">运行模式</h3><div className="mode-list">{plugin.modes.map((mode) => <div key={mode.id}><b>{mode.label}</b><small>{mode.help}</small></div>)}</div></>
+  return <><span className="eyebrow">工具详情</span><h2>{plugin.name}</h2><p>{plugin.description || '该工具未填写说明。'}</p><div className={`trust-banner ${plugin.trust.status}`}><b>{plugin.trust.status === 'trusted' ? '✓ 插件数字签名有效' : plugin.trust.status === 'local' ? `✓ ${toolTypeLabel(plugin)}由本机管理` : '⚠ 开发者模式插件'}</b><span>{plugin.trust.message}</span></div><dl className="plugin-facts"><div><dt>工具类型</dt><dd>{toolTypeLabel(plugin)}</dd></div><div><dt>工具 ID</dt><dd>{plugin.id}</dd></div><div><dt>版本</dt><dd>{plugin.version}</dd></div><div><dt>入口</dt><dd>{plugin.entrypoint}</dd></div><div><dt>运行环境</dt><dd>{plugin.language}</dd></div><div><dt>发布者</dt><dd>{plugin.toolType === 'plugin' ? plugin.trust.publisherId || '未签名' : '当前 Mac'}</dd></div><div><dt>配置字段</dt><dd>{plugin.fields.length} 个</dd></div><div><dt>报告模板</dt><dd>{plugin.report ? 'Schema + HTML' : '使用应用默认模板'}</dd></div><div><dt>目录</dt><dd>{plugin.directory}</dd></div></dl><h3 className="detail-heading">运行模式</h3><div className="mode-list">{plugin.modes.map((mode) => <div key={mode.id}><b>{mode.label}</b><small>{mode.help}</small></div>)}</div></>
 }
 
 function ReportsPage({ reports, openReport }: { reports: DiagnosticReport[]; openReport: (report: DiagnosticReport) => void }) {
@@ -446,7 +467,7 @@ function SettingsPage({ settings, setSettings, scan, cacheBytes, cacheRoot, save
   const [key, setKey] = useState('')
   const [aiTestResult, setAiTestResult] = useState('')
   return <section className="page active"><div className="page-content settings-page"><header className="page-heading"><div><span className="eyebrow">应用设置</span><h1>设置</h1><p>管理插件来源、AI 接口和可重新生成的本机缓存。</p></div><button className="button primary" disabled={busy === 'settings'} onClick={save}>{busy === 'settings' ? '保存中…' : '保存设置'}</button></header>
-    <section className="panel setting-card"><header><span>⬡</span><div><h3>插件目录</h3><p>扫描、导入和手动放入的插件统一从这里读取。</p></div></header><label className="path-input"><b>目录</b><input value={settings.pluginDirectory} onChange={(e) => setSettings({ ...settings, pluginDirectory: e.target.value })}/><button onClick={() => navigator.clipboard.writeText(settings.pluginDirectory).then(() => showToast('插件目录已复制'))}>复制</button></label><div className="setting-switches"><label className="switch-row"><span><b>开发者模式</b><small>允许本机调试未签名插件；公开使用时建议关闭</small></span><input type="checkbox" checked={settings.developerMode} onChange={(e) => setSettings({ ...settings, developerMode: e.target.checked })}/><i/></label><label className="switch-row"><span><b>演示模式</b><small>保留不连接真实服务器的演示工作流</small></span><input type="checkbox" checked={settings.demoMode} onChange={(e) => setSettings({ ...settings, demoMode: e.target.checked })}/><i/></label></div><footer><button className="button quiet" onClick={() => api.openPluginDirectory().then(() => showToast('已打开插件目录')).catch((error: Error) => showToast(error.message))}>打开插件目录</button><button className="button quiet" onClick={async () => { await rescan(); showToast('插件扫描完成') }}>重新扫描</button><span className={scan.invalidCount ? 'inline-warning' : 'inline-success'}>{scan.validCount} 个有效，{scan.invalidCount} 个失败</span></footer></section>
+    <section className="panel setting-card"><header><span>⬡</span><div><h3>诊断工具目录</h3><p>本机脚本、服务器脚本配置和手动放入的插件统一从这里读取。</p></div></header><label className="path-input"><b>目录</b><input value={settings.pluginDirectory} onChange={(e) => setSettings({ ...settings, pluginDirectory: e.target.value })}/><button onClick={() => navigator.clipboard.writeText(settings.pluginDirectory).then(() => showToast('工具目录已复制'))}>复制</button></label><div className="setting-switches"><label className="switch-row"><span><b>开发者模式</b><small>允许本机调试未签名插件；公开使用时建议关闭</small></span><input type="checkbox" checked={settings.developerMode} onChange={(e) => setSettings({ ...settings, developerMode: e.target.checked })}/><i/></label><label className="switch-row"><span><b>演示模式</b><small>保留不连接真实服务器的演示工作流</small></span><input type="checkbox" checked={settings.demoMode} onChange={(e) => setSettings({ ...settings, demoMode: e.target.checked })}/><i/></label></div><footer><button className="button quiet" onClick={() => api.openPluginDirectory().then(() => showToast('已打开诊断工具目录')).catch((error: Error) => showToast(error.message))}>打开工具目录</button><button className="button quiet" onClick={async () => { await rescan(); showToast('诊断工具库扫描完成') }}>重新扫描工具库</button><span className={scan.invalidCount ? 'inline-warning' : 'inline-success'}>{scan.validCount} 个有效，{scan.invalidCount} 个失败</span></footer></section>
     <section className="panel setting-card"><header><span>AI</span><div><h3>AI 增强分析</h3><p>兼容 OpenAI Chat Completions / Responses 接口，DeepSeek 可直接使用。</p></div></header><div className="settings-form"><label><span>接口地址</span><input value={settings.ai.endpoint} onChange={(e) => setSettings({ ...settings, ai: { ...settings.ai, endpoint: e.target.value } })}/></label><label><span>模型</span><input value={settings.ai.model} onChange={(e) => setSettings({ ...settings, ai: { ...settings.ai, model: e.target.value } })}/></label><label><span>API Key</span><input type="password" value={key} onChange={(e) => { setKey(e.target.value); setSettings({ ...settings, aiApiKey: e.target.value }) }} placeholder={settings.ai.configured ? '已安全保存；留空不修改' : 'sk-…'}/></label></div>{aiTestResult && <details className="ai-raw-response" open><summary>AI 原始响应</summary><pre>{aiTestResult}</pre></details>}<footer><button className="button quiet" disabled={busy === 'ai-test'} onClick={() => { setAiTestResult('等待模型回复…'); testAI(key).then((result) => setAiTestResult(result.rawResponse || JSON.stringify(result, null, 2))).catch((error: Error) => setAiTestResult(error.message)) }}>{busy === 'ai-test' ? '测试中…' : '保存前测试连接'}</button><span className={settings.ai.configured ? 'inline-success' : 'inline-warning'}>{settings.ai.configured ? '已配置' : '尚未配置'}</span></footer></section>
     <section className="panel setting-card"><header><span>↺</span><div><h3>本机缓存</h3><p>诊断结果、AI JSON 和生成的 HTML 报告；服务器与插件配置不会清除。</p></div></header><div className="cache-row"><span><small>当前占用</small><b>{formatBytes(cacheBytes)}</b><em>{cacheRoot}</em></span><button className="button danger" onClick={clearCache}>清空缓存</button></div></section>
   </div></section>
@@ -455,6 +476,12 @@ function SettingsPage({ settings, setSettings, scan, cacheBytes, cacheRoot, save
 export function ServerModal({ draft, setDraft, saving, connectionResult, close, save, test }: { draft: ServerProfile; setDraft: (value: ServerProfile) => void; saving: boolean; connectionResult: string; close: () => void; save: () => void; test: () => void }) {
   const update = (key: keyof ServerProfile, value: string | number) => setDraft({ ...draft, [key]: value })
   return <div className="modal open" role="dialog" aria-modal="true"><div className="modal-card"><header><div><span className="eyebrow">服务器</span><h2>{draft.name ? '编辑服务器' : '新建服务器'}</h2></div><button className="icon-button" onClick={close}>×</button></header><form onSubmit={(e) => { e.preventDefault(); save() }}><label><span>服务器名称</span><input value={draft.name} onChange={(e) => update('name', e.target.value)} placeholder="例如：Doris 生产机" required/></label><fieldset><legend>登录方式</legend><div className="segmented">{([['alias','SSH 别名'],['key','密钥'],['password','密码']] as const).map(([value, label]) => <label key={value}><input type="radio" name="auth" checked={draft.authentication === value} onChange={() => update('authentication', value)}/><span>{label}</span></label>)}</div></fieldset>{draft.authentication === 'alias' ? <label><span>SSH 别名</span><input value={draft.alias} onChange={(e) => update('alias', e.target.value)} placeholder="例如：doris" required/></label> : <><div className="modal-grid"><label><span>服务器域名或 IP</span><input value={draft.host} onChange={(e) => update('host', e.target.value)} required/></label><label><span>端口</span><input type="number" value={draft.port} onChange={(e) => update('port', Number(e.target.value))}/></label></div><label><span>用户名</span><input value={draft.user} onChange={(e) => update('user', e.target.value)} required/></label>{draft.authentication === 'key' ? <label><span>私钥路径</span><input value={draft.identityFile} onChange={(e) => update('identityFile', e.target.value)} placeholder="~/.ssh/id_ed25519"/></label> : <label><span>密码</span><input type="password" value={draft.password || ''} onChange={(e) => update('password', e.target.value)} placeholder="保存在系统钥匙串"/></label>}</>}<p className={`connection-result ${connectionResult.includes('成功') ? 'success-text' : ''}`}>{connectionResult}</p></form><footer><button className="button quiet" onClick={() => test()}>测试连接</button><span/><button className="button quiet" onClick={close}>取消</button><button className="button primary" disabled={saving} onClick={save}>{saving ? '保存中…' : '保存'}</button></footer></div></div>
+}
+
+export function ScriptToolModal({ draft, setDraft, file, setFile, saving, close, save }: { draft: ScriptToolDraft; setDraft: (value: ScriptToolDraft) => void; file: File | null; setFile: (value: File | null) => void; saving: boolean; close: () => void; save: () => void }) {
+  const update = <K extends keyof ScriptToolDraft>(key: K, value: ScriptToolDraft[K]) => setDraft({ ...draft, [key]: value })
+  const local = draft.kind === 'local_script'
+  return <div className="modal open" role="dialog" aria-modal="true"><div className="modal-card"><header><div><span className="eyebrow">新增诊断工具</span><h2>{local ? '本机脚本' : '服务器脚本'}</h2></div><button className="icon-button" aria-label="关闭" onClick={close}>×</button></header><form onSubmit={(event) => { event.preventDefault(); save() }}><label><span>工具名称</span><input value={draft.name} onChange={(event) => update('name', event.target.value)} placeholder={local ? '例如：自定义网络采样' : '例如：线上巡检脚本'} required/></label><label><span>说明</span><input value={draft.description} onChange={(event) => update('description', event.target.value)} placeholder="这个工具检查什么，可选"/></label><fieldset><legend>运行环境</legend><div className="segmented runtime-segmented">{([['bash','Bash'],['python','Python 3']] as const).map(([value, label]) => <label key={value}><input type="radio" name="runtime" checked={draft.runtime === value} onChange={() => update('runtime', value)}/><span>{label}</span></label>)}</div></fieldset>{local ? <label><span>脚本文件</span><input className="file-input" type="file" accept=".sh,.bash,.py,text/x-shellscript,text/x-python" onChange={(event) => { const selected = event.target.files?.[0] || null; setFile(selected); if (selected) setDraft({ ...draft, name: draft.name || selected.name.replace(/\.[^.]+$/, ''), runtime: selected.name.toLowerCase().endsWith('.py') ? 'python' : 'bash' }) }}/><small>{file ? `已选择：${file.name}` : '支持单个 .sh 或 .py 文件，最多 10 MB'}</small></label> : <label><span>服务器脚本绝对路径</span><input value={draft.scriptPath} onChange={(event) => update('scriptPath', event.target.value)} placeholder={draft.runtime === 'python' ? '/opt/diagnostics/check.py' : '/opt/diagnostics/check.sh'} required/><small>保存后仍可在每台服务器的检查配置中覆盖。</small></label>}<div className="tool-scope-note"><b>{local ? '运行方式' : '不会上传脚本'}</b><span>{local ? 'Sentinel 会把脚本版本化缓存到目标服务器，再收集输出生成报告。' : 'Sentinel 只上传轻量执行包装器，并调用服务器上已有路径。'}</span></div></form><footer><button className="button quiet" onClick={close}>取消</button><button className="button primary" disabled={saving} onClick={save}>{saving ? '正在新增…' : '新增工具'}</button></footer></div></div>
 }
 
 function Empty({ title, text }: { title: string; text: string }) { return <div className="empty-state"><span>◇</span><h3>{title}</h3><p>{text}</p></div> }

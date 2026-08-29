@@ -19,7 +19,7 @@ from . import config
 from .ai import AI_KEY_ACCOUNT, test_ai
 from .models import (
     AIConnectionInput, AISettings, ApplicationSettings, ConnectionTestInput, RunRequest,
-    ServerInput, ServerProfile, SettingsInput,
+    ServerInput, ServerProfile, ServerScriptToolInput, SettingsInput,
 )
 from .plugins import plugin_service
 from .reports import plugin_report_html, report_html
@@ -27,6 +27,7 @@ from .runs import run_manager
 from .secrets import secrets, server_password_account
 from .ssh import ssh_service
 from .storage import store
+from .tools import diagnostic_tool_service
 
 
 SESSION_TOKEN = random_secrets.token_urlsafe(32)
@@ -188,6 +189,30 @@ async def import_plugin(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     finally:
         shutil.rmtree(temporary, ignore_errors=True)
+
+
+@app.post("/api/v1/tools/local-script", dependencies=[Depends(require_mutation)])
+async def create_local_script_tool(
+    script: Annotated[UploadFile, File()],
+    name: Annotated[str, Form()],
+    description: Annotated[str, Form()] = "",
+    runtime: Annotated[str, Form()] = "bash",
+):
+    try:
+        content = await script.read()
+        return diagnostic_tool_service.create_local_script(
+            store.settings(), name, description, runtime, script.filename or "script", content,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/v1/tools/server-script", dependencies=[Depends(require_mutation)])
+def create_server_script_tool(payload: ServerScriptToolInput):
+    try:
+        return diagnostic_tool_service.create_server_script(store.settings(), payload)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/api/v1/run-configs/{server_id}/{plugin_id}", dependencies=[Depends(require_session)])

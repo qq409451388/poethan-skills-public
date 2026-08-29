@@ -84,7 +84,7 @@ class AIConnectionInput(APIModel):
 
 
 class PluginTrust(APIModel):
-    status: Literal["trusted", "unsigned", "untrusted", "invalid"]
+    status: Literal["trusted", "local", "unsigned", "untrusted", "invalid"]
     publisher_id: str | None = None
     key_id: str | None = None
     fingerprint: str | None = None
@@ -97,6 +97,7 @@ class PluginPackage(APIModel):
     name: str
     description: str = ""
     version: str
+    tool_type: Literal["plugin", "local_script", "server_script"] = "plugin"
     entrypoint: str
     language: str = "bash"
     output_limit: int = 1_000_000
@@ -109,6 +110,13 @@ class PluginPackage(APIModel):
     trust: PluginTrust
     valid: bool = True
     errors: list[str] = Field(default_factory=list)
+
+
+class ServerScriptToolInput(APIModel):
+    name: str
+    description: str = ""
+    runtime: Literal["bash", "python"]
+    script_path: str
 
 
 class PluginScanItem(APIModel):

@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import App, { DiagnosticPage, ServerModal, ServerNavigationItem } from './App'
+import App, { DiagnosticPage, ServerModal, ServerNavigationItem, ToolLibrary } from './App'
 import type { PluginPackage, ServerProfile } from './types'
 
 describe('App', () => {
@@ -53,6 +53,7 @@ describe('App', () => {
     }
     const plugin: PluginPackage = {
       id: 'network-diagnostic', name: '网络占用', description: '检查网络占用', version: '1.0.0',
+      toolType: 'plugin',
       entrypoint: 'run.sh', language: 'python', outputLimit: 200000, defaultMode: 'standard',
       modes: [{ id: 'standard', label: '标准' }], fields: [], permissions: {}, directory: '/plugins/network',
       trust: { status: 'trusted', message: '签名有效' }, valid: true, errors: [],
@@ -72,5 +73,28 @@ describe('App', () => {
     expect(dock?.querySelector('[aria-current="step"]')?.textContent).toContain('选择插件')
     fireEvent.click(screen.getByRole('button', { name: '下一步：配置检查 →' }))
     expect(setStage).toHaveBeenCalledWith('configure')
+  })
+
+  it('offers three tool sources and labels the tool type in the list', () => {
+    const addLocal = vi.fn()
+    const plugin: PluginPackage = {
+      id: 'local-network', name: '本机网络采样', description: '检查网络占用', version: '1.0.0',
+      toolType: 'local_script', entrypoint: 'run.sh', language: 'bash', outputLimit: 200000,
+      defaultMode: 'standard', modes: [{ id: 'standard', label: '标准' }], fields: [], permissions: {},
+      directory: '/tools/local-network', trust: { status: 'local', message: '本机管理' }, valid: true, errors: [],
+    }
+    const { container } = render(<ToolLibrary
+      scan={{ items: [{ directory: plugin.directory, valid: true, plugin, errors: [] }], validCount: 1, invalidCount: 0 }}
+      selectedIndex={0} setSelectedIndex={vi.fn()} onLocalScript={addLocal} onServerScript={vi.fn()}
+      onImportPlugin={vi.fn()} busy=""
+    />)
+
+    fireEvent.click(screen.getByText('＋ 新增工具'))
+    expect(screen.getByRole('button', { name: /^⌘\s+本机脚本/ })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^⌁\s+服务器脚本/ })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^⬡\s+插件/ })).toBeTruthy()
+    expect(container.querySelector('.tool-type')?.textContent).toBe('本机脚本')
+    fireEvent.click(screen.getByRole('button', { name: /^⌘\s+本机脚本/ }))
+    expect(addLocal).toHaveBeenCalledOnce()
   })
 })

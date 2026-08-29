@@ -23,6 +23,7 @@ ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9.-]{1,63}$")
 VERSION_PATTERN = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$")
 FIELD_TYPES = {"text", "path", "integer", "url", "password", "boolean", "choice"}
 MAX_PACKAGE_BYTES = 100 * 1024 * 1024
+MANAGED_TOOL_MARKER = ".poethan-managed-tool.json"
 
 
 def canonical_json(value: Any) -> bytes:
@@ -125,12 +126,13 @@ class PluginService:
                 json.loads(schema_path.read_text(encoding="utf-8"))
             except Exception as exc:
                 raise ValueError(f"报告 Schema 不是有效 JSON：{exc}") from exc
-        trust = self._verify_trust(directory, manifest, developer_mode)
+        tool_type = str(manifest.get("toolType", "plugin"))
+        trust = self._managed_tool_trust(directory, manifest) if tool_type != "plugin" else self._verify_trust(directory, manifest, developer_mode)
         if trust.status in {"invalid", "untrusted"}:
             raise ValueError(trust.message)
         return PluginPackage(
             id=str(manifest["id"]), name=str(manifest["name"]), description=str(manifest.get("description", "")),
-            version=str(manifest["version"]), entrypoint=str(manifest["entrypoint"]), language=str(manifest.get("language", "bash")),
+            version=str(manifest["version"]), tool_type=tool_type, entrypoint=str(manifest["entrypoint"]), language=str(manifest.get("language", "bash")),
             output_limit=int(manifest.get("outputLimit", 1_000_000)), default_mode=str(manifest["defaultMode"]),
             modes=list(manifest.get("modes", [])), fields=list(fields), report=report,
             permissions=dict(manifest.get("permissions", {})), directory=str(directory), trust=trust,
@@ -138,6 +140,8 @@ class PluginService:
 
     def import_directory(self, source: Path, settings: ApplicationSettings) -> PluginPackage:
         package = self.validate(source, settings.developer_mode)
+        if package.tool_type != "plugin":
+            raise ValueError("脚本工具必须通过“新增工具”创建，插件导入只接受标准插件包")
         root = Path(settings.plugin_directory).expanduser().resolve()
         destination = root / package.id / package.version
         if destination.exists():
@@ -148,6 +152,20 @@ class PluginService:
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copytree(source, destination)
         return self.validate(destination, settings.developer_mode)
+
+    def _managed_tool_trust(self, directory: Path, manifest: dict[str, Any]) -> PluginTrust:
+        marker_path = directory / MANAGED_TOOL_MARKER
+        if not marker_path.is_file():
+            return PluginTrust(status="invalid", message="脚本工具缺少本机管理标记，请通过“新增工具”重新创建")
+        try:
+            marker = json.loads(marker_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            return PluginTrust(status="invalid", message=f"脚本工具管理标记无效：{exc}")
+        expected = (str(manifest.get("id")), str(manifest.get("version")), str(manifest.get("toolType")))
+        actual = (str(marker.get("id")), str(marker.get("version")), str(marker.get("toolType")))
+        if actual != expected:
+            return PluginTrust(status="invalid", message="脚本工具管理标记与清单不一致")
+        return PluginTrust(status="local", lock_digest=self._directory_digest(directory), message="由当前 Mac 上的 Poethan Sentinel 创建并管理")
 
     def _candidates(self, root: Path) -> list[Path]:
         candidates: list[Path] = []

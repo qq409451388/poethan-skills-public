@@ -29,7 +29,7 @@ export interface ApplicationSettings {
 }
 
 export interface PluginTrust {
-  status: 'trusted' | 'unsigned' | 'untrusted' | 'invalid'
+  status: 'trusted' | 'local' | 'unsigned' | 'untrusted' | 'invalid'
   publisherId?: string
   keyId?: string
   fingerprint?: string
@@ -54,6 +54,7 @@ export interface PluginPackage {
   name: string
   description: string
   version: string
+  toolType: 'plugin' | 'local_script' | 'server_script'
   entrypoint: string
   language: string
   outputLimit: number

@@ -60,6 +60,15 @@ export const api = {
     form.append('paths', JSON.stringify(paths))
     return request<PluginPackage>('/api/v1/plugins/import', { method: 'POST', body: form })
   },
+  createLocalScriptTool: (value: { name: string; description: string; runtime: 'bash' | 'python'; script: File }) => {
+    const form = new FormData()
+    form.append('name', value.name)
+    form.append('description', value.description)
+    form.append('runtime', value.runtime)
+    form.append('script', value.script)
+    return request<PluginPackage>('/api/v1/tools/local-script', { method: 'POST', body: form })
+  },
+  createServerScriptTool: (value: { name: string; description: string; runtime: 'bash' | 'python'; scriptPath: string }) => request<PluginPackage>('/api/v1/tools/server-script', { method: 'POST', body: JSON.stringify(value) }),
   runConfig: (serverId: string, pluginId: string) => request<{ mode: string; values: Record<string, string> }>(`/api/v1/run-configs/${serverId}/${pluginId}`),
   startRun: (value: RunRequest) => request<RunState>('/api/v1/runs', { method: 'POST', body: JSON.stringify(value) }),
   run: (id: string) => request<RunState>(`/api/v1/runs/${id}`),
