@@ -29,6 +29,32 @@ def test_mutations_require_local_request_marker() -> None:
         assert response.status_code == 200
 
 
+def test_server_can_be_deleted_without_touching_other_profiles() -> None:
+    with client() as web:
+        headers = {"X-Poethan-Request": "1"}
+        created = web.post(
+            "/api/v1/servers",
+            headers=headers,
+            json={
+                "id": "temporary-server",
+                "name": "临时服务器",
+                "authentication": "alias",
+                "alias": "temporary",
+                "host": "",
+                "user": "",
+                "port": 22,
+                "identityFile": "",
+            },
+        )
+        assert created.status_code == 200
+
+        deleted = web.delete("/api/v1/servers/temporary-server", headers=headers)
+        assert deleted.status_code == 204
+        servers = web.get("/api/v1/servers").json()
+        assert all(server["id"] != "temporary-server" for server in servers)
+        assert any(server["id"] == "demo-server" for server in servers)
+
+
 def test_start_demo_run_from_http_route() -> None:
     with client() as web:
         plugins = web.get("/api/v1/plugins").json()["items"]

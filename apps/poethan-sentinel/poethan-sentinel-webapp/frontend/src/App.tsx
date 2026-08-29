@@ -128,14 +128,21 @@ function App() {
     } catch (error) { setConnectionResult((error as Error).message) }
   }
 
-  const deleteCurrentServer = async () => {
-    if (!selectedServer || selectedServer.authentication === 'demo') return
-    if (!window.confirm(`确定删除“${selectedServer.name}”的本机配置？不会改动远端服务器。`)) return
+  const deleteServer = async (server?: ServerProfile) => {
+    if (!server || server.authentication === 'demo') return
+    if (!window.confirm(`确定删除“${server.name}”的本机配置？不会改动远端服务器。`)) return
+    setBusy(`delete-server:${server.id}`)
     try {
-      await api.deleteServer(selectedServer.id)
-      const next = servers.filter((item) => item.id !== selectedServer.id)
-      setServers(next); setSelectedServerId(next[0]?.id || ''); showToast('服务器配置已删除')
-    } catch (error) { showToast((error as Error).message) }
+      await api.deleteServer(server.id)
+      const next = servers.filter((item) => item.id !== server.id)
+      setServers(next)
+      if (selectedServer?.id === server.id) {
+        setSelectedServerId(next[0]?.id || '')
+        setPage('server')
+      }
+      if (serverDraft.id === server.id) setServerModal(false)
+      showToast(`已删除服务器“${server.name}”`)
+    } catch (error) { showToast((error as Error).message) } finally { setBusy('') }
   }
 
   const choosePlugin = async (plugin: PluginPackage) => {
@@ -230,7 +237,12 @@ function App() {
         <button className="button primary add-server" onClick={() => openServer()}><span>＋</span>新建服务器</button>
         <nav className="sidebar-nav">
           <p className="nav-heading">服务器</p>
-          {servers.map((server) => <button key={server.id} className={`nav-item ${page === 'server' && server.id === selectedServer?.id ? 'active' : ''}`} onClick={() => { setSelectedServerId(server.id); navigate('server') }}><i className="dot online"/><span><b>{server.name}</b><small>{serverTarget(server)}</small></span></button>)}
+          {servers.map((server) => <ServerNavigationItem
+            key={server.id} server={server} active={page === 'server' && server.id === selectedServer?.id}
+            deleting={busy === `delete-server:${server.id}`}
+            onSelect={() => { setSelectedServerId(server.id); navigate('server') }}
+            onDelete={() => void deleteServer(server)}
+          />)}
           <p className="nav-heading tools-heading">工具</p>
           <button className={`nav-item compact ${page === 'plugins' ? 'active' : ''}`} onClick={() => navigate('plugins')}><span className="nav-icon">⬡</span><span><b>插件库</b><small>{plugins.validCount} 个可用{plugins.invalidCount ? ` · ${plugins.invalidCount} 个失败` : ''}</small></span></button>
           <button className={`nav-item compact ${page === 'reports' ? 'active' : ''}`} onClick={() => navigate('reports')}><span className="nav-icon">≡</span><span><b>历史报告</b><small>{reports.length} 份本机报告</small></span></button>
@@ -244,7 +256,7 @@ function App() {
           {page === 'server' && <ServerPage
             server={selectedServer} report={recentServerReport} busy={busy}
             onStart={() => navigate('diagnostic')} onEdit={() => openServer(selectedServer)}
-            onDelete={deleteCurrentServer} onOpenReport={openReport}
+            onDelete={() => void deleteServer(selectedServer)} onOpenReport={openReport}
             onTest={async () => {
               if (!selectedServer) return
               setBusy('test-server')
@@ -318,6 +330,13 @@ function BrandIcon() {
   return <svg viewBox="0 0 40 40"><rect x="5" y="7" width="30" height="8" rx="3"/><rect x="5" y="17" width="30" height="8" rx="3"/><rect x="5" y="27" width="30" height="8" rx="3"/><path d="M10 11h9m-9 10h15m-15 10h12"/></svg>
 }
 
+export function ServerNavigationItem({ server, active, deleting, onSelect, onDelete }: { server: ServerProfile; active: boolean; deleting: boolean; onSelect: () => void; onDelete: () => void }) {
+  return <div className="server-nav-row">
+    <button className={`nav-item ${active ? 'active' : ''}`} onClick={onSelect}><i className="dot online"/><span><b>{server.name}</b><small>{serverTarget(server)}</small></span></button>
+    {server.authentication !== 'demo' && <button className="server-delete" disabled={deleting} aria-label={`删除服务器 ${server.name}`} title="删除服务器" onClick={onDelete}>{deleting ? '…' : '×'}</button>}
+  </div>
+}
+
 function ServerPage({ server, report, onStart, onEdit, onDelete, onOpenReport, onTest, busy }: { server?: ServerProfile; report?: DiagnosticReport; onStart: () => void; onEdit: () => void; onDelete: () => void; onOpenReport: (report: DiagnosticReport) => void; onTest: () => void; busy: string }) {
   const issueCount = report?.findings.filter((item) => ['critical', 'warning'].includes(item.severity)).length || 0
   return <section className="page active"><div className="page-content server-page">
@@ -332,13 +351,25 @@ interface DiagnosticProps {
   stage: DiagnosticStage; setStage: (value: DiagnosticStage) => void; server?: ServerProfile; plugins: PluginPackage[]; selectedPlugin?: PluginPackage; selectPlugin: (plugin: PluginPackage) => void; pluginSearch: string; setPluginSearch: (value: string) => void; mode: string; setMode: (value: string) => void; values: Record<string, string>; setValues: React.Dispatch<React.SetStateAction<Record<string, string>>>; secrets: Record<string, string>; setSecrets: React.Dispatch<React.SetStateAction<Record<string, string>>>; remember: boolean; setRemember: (value: boolean) => void; aiEnabled: boolean; setAiEnabled: (value: boolean) => void; aiConfigured: boolean; startRun: () => void; busy: string; run: RunState | null; events: RunEvent[]; output: string; cancel: () => void; report: DiagnosticReport | null; resultTab: 'conclusion' | 'raw' | 'ai'; setResultTab: (value: 'conclusion' | 'raw' | 'ai') => void; rawSearch: string; setRawSearch: (value: string) => void; openReport: (report: DiagnosticReport) => void; goServer: () => void; showToast: (message: string) => void
 }
 
-function DiagnosticPage(props: DiagnosticProps) {
+export function DiagnosticPage(props: DiagnosticProps) {
   const stages: DiagnosticStage[] = ['select', 'configure', 'running', 'result']
   const progress = stages.indexOf(props.stage)
-  return <section className="page active"><header className="diagnostic-heading"><button className="back-button" onClick={props.goServer}>← 返回服务器</button><div><span className="eyebrow">{props.server?.name}</span><h1>新建诊断</h1></div></header>
-    <div className="diagnostic-rail"><div className="rail-track"><span style={{ width: `${progress / 3 * 100}%` }}/><i style={{ left: `${progress / 3 * 100}%` }}/></div>{[['select','选择插件','明确诊断目标'],['configure','配置检查','确认范围与参数'],['running','远程执行','采集诊断事实'],['result','查看结果','结论、输出与 AI']].map(([key, label, help], index) => <button key={key} className={`rail-step ${index === progress ? 'active' : index < progress ? 'done' : ''}`}><b>{index < progress ? '✓' : index + 1}</b><span>{label}<small>{help}</small></span></button>)}</div>
+  const titles: Record<DiagnosticStage, string> = {
+    select: '选择检查插件', configure: '配置检查', running: `正在诊断 ${props.server?.name || ''}`, result: '查看诊断结果',
+  }
+  const steps: Array<[DiagnosticStage, string]> = [['select','选择插件'],['configure','配置检查'],['running','远程执行'],['result','查看结果']]
+  return <section className="page active diagnostic-page"><header className="workflow-dock"><div className="workflow-dock-inner">
+    <div className="workflow-identity"><button className="workflow-back" aria-label="返回服务器" title="返回服务器" onClick={props.goServer}>←</button><div><span>{props.server?.name || '未选择服务器'} · 步骤 {progress + 1} / 4</span><h1>{titles[props.stage]}</h1></div></div>
+    <div className="workflow-progress" aria-label="诊断进度"><div className="workflow-track"><i style={{ width: `${progress / 3 * 100}%` }}/></div>{steps.map(([key, label], index) => <div key={key} className={`workflow-step ${index === progress ? 'active' : index < progress ? 'done' : ''}`} aria-current={index === progress ? 'step' : undefined}><b>{index < progress ? '✓' : index + 1}</b><span>{label}</span></div>)}</div>
+    <div className="workflow-actions">
+      {props.stage === 'select' && <button className="button primary" disabled={!props.selectedPlugin} onClick={() => props.setStage('configure')}>下一步：配置检查 →</button>}
+      {props.stage === 'configure' && <><button className="button quiet" onClick={() => props.setStage('select')}>上一步</button><button className="button primary" disabled={props.busy === 'run'} onClick={props.startRun}>{props.busy === 'run' ? '正在准备…' : '开始检查 →'}</button></>}
+      {props.stage === 'running' && <button className="button danger" onClick={props.cancel}>停止检查</button>}
+      {props.stage === 'result' && <><button className="button quiet" onClick={() => props.setStage('configure')}>再次检查</button>{props.report && <a className="button primary" target="_blank" rel="noreferrer" href={`/api/v1/reports/${props.report.id}/html`}>打开报告</a>}</>}
+    </div>
+  </div></header>
     <div className="diagnostic-body">
-      {props.stage === 'select' && <section className="stage active"><header className="stage-heading"><div><span className="eyebrow">步骤 1 / 4</span><h2>这次要检查什么？</h2><p>一次只运行一个插件，让配置、输出和报告保持清晰。</p></div><label className="search"><span>⌕</span><input value={props.pluginSearch} onChange={(e) => props.setPluginSearch(e.target.value)} placeholder="搜索插件"/></label></header><div className="plugin-options" role="radiogroup">{props.plugins.filter((plugin) => `${plugin.name}${plugin.description}${plugin.id}`.toLowerCase().includes(props.pluginSearch.toLowerCase())).map((plugin) => <label key={plugin.id} className={`plugin-option ${props.selectedPlugin?.id === plugin.id ? 'selected' : ''}`}><input type="radio" name="plugin" checked={props.selectedPlugin?.id === plugin.id} onChange={() => props.selectPlugin(plugin)}/><i className="radio"/><span className="plugin-mark">{pluginLetter(plugin)}</span><span><b>{plugin.name}</b><small>{plugin.description || '由 plugin.yaml 定义的诊断流程'}</small><em>{plugin.version} · {plugin.language} · {plugin.modes.length} 种模式</em></span><strong>{plugin.trust.status === 'trusted' ? '签名有效' : '开发模式'}</strong></label>)}</div>{!props.plugins.length && <Empty title="没有可用插件" text="请先到插件库导入并通过校验。"/>}<footer className="stage-actions"><span/><button className="button primary" disabled={!props.selectedPlugin} onClick={() => props.setStage('configure')}>下一步：配置检查 →</button></footer></section>}
+      {props.stage === 'select' && <section className="stage active"><header className="stage-heading stage-intro"><p>一次只运行一个插件，让配置、输出和报告保持清晰。</p><label className="search"><span>⌕</span><input value={props.pluginSearch} onChange={(e) => props.setPluginSearch(e.target.value)} placeholder="搜索插件"/></label></header><div className="plugin-options" role="radiogroup">{props.plugins.filter((plugin) => `${plugin.name}${plugin.description}${plugin.id}`.toLowerCase().includes(props.pluginSearch.toLowerCase())).map((plugin) => <label key={plugin.id} className={`plugin-option ${props.selectedPlugin?.id === plugin.id ? 'selected' : ''}`}><input type="radio" name="plugin" checked={props.selectedPlugin?.id === plugin.id} onChange={() => props.selectPlugin(plugin)}/><i className="radio"/><span className="plugin-mark">{pluginLetter(plugin)}</span><span><b>{plugin.name}</b><small>{plugin.description || '由 plugin.yaml 定义的诊断流程'}</small><em>{plugin.version} · {plugin.language} · {plugin.modes.length} 种模式</em></span><strong>{plugin.trust.status === 'trusted' ? '签名有效' : '开发模式'}</strong></label>)}</div>{!props.plugins.length && <Empty title="没有可用插件" text="请先到插件库导入并通过校验。"/>}</section>}
       {props.stage === 'configure' && props.selectedPlugin && (
         <ConfigureStage {...props}/>
       )}
@@ -359,12 +390,12 @@ function ConfigureStage(props: DiagnosticProps) {
     result[section] = [...(result[section] || []), field]
     return result
   }, {})
-  return <section className="stage active"><header className="stage-heading"><div><span className="eyebrow">步骤 2 / 4</span><h2>配置检查</h2><p>字段和默认值均来自插件包的 plugin.yaml。</p></div><div className="manifest-chip"><span className="plugin-mark small">{pluginLetter(plugin)}</span><span><b>{plugin.name}</b><small>plugin.yaml · {plugin.version}</small></span></div></header><form className="configuration-form" onSubmit={(e) => { e.preventDefault(); props.startRun() }}>
+  return <section className="stage active"><header className="stage-heading stage-intro"><p>字段和默认值均来自插件包的 plugin.yaml。</p><div className="manifest-chip"><span className="plugin-mark small">{pluginLetter(plugin)}</span><span><b>{plugin.name}</b><small>plugin.yaml · {plugin.version}</small></span></div></header><form className="configuration-form" onSubmit={(e) => { e.preventDefault(); props.startRun() }}>
     <section className="form-section"><header><b>运行模式</b><small>一次只执行一种模式</small></header><div className="mode-options">{plugin.modes.map((item) => <label key={item.id} className={props.mode === item.id ? 'selected' : ''}><input type="radio" name="mode" checked={props.mode === item.id} onChange={() => props.setMode(item.id)}/><span><b>{item.label}</b><small>{item.help}</small></span></label>)}</div></section>
     {Object.entries(grouped).map(([section, fields]) => <section className="form-section" key={section}><header><b>{section}</b><small>来自 plugin.yaml</small></header><div className="form-grid">{fields.map((field) => <DynamicField key={field.key} field={field} value={(field.type === 'password' ? props.secrets : props.values)[field.key] || ''} setValue={(value) => field.type === 'password' ? props.setSecrets((current) => ({ ...current, [field.key]: value })) : props.setValues((current) => ({ ...current, [field.key]: value }))}/>)}</div></section>)}
     <section className="form-section"><header><b>报告增强</b><small>可选</small></header><div className="form-grid one-column"><label className={`switch-row ${!props.aiConfigured ? 'disabled' : ''}`}><span><b>使用 AI 增强分析</b><small>{props.aiConfigured ? '本地报告先生成，AI 失败也不会丢失原始结果' : '请先到设置中配置并测试 AI'}</small></span><input type="checkbox" disabled={!props.aiConfigured} checked={props.aiEnabled} onChange={(e) => props.setAiEnabled(e.target.checked)}/><i/></label><label className="switch-row"><span><b>记住这台服务器的配置</b><small>敏感字段只保存到系统钥匙串</small></span><input type="checkbox" checked={props.remember} onChange={(e) => props.setRemember(e.target.checked)}/><i/></label></div></section>
     <details className="execution-preview"><summary>查看实际执行信息</summary><div><code>/opt/poethan-sentinel/plugins/{plugin.id}/{plugin.version}/{plugin.entrypoint} {props.mode}</code><p>只有版本或签名摘要发生变化时才同步插件；运行配置通过权限为 600 的临时文件传入。</p></div></details>
-  </form><footer className="stage-actions"><button className="button quiet" onClick={() => props.setStage('select')}>返回选择插件</button><button className="button primary" disabled={props.busy === 'run'} onClick={props.startRun}>{props.busy === 'run' ? '正在准备…' : '开始检查 →'}</button></footer></section>
+  </form></section>
 }
 
 function DynamicField({ field, value, setValue }: { field: PluginField; value: string; setValue: (value: string) => void }) {
@@ -377,7 +408,7 @@ function RunningStage(props: DiagnosticProps) {
   const stageOrder = ['connection', 'sync', 'execute', 'download', 'report', 'ai', 'complete']
   const current = stageOrder.indexOf(props.events.at(-1)?.stage || 'connection')
   const definitions = [['connection','检查 SSH 连接'],['sync','确认插件版本'],['execute','执行诊断脚本'],['download','下载检查结果'],['report','生成诊断报告'], ...(props.aiEnabled ? [['ai','AI 增强分析']] : [])]
-  return <section className="stage active"><header className="run-heading"><div className="orbit"><span/><i/></div><div><span className="eyebrow">步骤 3 / 4</span><h2>正在诊断 {props.server?.name}</h2><p><b>{props.selectedPlugin?.name}</b> · {props.mode} 模式 · 实时事件 {props.events.length} 条</p></div><button className="button danger" onClick={props.cancel}>停止检查</button></header><div className="run-grid"><ol className="run-steps">{definitions.map(([key, label]) => { const index = stageOrder.indexOf(key); const event = [...props.events].reverse().find((item) => item.stage === key); return <li key={key} className={index < current ? 'done' : index === current ? 'current' : ''}><i/><span><b>{label}</b><small>{event?.message || '等待执行'}</small></span><time>{event ? formatDate(event.createdAt).split(' ').at(-1) : '—'}</time></li> })}</ol><details className="live-output" open><summary><span>实时输出</span><small>{props.output.split('\n').filter(Boolean).length} 行</small></summary><pre>{props.output || props.events.map((item) => `[${item.stage}] ${item.message}`).join('\n')}</pre></details></div></section>
+  return <section className="stage active"><header className="run-heading"><div className="orbit"><span/><i/></div><div><span className="eyebrow">实时采集</span><h2>{props.selectedPlugin?.name}</h2><p>{props.mode} 模式 · 实时事件 {props.events.length} 条</p></div></header><div className="run-grid"><ol className="run-steps">{definitions.map(([key, label]) => { const index = stageOrder.indexOf(key); const event = [...props.events].reverse().find((item) => item.stage === key); return <li key={key} className={index < current ? 'done' : index === current ? 'current' : ''}><i/><span><b>{label}</b><small>{event?.message || '等待执行'}</small></span><time>{event ? formatDate(event.createdAt).split(' ').at(-1) : '—'}</time></li> })}</ol><details className="live-output" open><summary><span>实时输出</span><small>{props.output.split('\n').filter(Boolean).length} 行</small></summary><pre>{props.output || props.events.map((item) => `[${item.stage}] ${item.message}`).join('\n')}</pre></details></div></section>
 }
 
 function ResultStage(props: DiagnosticProps & { report: DiagnosticReport }) {
@@ -387,7 +418,7 @@ function ResultStage(props: DiagnosticProps & { report: DiagnosticReport }) {
   const sections = (report.rawOutput.match(/^===== SECTION:/gm) || []).length
   const filteredRaw = props.rawSearch ? report.rawOutput.split('\n').filter((line) => line.toLowerCase().includes(props.rawSearch.toLowerCase())).join('\n') : report.rawOutput
   const aiPending = props.aiEnabled && !report.ai
-  return <section className="stage active"><header className="result-heading"><span className={`result-symbol ${counts.critical ? 'critical' : counts.warning ? 'warning' : 'success'}`}>{counts.critical || counts.warning ? '!' : '✓'}</span><div><span className="eyebrow">诊断完成 · 用时 {report.durationSeconds.toFixed(1)} 秒</span><h2>{report.plugin.name}</h2><p>{report.server.name} · {report.plugin.mode} · {formatDate(report.createdAt)}</p></div><div><button className="button quiet" onClick={() => props.setStage('configure')}>再次检查</button><a className="button primary" target="_blank" rel="noreferrer" href={`/api/v1/reports/${report.id}/html`}>打开 HTML 报告</a></div></header><div className="result-summary"><div><span>严重</span><b className="danger-text">{counts.critical}</b></div><div><span>警告</span><b className="warning-text">{counts.warning}</b></div><div><span>正常</span><b className="success-text">{counts.success}</b></div><div><span>采集区段</span><b>{sections}</b></div></div><div className="tabs"><button className={props.resultTab === 'conclusion' ? 'active' : ''} onClick={() => props.setResultTab('conclusion')}>诊断结论</button><button className={props.resultTab === 'raw' ? 'active' : ''} onClick={() => props.setResultTab('raw')}>原始输出</button><button className={props.resultTab === 'ai' ? 'active' : ''} onClick={() => props.setResultTab('ai')}>AI 分析 {aiPending && <i>生成中</i>}</button></div>
+  return <section className="stage active"><header className="result-heading"><span className={`result-symbol ${counts.critical ? 'critical' : counts.warning ? 'warning' : 'success'}`}>{counts.critical || counts.warning ? '!' : '✓'}</span><div><span className="eyebrow">诊断完成 · 用时 {report.durationSeconds.toFixed(1)} 秒</span><h2>{report.plugin.name}</h2><p>{report.server.name} · {report.plugin.mode} · {formatDate(report.createdAt)}</p></div></header><div className="result-summary"><div><span>严重</span><b className="danger-text">{counts.critical}</b></div><div><span>警告</span><b className="warning-text">{counts.warning}</b></div><div><span>正常</span><b className="success-text">{counts.success}</b></div><div><span>采集区段</span><b>{sections}</b></div></div><div className="tabs"><button className={props.resultTab === 'conclusion' ? 'active' : ''} onClick={() => props.setResultTab('conclusion')}>诊断结论</button><button className={props.resultTab === 'raw' ? 'active' : ''} onClick={() => props.setResultTab('raw')}>原始输出</button><button className={props.resultTab === 'ai' ? 'active' : ''} onClick={() => props.setResultTab('ai')}>AI 分析 {aiPending && <i>生成中</i>}</button></div>
     {props.resultTab === 'conclusion' && <div className="tab-panel active">{report.findings.map((item, index) => <article className={`finding ${item.severity}`} key={`${item.title}-${index}`}><span>{item.severity === 'success' ? '✓' : '!'}</span><div><header><h3>{item.title}</h3><i>{item.severity === 'critical' ? '严重' : item.severity === 'warning' ? '警告' : item.severity === 'success' ? '正常' : '信息'}</i></header><p>{item.evidence}</p>{item.recommendation && <aside><b>建议</b>{item.recommendation}</aside>}</div></article>)}</div>}
     {props.resultTab === 'raw' && <div className="tab-panel active"><div className="raw-toolbar"><label className="search"><span>⌕</span><input value={props.rawSearch} onChange={(e) => props.setRawSearch(e.target.value)} placeholder="筛选原始输出"/></label><button className="button quiet" onClick={() => navigator.clipboard.writeText(report.rawOutput).then(() => props.showToast('原始输出已复制'))}>复制全部</button></div><pre className="raw-report">{filteredRaw}</pre></div>}
     {props.resultTab === 'ai' && <div className="tab-panel active">{aiPending ? <div className="ai-loading"><div className="ai-scanner"><i/></div><h3>AI 正在关联诊断证据</h3><p>本地报告已经可用，AI 完成后此处会自动更新。</p></div> : report.ai?.status === 'failed' ? <Empty title="AI 分析失败" text={report.ai.error || '请检查接口配置，原始诊断报告不受影响。'}/> : report.ai ? <div className="ai-report"><header><span>AI</span><div><h3>增强分析结果</h3><p>这是基于诊断事实的推断，请结合业务窗口确认。</p></div></header><pre>{report.ai.content || JSON.stringify(report.ai.raw, null, 2)}</pre></div> : <Empty title="本次未启用 AI" text="确定性结论和原始输出仍是完整报告。"/>}</div>}
