@@ -101,7 +101,8 @@ async def test_ai_connection(payload: AIConnectionInput) -> dict[str, Any]:
 
 @app.get("/api/v1/servers", dependencies=[Depends(require_session)], response_model=list[ServerProfile])
 def list_servers() -> list[ServerProfile]:
-    return store.servers()
+    settings = store.settings()
+    return store.visible_servers(settings.demo_mode)
 
 
 @app.post("/api/v1/servers", dependencies=[Depends(require_mutation)], response_model=ServerProfile)
@@ -222,11 +223,14 @@ def get_run_config(server_id: str, plugin_id: str):
 
 @app.post("/api/v1/runs", dependencies=[Depends(require_mutation)])
 async def start_run(payload: RunRequest):
+    settings = store.settings()
     server = next((item for item in store.servers() if item.id == payload.server_id), None)
     if not server:
         raise HTTPException(status_code=404, detail="服务器不存在")
+    if server.authentication.value == "demo" and not settings.demo_mode:
+        raise HTTPException(status_code=403, detail="演示模式已关闭，请在设置中重新开启")
     try:
-        return run_manager.start(payload, server, store.settings())
+        return run_manager.start(payload, server, settings)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

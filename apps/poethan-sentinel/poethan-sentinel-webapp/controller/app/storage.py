@@ -71,10 +71,32 @@ class JSONStore:
     def servers(self) -> list[ServerProfile]:
         raw = self.read(config.SERVERS_FILE, [])
         if not raw:
-            demo = ServerProfile(id="demo-server", name="演示服务器", authentication=AuthenticationKind.demo, alias="demo", host="demo.local", user="demo")
+            demo = self._demo_server()
             self.save_servers([demo])
             return [demo]
         return TypeAdapter(list[ServerProfile]).validate_python(raw)
+
+    def visible_servers(self, demo_mode: bool) -> list[ServerProfile]:
+        servers = self.servers()
+        demo = next((item for item in servers if item.authentication == AuthenticationKind.demo), None)
+        if demo_mode:
+            if demo is None:
+                demo = self._demo_server()
+                servers.insert(0, demo)
+                self.save_servers(servers)
+            return servers
+        return [item for item in servers if item.authentication != AuthenticationKind.demo]
+
+    @staticmethod
+    def _demo_server() -> ServerProfile:
+        return ServerProfile(
+            id="demo-server",
+            name="演示服务器",
+            authentication=AuthenticationKind.demo,
+            alias="demo",
+            host="demo.local",
+            user="demo",
+        )
 
     def save_servers(self, servers: list[ServerProfile]) -> None:
         self.write(config.SERVERS_FILE, servers)

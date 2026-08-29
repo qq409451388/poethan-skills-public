@@ -86,7 +86,7 @@ function App() {
       api.servers(), api.plugins(), api.reports(), api.settings(), api.cache(),
     ])
     setServers(nextServers)
-    setSelectedServerId((current) => current || nextServers[0]?.id || '')
+    setSelectedServerId((current) => nextServers.some((item) => item.id === current) ? current : nextServers[0]?.id || '')
     setPlugins(nextPlugins)
     const firstPlugin = nextPlugins.items.find((item) => item.valid)?.plugin
     setSelectedPluginId((current) => current || firstPlugin?.id || '')
@@ -243,7 +243,13 @@ function App() {
   const saveApplicationSettings = async () => {
     if (!settings) return
     setBusy('settings')
-    try { const saved = await api.saveSettings(settings); setSettings(saved); setPlugins(await api.rescanPlugins()); showToast('设置已保存') }
+    try {
+      const saved = await api.saveSettings(settings)
+      const [nextPlugins, nextServers] = await Promise.all([api.rescanPlugins(), api.servers()])
+      setSettings(saved); setPlugins(nextPlugins); setServers(nextServers)
+      setSelectedServerId((current) => nextServers.some((item) => item.id === current) ? current : nextServers[0]?.id || '')
+      showToast(saved.demoMode ? '设置已保存，演示服务器已显示' : '设置已保存，演示服务器已隐藏')
+    }
     catch (error) { showToast((error as Error).message) } finally { setBusy('') }
   }
 
@@ -467,7 +473,7 @@ function SettingsPage({ settings, setSettings, scan, cacheBytes, cacheRoot, save
   const [key, setKey] = useState('')
   const [aiTestResult, setAiTestResult] = useState('')
   return <section className="page active"><div className="page-content settings-page"><header className="page-heading"><div><span className="eyebrow">应用设置</span><h1>设置</h1><p>管理插件来源、AI 接口和可重新生成的本机缓存。</p></div><button className="button primary" disabled={busy === 'settings'} onClick={save}>{busy === 'settings' ? '保存中…' : '保存设置'}</button></header>
-    <section className="panel setting-card"><header><span>⬡</span><div><h3>诊断工具目录</h3><p>本机脚本、服务器脚本配置和手动放入的插件统一从这里读取。</p></div></header><label className="path-input"><b>目录</b><input value={settings.pluginDirectory} onChange={(e) => setSettings({ ...settings, pluginDirectory: e.target.value })}/><button onClick={() => navigator.clipboard.writeText(settings.pluginDirectory).then(() => showToast('工具目录已复制'))}>复制</button></label><div className="setting-switches"><label className="switch-row"><span><b>开发者模式</b><small>允许本机调试未签名插件；公开使用时建议关闭</small></span><input type="checkbox" checked={settings.developerMode} onChange={(e) => setSettings({ ...settings, developerMode: e.target.checked })}/><i/></label><label className="switch-row"><span><b>演示模式</b><small>保留不连接真实服务器的演示工作流</small></span><input type="checkbox" checked={settings.demoMode} onChange={(e) => setSettings({ ...settings, demoMode: e.target.checked })}/><i/></label></div><footer><button className="button quiet" onClick={() => api.openPluginDirectory().then(() => showToast('已打开诊断工具目录')).catch((error: Error) => showToast(error.message))}>打开工具目录</button><button className="button quiet" onClick={async () => { await rescan(); showToast('诊断工具库扫描完成') }}>重新扫描工具库</button><span className={scan.invalidCount ? 'inline-warning' : 'inline-success'}>{scan.validCount} 个有效，{scan.invalidCount} 个失败</span></footer></section>
+    <section className="panel setting-card"><header><span>⬡</span><div><h3>诊断工具目录</h3><p>本机脚本、服务器脚本配置和手动放入的插件统一从这里读取。</p></div></header><label className="path-input"><b>目录</b><input value={settings.pluginDirectory} onChange={(e) => setSettings({ ...settings, pluginDirectory: e.target.value })}/><button onClick={() => navigator.clipboard.writeText(settings.pluginDirectory).then(() => showToast('工具目录已复制'))}>复制</button></label><div className="setting-switches"><label className="switch-row"><span><b>开发者模式</b><small>允许本机调试未签名插件；公开使用时建议关闭</small></span><input type="checkbox" checked={settings.developerMode} onChange={(e) => setSettings({ ...settings, developerMode: e.target.checked })}/><i/></label><label className="switch-row"><span><b>演示模式</b><small>仅使用内置模拟结果体验流程；关闭后隐藏演示服务器</small></span><input type="checkbox" checked={settings.demoMode} onChange={(e) => setSettings({ ...settings, demoMode: e.target.checked })}/><i/></label></div><footer><button className="button quiet" onClick={() => api.openPluginDirectory().then(() => showToast('已打开诊断工具目录')).catch((error: Error) => showToast(error.message))}>打开工具目录</button><button className="button quiet" onClick={async () => { await rescan(); showToast('诊断工具库扫描完成') }}>重新扫描工具库</button><span className={scan.invalidCount ? 'inline-warning' : 'inline-success'}>{scan.validCount} 个有效，{scan.invalidCount} 个失败</span></footer></section>
     <section className="panel setting-card"><header><span>AI</span><div><h3>AI 增强分析</h3><p>兼容 OpenAI Chat Completions / Responses 接口，DeepSeek 可直接使用。</p></div></header><div className="settings-form"><label><span>接口地址</span><input value={settings.ai.endpoint} onChange={(e) => setSettings({ ...settings, ai: { ...settings.ai, endpoint: e.target.value } })}/></label><label><span>模型</span><input value={settings.ai.model} onChange={(e) => setSettings({ ...settings, ai: { ...settings.ai, model: e.target.value } })}/></label><label><span>API Key</span><input type="password" value={key} onChange={(e) => { setKey(e.target.value); setSettings({ ...settings, aiApiKey: e.target.value }) }} placeholder={settings.ai.configured ? '已安全保存；留空不修改' : 'sk-…'}/></label></div>{aiTestResult && <details className="ai-raw-response" open><summary>AI 原始响应</summary><pre>{aiTestResult}</pre></details>}<footer><button className="button quiet" disabled={busy === 'ai-test'} onClick={() => { setAiTestResult('等待模型回复…'); testAI(key).then((result) => setAiTestResult(result.rawResponse || JSON.stringify(result, null, 2))).catch((error: Error) => setAiTestResult(error.message)) }}>{busy === 'ai-test' ? '测试中…' : '保存前测试连接'}</button><span className={settings.ai.configured ? 'inline-success' : 'inline-warning'}>{settings.ai.configured ? '已配置' : '尚未配置'}</span></footer></section>
     <section className="panel setting-card"><header><span>↺</span><div><h3>本机缓存</h3><p>诊断结果、AI JSON 和生成的 HTML 报告；服务器与插件配置不会清除。</p></div></header><div className="cache-row"><span><small>当前占用</small><b>{formatBytes(cacheBytes)}</b><em>{cacheRoot}</em></span><button className="button danger" onClick={clearCache}>清空缓存</button></div></section>
   </div></section>
