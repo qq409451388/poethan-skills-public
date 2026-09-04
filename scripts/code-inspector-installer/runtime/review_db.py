@@ -33,22 +33,33 @@ CONFIDENCE_WEIGHT = {"high": 3, "medium": 2, "low": 1}
 ALLOWED_STATUS_BY_AGENT = {
     "inspector": {"IN_PROGRESS", "ON_HOLD", "BLOCKED", "REDESIGN_REQUIRED", "CONFIRMED", "CANCELLED"},
     "developer": {"IN_PROGRESS", "ON_HOLD", "BLOCKED", "INSPECTOR_CONFIRMATION_REQUIRED", "IMPLEMENTED_PENDING_REVIEW"},
-    "human": {"IN_PROGRESS", "ON_HOLD", "BLOCKED", "INSPECTOR_CONFIRMATION_REQUIRED", "IMPLEMENTED_PENDING_REVIEW", "CONFIRMED", "REDESIGN_REQUIRED", "CANCELLED"},
+    # Human 对普通 Issue 状态具有最高管理解释权。HUMAN_CONFIRMATION_REQUIRED 仍只能
+    # 由 inspector 的 human-escalate 进入，并由 human-confirmation-resolve 离开。
+    "human": {
+        "PROPOSED", "DESIGN_REQUIRED", "DESIGN_PENDING_REVIEW", "IN_PROGRESS", "ON_HOLD",
+        "BLOCKED", "INSPECTOR_CONFIRMATION_REQUIRED", "IMPLEMENTED_PENDING_REVIEW",
+        "REDESIGN_REQUIRED", "CONFIRMED", "CANCELLED",
+    },
 }
 
+# 核心设计与 Human 确认流转只能由专用原子命令执行，不能通过通用状态命令绕过活动记录。
 ALLOWED_TRANSITIONS = {
     "PROPOSED": {"inspector": {"IN_PROGRESS", "ON_HOLD", "BLOCKED", "CONFIRMED", "CANCELLED"}, "developer": {"IN_PROGRESS", "ON_HOLD", "BLOCKED", "INSPECTOR_CONFIRMATION_REQUIRED", "IMPLEMENTED_PENDING_REVIEW"}, "human": {"IN_PROGRESS", "ON_HOLD", "BLOCKED", "INSPECTOR_CONFIRMATION_REQUIRED", "IMPLEMENTED_PENDING_REVIEW", "CANCELLED"}},
     "IN_PROGRESS": {"inspector": {"ON_HOLD", "BLOCKED", "CANCELLED"}, "developer": {"ON_HOLD", "BLOCKED", "INSPECTOR_CONFIRMATION_REQUIRED", "IMPLEMENTED_PENDING_REVIEW"}, "human": {"ON_HOLD", "BLOCKED", "INSPECTOR_CONFIRMATION_REQUIRED", "IMPLEMENTED_PENDING_REVIEW", "CANCELLED"}},
     "ON_HOLD": {"inspector": {"IN_PROGRESS", "BLOCKED", "CANCELLED"}, "developer": {"IN_PROGRESS", "BLOCKED", "INSPECTOR_CONFIRMATION_REQUIRED"}, "human": {"IN_PROGRESS", "BLOCKED", "INSPECTOR_CONFIRMATION_REQUIRED", "CANCELLED"}},
     "BLOCKED": {"inspector": {"IN_PROGRESS", "ON_HOLD", "CANCELLED"}, "developer": {"IN_PROGRESS", "ON_HOLD", "INSPECTOR_CONFIRMATION_REQUIRED"}, "human": {"IN_PROGRESS", "ON_HOLD", "INSPECTOR_CONFIRMATION_REQUIRED", "CANCELLED"}},
     "INSPECTOR_CONFIRMATION_REQUIRED": {"inspector": {"IN_PROGRESS", "ON_HOLD", "BLOCKED", "CANCELLED"}, "developer": set(), "human": {"IN_PROGRESS", "ON_HOLD", "BLOCKED", "CANCELLED"}},
-    "IMPLEMENTED_PENDING_REVIEW": {"inspector": {"CONFIRMED", "REDESIGN_REQUIRED", "ON_HOLD", "BLOCKED", "CANCELLED"}, "developer": set(), "human": {"CONFIRMED", "REDESIGN_REQUIRED", "ON_HOLD", "BLOCKED", "CANCELLED"}},
-    "REDESIGN_REQUIRED": {"inspector": {"ON_HOLD", "BLOCKED", "CANCELLED"}, "developer": {"IN_PROGRESS", "ON_HOLD", "BLOCKED", "INSPECTOR_CONFIRMATION_REQUIRED", "IMPLEMENTED_PENDING_REVIEW"}, "human": {"IN_PROGRESS", "ON_HOLD", "BLOCKED", "INSPECTOR_CONFIRMATION_REQUIRED", "IMPLEMENTED_PENDING_REVIEW", "CANCELLED"}},
+    "IMPLEMENTED_PENDING_REVIEW": {"inspector": {"IN_PROGRESS", "CONFIRMED", "REDESIGN_REQUIRED", "ON_HOLD", "BLOCKED", "CANCELLED"}, "developer": set(), "human": {"IN_PROGRESS", "CONFIRMED", "REDESIGN_REQUIRED", "ON_HOLD", "BLOCKED", "CANCELLED"}},
+    "HUMAN_CONFIRMATION_REQUIRED": {"inspector": set(), "developer": set(), "human": set()},
+    "DESIGN_REQUIRED": {"inspector": {"CANCELLED"}, "developer": set(), "human": {"CANCELLED"}},
+    "DESIGN_PENDING_REVIEW": {"inspector": {"CANCELLED"}, "developer": set(), "human": {"CANCELLED"}},
+    "REDESIGN_REQUIRED": {"inspector": {"ON_HOLD", "BLOCKED", "CANCELLED"}, "developer": {"ON_HOLD", "BLOCKED", "INSPECTOR_CONFIRMATION_REQUIRED"}, "human": {"ON_HOLD", "BLOCKED", "INSPECTOR_CONFIRMATION_REQUIRED", "CANCELLED"}},
     "CONFIRMED": {"inspector": set(), "developer": set(), "human": set()},
     "CANCELLED": {"inspector": set(), "developer": set(), "human": set()},
 }
 
 TASK_STATUSES = {"PENDING", "IN_PROGRESS", "ON_HOLD", "BLOCKED", "CLOSED", "CANCELLED"}
+TASK_TYPES = {"REVIEW", "CONTINUOUS"}
 TASK_TRANSITIONS = {
     "PENDING": {"IN_PROGRESS", "ON_HOLD", "BLOCKED", "CLOSED", "CANCELLED"},
     "IN_PROGRESS": {"ON_HOLD", "BLOCKED", "CLOSED", "CANCELLED"},
@@ -71,19 +82,23 @@ ALLOWED_DISPOSITIONS = {
 ALLOWED_ACTIVITY_BY_AGENT = {
     "inspector": {
         "ISSUE_CREATED", "EVIDENCE_ADDED", "REVIEW_APPROVED", "REVIEW_REJECTED",
-        "INSPECTOR_CONFIRMATION_PROVIDED",
+        "DESIGN_GUIDANCE", "INSPECTOR_CONFIRMATION_PROVIDED",
         "VERIFICATION_PASSED", "VERIFICATION_FAILED", "VERIFICATION_EVIDENCE_ADDED",
         "STATUS_CHANGED", "COMMENT_ADDED",
     },
-    "developer": {"DESIGN_SUBMITTED", "IMPLEMENTATION_SUBMITTED", "REDESIGN_SUBMITTED", "STATUS_CHANGED", "COMMENT_ADDED"},
+    "developer": {"IMPLEMENTATION_SUBMITTED", "REDESIGN_SUBMITTED", "STATUS_CHANGED", "COMMENT_ADDED"},
     "human": {
-        "ISSUE_CREATED", "EVIDENCE_ADDED", "DESIGN_SUBMITTED", "IMPLEMENTATION_SUBMITTED",
+        "ISSUE_CREATED", "EVIDENCE_ADDED", "DESIGN_GUIDANCE", "IMPLEMENTATION_SUBMITTED",
         "REVIEW_APPROVED", "REVIEW_REJECTED", "REDESIGN_SUBMITTED", "INSPECTOR_CONFIRMATION_PROVIDED",
         "VERIFICATION_PASSED", "VERIFICATION_FAILED", "VERIFICATION_EVIDENCE_ADDED",
         "STATUS_CHANGED", "COMMENT_ADDED"
     },
 }
-ALLOWED_ACTIVITY_TYPES = set().union(*ALLOWED_ACTIVITY_BY_AGENT.values())
+ATOMIC_ACTIVITY_TYPES = {
+    "DESIGN_REQUESTED", "DESIGN_SUBMITTED", "DESIGN_APPROVED", "DESIGN_REJECTED",
+    "HUMAN_CONFIRMATION_REQUESTED", "HUMAN_CONFIRMATION_PROVIDED",
+}
+ALLOWED_ACTIVITY_TYPES = set().union(*ALLOWED_ACTIVITY_BY_AGENT.values(), ATOMIC_ACTIVITY_TYPES)
 
 def configured_db_path() -> Path:
     if os.environ.get("AGENT_REVIEW_DB"):
@@ -169,14 +184,24 @@ def operator_type(agent: str) -> str:
 def actor_id(args: argparse.Namespace) -> str:
     return args.operator_id or args.agent
 
-def task_fingerprint(project_path: str, review_level: str, objective: str, review_scope: str, baseline_ref: str | None) -> str:
-    payload = {
-        "project_path": project_path,
-        "review_level": review_level,
-        "objective": objective.strip(),
-        "review_scope": review_scope.strip(),
-        "baseline_ref": (baseline_ref or "").strip(),
-    }
+def task_fingerprint(project_path: str, task_type: str, review_level: str, objective: str,
+                     review_scope: str, baseline_ref: str | None) -> str:
+    if task_type == "CONTINUOUS":
+        payload = {
+            "project_path": project_path,
+            "task_type": task_type,
+            "objective": objective.strip(),
+            "review_scope": review_scope.strip(),
+        }
+    else:
+        # REVIEW 必须保留升级前的精确算法，才能继续命中历史 scope_fingerprint。
+        payload = {
+            "project_path": project_path,
+            "review_level": review_level,
+            "objective": objective.strip(),
+            "review_scope": review_scope.strip(),
+            "baseline_ref": (baseline_ref or "").strip(),
+        }
     return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
 
 def issue_dedupe_key(payload: dict[str, Any]) -> str:
@@ -216,46 +241,86 @@ def task_create(args: argparse.Namespace) -> None:
     task_key = args.task_key or f"RT-{uuid.uuid4().hex[:8].upper()}"
     review_level = args.review_level
     review_scope = args.review_scope
-    fingerprint = task_fingerprint(str(cwd), review_level, args.objective, review_scope, args.baseline_ref) if review_level and review_scope else None
+    require_choice(args.task_type, TASK_TYPES, "task_type")
+    fingerprint = task_fingerprint(
+        str(cwd), args.task_type, review_level, args.objective, review_scope, args.baseline_ref
+    ) if review_level and review_scope else None
 
     with connect() as conn:
         conn.execute(
             """INSERT INTO review_task(
                 task_key, project_name, project_path, title, objective, review_level, review_scope,
-                baseline_ref, scope_fingerprint, status, started_at, remark
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?)""",
+                baseline_ref, scope_fingerprint, task_type, status, started_at, remark
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?)""",
             (task_key, project_name, str(cwd), args.title, args.objective, review_level, review_scope,
-             args.baseline_ref, fingerprint, args.started_at, args.remark),
+             args.baseline_ref, fingerprint, args.task_type, args.started_at, args.remark),
         )
         audit(conn, actor_id(args), "task.create", "review_task", task_key, True)
-    print_json({"task_key": task_key, "project_name": project_name, "project_path": str(cwd)})
+    print_json({"task_key": task_key, "task_type": args.task_type, "project_name": project_name, "project_path": str(cwd)})
 
 def task_resolve(args: argparse.Namespace) -> None:
     require_agent(args.agent)
     if args.agent not in {"inspector", "human"}:
         raise PermissionError("只有 inspector 或 human 可以创建或复用任务")
     cwd = Path.cwd().resolve()
-    fingerprint = task_fingerprint(str(cwd), args.review_level, args.objective, args.review_scope, args.baseline_ref)
+    require_choice(args.task_type, TASK_TYPES, "task_type")
+    fingerprint = task_fingerprint(
+        str(cwd), args.task_type, args.review_level, args.objective, args.review_scope, args.baseline_ref
+    )
     with connect() as conn:
+        if args.task_key:
+            explicit = conn.execute(
+                """SELECT id, task_key, project_path, task_type, status, current_version
+                   FROM review_task WHERE task_key = ?""",
+                (args.task_key,),
+            ).fetchone()
+            if explicit:
+                if explicit["project_path"] != str(cwd):
+                    raise RuntimeError(f"task_key {args.task_key} 属于其他项目路径")
+                if explicit["task_type"] != args.task_type:
+                    raise RuntimeError(
+                        f"task_type 创建后不可修改: {explicit['task_type']} != {args.task_type}"
+                    )
+                if explicit["status"] in {"CLOSED", "CANCELLED"}:
+                    raise RuntimeError(f"task_key {args.task_key} 已处于 {explicit['status']}，不能复用")
+                if args.task_type == "CONTINUOUS" and args.baseline_ref is not None:
+                    conn.execute(
+                        """UPDATE review_task SET baseline_ref = ?, updated_at = CURRENT_TIMESTAMP
+                           WHERE id = ?""",
+                        (args.baseline_ref, explicit["id"]),
+                    )
+                audit(conn, actor_id(args), "task.resolve", "review_task", explicit["task_key"], True, "reused_explicit")
+                print_json({"task_key": explicit["task_key"], "task_type": explicit["task_type"], "created": False,
+                            "status": explicit["status"], "current_version": explicit["current_version"]})
+                return
         row = conn.execute(
-            """SELECT task_key, status, current_version
+            """SELECT id, task_key, task_type, status, current_version
                FROM review_task
-               WHERE project_path = ? AND scope_fingerprint = ? AND status IN ('PENDING', 'IN_PROGRESS')
+               WHERE project_path = ? AND task_type = ? AND scope_fingerprint = ?
+                 AND (status IN ('PENDING', 'IN_PROGRESS')
+                      OR (? = 'CONTINUOUS' AND status IN ('ON_HOLD', 'BLOCKED')))
                ORDER BY updated_at DESC, id DESC LIMIT 1""",
-            (str(cwd), fingerprint),
+            (str(cwd), args.task_type, fingerprint, args.task_type),
         ).fetchone()
         if row:
+            if args.task_type == "CONTINUOUS" and args.baseline_ref is not None:
+                conn.execute(
+                    "UPDATE review_task SET baseline_ref = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (args.baseline_ref, row["id"]),
+                )
             audit(conn, actor_id(args), "task.resolve", "review_task", row["task_key"], True, "reused")
-            print_json({"task_key": row["task_key"], "created": False, "status": row["status"], "current_version": row["current_version"]})
+            print_json({"task_key": row["task_key"], "task_type": row["task_type"], "created": False,
+                        "status": row["status"], "current_version": row["current_version"]})
             return
         legacy = conn.execute(
             """SELECT id, task_key, status, current_version
                FROM review_task
                WHERE project_path = ? AND title = ? AND objective = ?
-                 AND scope_fingerprint IS NULL AND status IN ('PENDING', 'IN_PROGRESS')
+                 AND task_type = 'REVIEW' AND scope_fingerprint IS NULL
+                 AND status IN ('PENDING', 'IN_PROGRESS')
                ORDER BY updated_at DESC, id DESC LIMIT 1""",
             (str(cwd), args.title, args.objective),
-        ).fetchone()
+        ).fetchone() if args.task_type == "REVIEW" else None
         if legacy:
             conn.execute(
                 """UPDATE review_task
@@ -265,19 +330,20 @@ def task_resolve(args: argparse.Namespace) -> None:
                 (args.review_level, args.review_scope, args.baseline_ref, fingerprint, legacy["id"]),
             )
             audit(conn, actor_id(args), "task.resolve", "review_task", legacy["task_key"], True, "reused_legacy")
-            print_json({"task_key": legacy["task_key"], "created": False, "status": legacy["status"], "current_version": legacy["current_version"]})
+            print_json({"task_key": legacy["task_key"], "task_type": "REVIEW", "created": False,
+                        "status": legacy["status"], "current_version": legacy["current_version"]})
             return
         task_key = args.task_key or f"RT-{uuid.uuid4().hex[:8].upper()}"
         conn.execute(
             """INSERT INTO review_task(
                 task_key, project_name, project_path, title, objective, review_level, review_scope,
-                baseline_ref, scope_fingerprint, status, remark
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?)""",
+                baseline_ref, scope_fingerprint, task_type, status, remark
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?)""",
             (task_key, cwd.name, str(cwd), args.title, args.objective, args.review_level,
-             args.review_scope, args.baseline_ref, fingerprint, args.remark),
+             args.review_scope, args.baseline_ref, fingerprint, args.task_type, args.remark),
         )
         audit(conn, actor_id(args), "task.resolve", "review_task", task_key, True, "created")
-    print_json({"task_key": task_key, "created": True, "status": "PENDING", "current_version": 0})
+    print_json({"task_key": task_key, "task_type": args.task_type, "created": True, "status": "PENDING", "current_version": 0})
 
 def task_list(args: argparse.Namespace) -> None:
     require_agent(args.agent)
@@ -289,6 +355,9 @@ def task_list(args: argparse.Namespace) -> None:
     if args.project_name:
         sql += " AND project_name = ?"
         params.append(args.project_name)
+    if args.task_type:
+        sql += " AND task_type = ?"
+        params.append(args.task_type)
     if not args.status and not args.include_closed:
         sql += " AND status IN ('PENDING', 'IN_PROGRESS', 'ON_HOLD', 'BLOCKED')"
     sql += " ORDER BY updated_at DESC, id DESC"
@@ -309,7 +378,11 @@ def task_update_status(args: argparse.Namespace) -> None:
         if not row:
             raise KeyError(f"任务不存在: {args.task_key}")
         require_choice(args.status, TASK_STATUSES, "任务状态")
-        if args.status != row["status"] and args.status not in TASK_TRANSITIONS[row["status"]]:
+        if (
+            args.agent != "human"
+            and args.status != row["status"]
+            and args.status not in TASK_TRANSITIONS[row["status"]]
+        ):
             raise RuntimeError(f"不允许任务状态流转: {row['status']} -> {args.status}")
         conn.execute(
             """UPDATE review_task
@@ -351,11 +424,13 @@ def version_create(args: argparse.Namespace) -> None:
 
     with connect() as conn:
         row = conn.execute(
-            "SELECT id, current_version FROM review_task WHERE task_key = ?",
+            "SELECT id, current_version, status FROM review_task WHERE task_key = ?",
             (args.task_key,),
         ).fetchone()
         if not row:
             raise KeyError(f"任务不存在: {args.task_key}")
+        if row["status"] in {"CLOSED", "CANCELLED"}:
+            raise RuntimeError("已关闭或取消的任务不能创建版本")
 
         next_version = row["current_version"] + 1
         conn.execute(
@@ -383,11 +458,13 @@ def issue_create(args: argparse.Namespace) -> None:
 
     with connect() as conn:
         task = conn.execute(
-            "SELECT id, current_version FROM review_task WHERE task_key = ?",
+            "SELECT id, current_version, status FROM review_task WHERE task_key = ?",
             (args.task_key,),
         ).fetchone()
         if not task:
             raise KeyError(f"任务不存在: {args.task_key}")
+        if task["status"] in {"CLOSED", "CANCELLED"}:
+            raise RuntimeError("已关闭或取消的任务不能创建新问题")
         if task["current_version"] <= 0:
             raise RuntimeError("请先创建任务版本")
 
@@ -441,8 +518,8 @@ def issue_create_batch(args: argparse.Namespace) -> None:
         task = conn.execute("SELECT id, current_version, status FROM review_task WHERE task_key = ?", (args.task_key,)).fetchone()
         if not task:
             raise KeyError(f"任务不存在: {args.task_key}")
-        if task["status"] == "CLOSED":
-            raise RuntimeError("已关闭任务不能创建新问题")
+        if task["status"] in {"CLOSED", "CANCELLED"}:
+            raise RuntimeError("已关闭或取消的任务不能创建新问题")
 
         new_payloads: list[tuple[dict[str, Any], str]] = []
         skipped: list[dict[str, str]] = []
@@ -742,9 +819,30 @@ def apply_status_update(
     ).fetchone()
     if not row:
         raise KeyError(f"问题不存在: {issue_key}")
-    if status not in ALLOWED_TRANSITIONS[row["status"]][args.agent]:
+    human_override = (
+        args.agent == "human"
+        and row["status"] != "HUMAN_CONFIRMATION_REQUIRED"
+        and status != "HUMAN_CONFIRMATION_REQUIRED"
+    )
+    if not human_override and status not in ALLOWED_TRANSITIONS[row["status"]][args.agent]:
         raise RuntimeError(f"不允许状态流转: {row['status']} -> {status} ({args.agent})")
-    if row["status"] == "INSPECTOR_CONFIRMATION_REQUIRED" and args.agent in {"inspector", "human"}:
+    if (
+        not human_override
+        and row["status"] == "IMPLEMENTED_PENDING_REVIEW"
+        and status in {"IN_PROGRESS", "REDESIGN_REQUIRED"}
+    ):
+        if not (content or "").strip():
+            raise ValueError("实现审核失败必须通过 --content 说明失败原因、调整点和验证标准")
+        if status == "IN_PROGRESS":
+            failed = conn.execute(
+                """SELECT 1 FROM issue_activity
+                   WHERE issue_id = ? AND attempt_no = ? AND activity_type = 'VERIFICATION_FAILED'
+                   LIMIT 1""",
+                (row["id"], row["current_attempt_no"]),
+            ).fetchone()
+            if not failed:
+                raise RuntimeError("按原设计退回 IN_PROGRESS 前必须为当前 attempt 追加 VERIFICATION_FAILED")
+    if not human_override and row["status"] == "INSPECTOR_CONFIRMATION_REQUIRED" and args.agent in {"inspector", "human"}:
         confirmation = conn.execute(
             """SELECT 1 FROM issue_activity
                WHERE issue_id = ? AND activity_type = 'INSPECTOR_CONFIRMATION_PROVIDED'
@@ -753,7 +851,7 @@ def apply_status_update(
         ).fetchone()
         if not confirmation:
             raise RuntimeError("审核端结束待审核确认前必须追加 INSPECTOR_CONFIRMATION_PROVIDED 活动")
-    if status == "CONFIRMED":
+    if status == "CONFIRMED" and not human_override:
         verified = conn.execute(
             "SELECT 1 FROM issue_activity WHERE issue_id = ? AND activity_type = 'VERIFICATION_PASSED' LIMIT 1",
             (row["id"],),
@@ -762,7 +860,7 @@ def apply_status_update(
             raise RuntimeError("问题确认前必须存在 VERIFICATION_PASSED 验证活动")
 
     attempt_no = row["current_attempt_no"]
-    if status == "IMPLEMENTED_PENDING_REVIEW":
+    if status == "IMPLEMENTED_PENDING_REVIEW" and row["status"] != status:
         attempt_no += 1
 
     conn.execute(
@@ -820,6 +918,196 @@ def issue_update_status_batch(args: argparse.Namespace) -> None:
         audit(conn, actor_id(args), "issue.update-status-batch", "review_issue", None, True, f"count={len(result)}")
     print_json({"updated": result})
 
+def apply_design_transition(
+    conn: sqlite3.Connection,
+    args: argparse.Namespace,
+    *,
+    allowed_agents: set[str],
+    allowed_sources: set[str],
+    target_status: str,
+    activity_type: str,
+    code_reference: list[Any] | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if args.agent not in allowed_agents:
+        raise PermissionError(f"agent {args.agent} 无权执行 {args.command}")
+    content = (args.content or "").strip()
+    if not content:
+        raise ValueError(f"{args.command} 必须通过 --content 记录设计结论")
+    row = conn.execute(
+        "SELECT id, status, current_attempt_no FROM review_issue WHERE issue_key = ?",
+        (args.issue_key,),
+    ).fetchone()
+    if not row:
+        raise KeyError(f"问题不存在: {args.issue_key}")
+    if row["status"] not in allowed_sources:
+        raise RuntimeError(
+            f"不允许设计状态流转: {row['status']} -> {target_status} ({args.command})"
+        )
+    conn.execute(
+        """INSERT INTO issue_activity(
+            issue_id, attempt_no, activity_type, operator_type, operator_id,
+            content, result_status, code_reference_json, metadata_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            row["id"], row["current_attempt_no"], activity_type,
+            operator_type(args.agent), actor_id(args), content, target_status,
+            dumps(code_reference or []), dumps(metadata or {}),
+        ),
+    )
+    conn.execute(
+        "UPDATE review_issue SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        (target_status, row["id"]),
+    )
+    audit(conn, actor_id(args), args.command.replace("-", "."), "review_issue", args.issue_key, True)
+    return {
+        "issue_key": args.issue_key,
+        "status": target_status,
+        "attempt_no": row["current_attempt_no"],
+        "activity_type": activity_type,
+    }
+
+def design_request(args: argparse.Namespace) -> None:
+    require_agent(args.agent)
+    with connect() as conn:
+        result = apply_design_transition(
+            conn, args, allowed_agents={"inspector", "human"},
+            allowed_sources={"PROPOSED", "IN_PROGRESS"}, target_status="DESIGN_REQUIRED",
+            activity_type="DESIGN_REQUESTED",
+        )
+    print_json(result)
+
+def design_submit(args: argparse.Namespace) -> None:
+    require_agent(args.agent)
+    code_reference = json.loads(args.code_reference)
+    metadata = json.loads(args.metadata)
+    if not isinstance(code_reference, list):
+        raise ValueError("code-reference 必须是 JSON 数组")
+    if not isinstance(metadata, dict):
+        raise ValueError("metadata 必须是 JSON 对象")
+    with connect() as conn:
+        result = apply_design_transition(
+            conn, args, allowed_agents={"developer", "human"},
+            allowed_sources={"DESIGN_REQUIRED", "REDESIGN_REQUIRED"},
+            target_status="DESIGN_PENDING_REVIEW", activity_type="DESIGN_SUBMITTED",
+            code_reference=code_reference, metadata=metadata,
+        )
+    print_json(result)
+
+def design_review(args: argparse.Namespace) -> None:
+    require_agent(args.agent)
+    target_status = "IN_PROGRESS" if args.decision == "approved" else "DESIGN_REQUIRED"
+    activity_type = "DESIGN_APPROVED" if args.decision == "approved" else "DESIGN_REJECTED"
+    with connect() as conn:
+        result = apply_design_transition(
+            conn, args, allowed_agents={"inspector", "human"},
+            allowed_sources={"DESIGN_PENDING_REVIEW"}, target_status=target_status,
+            activity_type=activity_type,
+        )
+    print_json({**result, "decision": args.decision})
+
+def human_escalate(args: argparse.Namespace) -> None:
+    require_agent(args.agent)
+    if args.agent != "inspector":
+        raise PermissionError("只有 inspector 可以发起 Human 最终确认")
+    reason = (args.reason or "").strip()
+    question = (args.question or "").strip()
+    if not reason or not question:
+        raise ValueError("human-escalate 的 --reason 和 --question 均不能为空")
+    options = json.loads(args.options)
+    evidence = json.loads(args.evidence)
+    if not isinstance(options, list):
+        raise ValueError("options 必须是 JSON 数组")
+    if not isinstance(evidence, list):
+        raise ValueError("evidence 必须是 JSON 数组")
+    metadata = {
+        "reason": reason,
+        "question": question,
+        "options": options,
+        "recommended_option": args.recommended_option,
+        "evidence": evidence,
+    }
+    allowed_sources = {
+        "PROPOSED", "DESIGN_REQUIRED", "DESIGN_PENDING_REVIEW", "IN_PROGRESS",
+        "ON_HOLD", "BLOCKED", "INSPECTOR_CONFIRMATION_REQUIRED",
+        "IMPLEMENTED_PENDING_REVIEW", "REDESIGN_REQUIRED",
+    }
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT id, status, current_attempt_no FROM review_issue WHERE issue_key = ?",
+            (args.issue_key,),
+        ).fetchone()
+        if not row:
+            raise KeyError(f"问题不存在: {args.issue_key}")
+        if row["status"] not in allowed_sources:
+            raise RuntimeError(f"状态 {row['status']} 不允许升级 Human")
+        content = f"为什么必须人工决定：{reason}\n\nHuman 只需回答：{question}"
+        conn.execute(
+            """INSERT INTO issue_activity(
+                issue_id, attempt_no, activity_type, operator_type, operator_id,
+                content, result_status, code_reference_json, metadata_json
+            ) VALUES (?, ?, 'HUMAN_CONFIRMATION_REQUESTED', ?, ?, ?,
+                      'HUMAN_CONFIRMATION_REQUIRED', ?, ?)""",
+            (
+                row["id"], row["current_attempt_no"], operator_type(args.agent), actor_id(args),
+                content, dumps(evidence), dumps(metadata),
+            ),
+        )
+        conn.execute(
+            """UPDATE review_issue
+               SET status = 'HUMAN_CONFIRMATION_REQUIRED', updated_at = CURRENT_TIMESTAMP
+               WHERE id = ?""",
+            (row["id"],),
+        )
+        audit(conn, actor_id(args), "human.escalate", "review_issue", args.issue_key, True)
+    print_json({
+        "issue_key": args.issue_key, "status": "HUMAN_CONFIRMATION_REQUIRED",
+        "attempt_no": row["current_attempt_no"], "activity_type": "HUMAN_CONFIRMATION_REQUESTED",
+    })
+
+def human_confirmation_resolve(args: argparse.Namespace) -> None:
+    require_agent(args.agent)
+    if args.agent != "human":
+        raise PermissionError("只有 human 可以提交最终人工决定")
+    decision = (args.decision or "").strip()
+    content = (args.content or "").strip()
+    if not decision or not content:
+        raise ValueError("human-confirmation-resolve 的 --decision 和 --content 均不能为空")
+    next_status = args.next_status or "DESIGN_REQUIRED"
+    allowed_next = {"DESIGN_REQUIRED", "IN_PROGRESS", "ON_HOLD", "BLOCKED", "CANCELLED"}
+    require_choice(next_status, allowed_next, "next_status")
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT id, status, current_attempt_no FROM review_issue WHERE issue_key = ?",
+            (args.issue_key,),
+        ).fetchone()
+        if not row:
+            raise KeyError(f"问题不存在: {args.issue_key}")
+        if row["status"] != "HUMAN_CONFIRMATION_REQUIRED":
+            raise RuntimeError(
+                f"只有 HUMAN_CONFIRMATION_REQUIRED 可以提交人工决定，当前为 {row['status']}"
+            )
+        metadata = {"decision": decision, "next_status": next_status}
+        conn.execute(
+            """INSERT INTO issue_activity(
+                issue_id, attempt_no, activity_type, operator_type, operator_id,
+                content, result_status, metadata_json
+            ) VALUES (?, ?, 'HUMAN_CONFIRMATION_PROVIDED', ?, ?, ?, ?, ?)""",
+            (
+                row["id"], row["current_attempt_no"], operator_type(args.agent), actor_id(args),
+                content, next_status, dumps(metadata),
+            ),
+        )
+        conn.execute(
+            "UPDATE review_issue SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (next_status, row["id"]),
+        )
+        audit(conn, actor_id(args), "human.confirmation-resolve", "review_issue", args.issue_key, True)
+    print_json({
+        "issue_key": args.issue_key, "status": next_status, "decision": decision,
+        "attempt_no": row["current_attempt_no"], "activity_type": "HUMAN_CONFIRMATION_PROVIDED",
+    })
+
 def implementation_submit(args: argparse.Namespace) -> None:
     require_agent(args.agent)
     if args.agent not in {"developer", "human"}:
@@ -832,11 +1120,15 @@ def implementation_submit(args: argparse.Namespace) -> None:
         raise ValueError("metadata 必须是 JSON 对象")
     with connect() as conn:
         row = conn.execute(
-            "SELECT id, current_attempt_no FROM review_issue WHERE issue_key = ?",
+            "SELECT id, status, current_attempt_no FROM review_issue WHERE issue_key = ?",
             (args.issue_key,),
         ).fetchone()
         if not row:
             raise KeyError(f"问题不存在: {args.issue_key}")
+        if row["status"] not in {"PROPOSED", "IN_PROGRESS"}:
+            raise RuntimeError(
+                f"状态 {row['status']} 禁止提交实现；设计阶段必须先完成 design-review approved"
+            )
         next_attempt = row["current_attempt_no"] + 1
         conn.execute(
             """INSERT INTO issue_activity(
@@ -1065,6 +1357,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--baseline-ref")
     p.add_argument("--started-at")
     p.add_argument("--remark")
+    p.add_argument("--task-type", choices=sorted(TASK_TYPES), default="REVIEW")
     p.set_defaults(func=task_create)
 
     p = sub.add_parser("task-resolve")
@@ -1075,11 +1368,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--review-scope", required=True)
     p.add_argument("--baseline-ref")
     p.add_argument("--remark")
+    p.add_argument("--task-type", choices=sorted(TASK_TYPES), default="REVIEW")
     p.set_defaults(func=task_resolve)
 
     p = sub.add_parser("task-list")
     p.add_argument("--status", choices=sorted(TASK_STATUSES))
     p.add_argument("--project-name")
+    p.add_argument("--task-type", choices=sorted(TASK_TYPES))
     p.add_argument("--include-closed", action="store_true")
     p.set_defaults(func=task_list)
 
@@ -1156,7 +1451,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("issue-update-status")
     p.add_argument("--issue-key", required=True)
-    p.add_argument("--status", required=True, choices=sorted({s for values in ALLOWED_TRANSITIONS.values() for role in values.values() for s in role}))
+    p.add_argument("--status", required=True, choices=sorted(ALLOWED_TRANSITIONS))
     p.add_argument("--content")
     p.set_defaults(func=issue_update_status)
 
@@ -1171,6 +1466,42 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--code-reference", default="[]")
     p.add_argument("--metadata", default="{}")
     p.set_defaults(func=implementation_submit)
+
+    p = sub.add_parser("design-request")
+    p.add_argument("--issue-key", required=True)
+    p.add_argument("--content", required=True)
+    p.set_defaults(func=design_request)
+
+    p = sub.add_parser("design-submit")
+    p.add_argument("--issue-key", required=True)
+    p.add_argument("--content", required=True)
+    p.add_argument("--code-reference", default="[]")
+    p.add_argument("--metadata", default="{}")
+    p.set_defaults(func=design_submit)
+
+    p = sub.add_parser("design-review")
+    p.add_argument("--issue-key", required=True)
+    p.add_argument("--decision", required=True, choices=["approved", "rejected"])
+    p.add_argument("--content", required=True)
+    p.set_defaults(func=design_review)
+
+    p = sub.add_parser("human-escalate")
+    p.add_argument("--issue-key", required=True)
+    p.add_argument("--reason", required=True)
+    p.add_argument("--question", required=True)
+    p.add_argument("--options", default="[]")
+    p.add_argument("--evidence", default="[]")
+    p.add_argument("--recommended-option")
+    p.set_defaults(func=human_escalate)
+
+    p = sub.add_parser("human-confirmation-resolve")
+    p.add_argument("--issue-key", required=True)
+    p.add_argument("--decision", required=True)
+    p.add_argument("--content", required=True)
+    p.add_argument(
+        "--next-status", choices=["DESIGN_REQUIRED", "IN_PROGRESS", "ON_HOLD", "BLOCKED", "CANCELLED"],
+    )
+    p.set_defaults(func=human_confirmation_resolve)
 
     p = sub.add_parser("issue-update-assessment")
     p.add_argument("--issue-key", required=True)

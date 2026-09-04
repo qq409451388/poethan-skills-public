@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 3,
   "skill_name": "code-inspector",
   "runtime": {
     "local_home": "${HOME}/.agent-review",
@@ -17,16 +17,22 @@
   "roles": {
     "developer": {
       "session_selector": "dev",
-      "commands": ["task-list", "issue-list", "issue-list-pending-review", "issue-get", "activity-list", "activity-list-recent", "issue-update-status", "issue-update-status-batch", "implementation-submit", "activity-append", "candidate-submit", "candidate-list"],
-      "responsibilities": ["修改业务代码", "提交设计和实现证据", "请求 inspector 确认边界", "提交新问题候选"],
-      "prohibited": ["task-create", "version-create", "issue-create", "issue-update-assessment", "confirm-issue", "direct-sql"]
+      "commands": ["task-list", "issue-list", "issue-list-pending-review", "issue-get", "activity-list", "activity-list-recent", "issue-update-status", "issue-update-status-batch", "design-submit", "implementation-submit", "activity-append", "candidate-submit", "candidate-list"],
+      "responsibilities": ["在设计状态只分析代码和提交具体方案", "方案获批后修改业务代码", "提交实现证据", "请求 inspector 确认边界", "提交新问题候选"],
+      "prohibited": ["task-create", "version-create", "issue-create", "issue-update-assessment", "design-request", "design-review", "human-escalate", "HUMAN_CONFIRMATION_REQUIRED", "DESIGN_APPROVED", "CONFIRMED", "direct-sql", "在设计状态修改业务代码或提交实现", "绕过 Inspector 请求 Human 技术决策"]
     },
     "inspector": {
       "session_selector": "insp",
       "includes": ["verification"],
-      "commands": ["task-create", "task-resolve", "task-list", "task-update", "task-update-status", "version-create", "issue-create", "issue-create-batch", "issue-list", "issue-list-pending-review", "issue-get", "issue-update-assessment", "issue-update-assessment-batch", "issue-update-body", "issue-update-status", "issue-update-status-batch", "activity-append", "activity-list", "activity-list-recent", "candidate-list", "candidate-update-status"],
-      "responsibilities": ["创建和执行检查任务", "发现并记录问题", "审核 developer 提交的问题候选", "执行修复验证", "确认问题或要求重新设计", "回答开发端边界疑问"],
-      "prohibited": ["modify-business-code", "direct-sql"]
+      "commands": ["task-create", "task-resolve", "task-list", "task-update", "task-update-status", "version-create", "issue-create", "issue-create-batch", "issue-list", "issue-list-pending-review", "issue-get", "issue-update-assessment", "issue-update-assessment-batch", "issue-update-body", "issue-update-status", "issue-update-status-batch", "design-request", "design-review", "human-escalate", "activity-append", "activity-list", "activity-list-recent", "candidate-list", "candidate-update-status"],
+      "responsibilities": ["创建或复用 REVIEW/CONTINUOUS 任务", "发现、评级并记录问题", "判断是否需要设计阶段", "说明根因、不可破坏语义、设计约束、风险与推荐方向", "审核 Developer 方案", "区分实现错误与设计错误", "穷尽可得证据后判断是否满足极低频 Human 升级标准", "将人工问题整理为可快速决策的事实、选项、风险和推荐", "执行修复验证并确认问题", "审核问题候选"],
+      "prohibited": ["implementation-submit", "human-confirmation-resolve", "以普通不确定性或省事为由升级 Human", "modify-business-code", "direct-sql"]
+    },
+    "human": {
+      "session_selector": "human",
+      "commands": ["task-create", "task-resolve", "task-list", "task-update", "task-update-status", "version-create", "issue-create", "issue-create-batch", "issue-list", "issue-list-pending-review", "issue-get", "issue-update-assessment", "issue-update-assessment-batch", "issue-update-body", "issue-update-status", "issue-update-status-batch", "design-request", "design-submit", "design-review", "human-confirmation-resolve", "implementation-submit", "activity-append", "activity-list", "activity-list-recent", "candidate-submit", "candidate-list", "candidate-update-status"],
+      "responsibilities": ["监督异常流程", "对 Agent 无法获得的业务事实、事实归属或重大不可逆数据风险作最终决定", "通过 human-confirmation-resolve 恢复自动工作流", "以最高解释权覆盖任一普通 Task 或 Issue 状态", "必要时进行人工管理与纠错"],
+      "prohibited": ["human-escalate", "主动进入 HUMAN_CONFIRMATION_REQUIRED", "用人工决定替代 Inspector 的设计审核、代码验证或最终技术确认", "direct-sql"]
     }
   }
 }

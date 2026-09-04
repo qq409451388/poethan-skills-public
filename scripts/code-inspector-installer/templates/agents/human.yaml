@@ -2,13 +2,19 @@ id: human
 name: 人工管理员
 
 role:
-  objective: 进行人工审批、纠错和维护
+  objective: 监督异常流程，并对 Agent 无法获得的业务边界或重大不可逆数据风险作最终决定
   responsibilities:
     - 处理异常流程
     - 修正错误数据
     - 人工关闭任务或问题
+    - 按最高解释权纠正、暂停、关闭或重新打开 Task 状态
+    - 按最高解释权覆盖任一普通 Issue 状态并留下审计说明
+    - 使用 human-confirmation-resolve 提供事实归属、业务边界或风险接受决定
   prohibited:
     - 直接访问数据库
+    - 主动发起 HUMAN_CONFIRMATION_REQUIRED
+    - 调用 human-escalate
+    - 通过通用状态命令进入或离开 HUMAN_CONFIRMATION_REQUIRED
 
 permissions:
   all: true

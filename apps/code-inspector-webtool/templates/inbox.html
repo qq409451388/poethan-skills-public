@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% block title %}待我处理 · 代码检查工作台{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div class="page-title"><h1>待我处理</h1><p>只聚合当前需要 Human 审核、确认或协调的问题。</p></div>
+</div>
+
+<section class="recent-tasks" aria-labelledby="recent-tasks-title">
+  <div class="section-head recent-tasks-head">
+    <div><h2 id="recent-tasks-title">最近活跃的任务</h2><p class="section-sub">按问题、活动、候选或任务本身的最近变化排序，最多显示 6 个。</p></div>
+    <a class="btn btn-small" href="{{ url_for('task_list') }}">查看全部任务</a>
+  </div>
+  <div class="recent-task-grid">
+    {% for task in recent_tasks %}
+    <a class="recent-task" href="{{ url_for('task_detail', task_key=task.task_key) }}">
+      <div class="recent-task-top"><span class="mono">{{ task.task_key }}</span><span class="badge badge-status-{{ task.status }}">{{ task.status|label }}</span></div>
+      <h3>{{ task.title }}</h3>
+      <p>{{ task.project_name }} · {{ task.task_type|label }}</p>
+      <div class="recent-task-stats"><span><strong>{{ task.open_issue_total or 0 }}</strong> 待处理</span><span>{{ task.issue_total or 0 }} 总计</span>{% if task.pending_review_total %}<span>{{ task.pending_review_total }} 待审核</span>{% endif %}{% if task.human_total %}<span class="needs-human">{{ task.human_total }} 需人工</span>{% endif %}</div>
+      <time>最近活跃 {{ task.active_at|localtime }}</time>
+    </a>
+    {% else %}<div class="empty recent-task-empty">当前没有开启中的任务。</div>{% endfor %}
+  </div>
+</section>
+
+<div class="metrics">
+  <a class="metric" href="#pending-review"><span class="metric-label">待审核实现</span><strong>{{ metrics.pending_review }}</strong><span>Developer 已提交实现</span></a>
+  <a class="metric" href="#confirmation"><span class="metric-label">需要人工确认</span><strong>{{ metrics.confirmation }}</strong><span>异常边界或重大安全决策</span></a>
+  <a class="metric" href="#blocked"><span class="metric-label">受阻</span><strong>{{ metrics.blocked }}</strong><span>等待协调或补充信息</span></a>
+  <a class="metric" href="#candidate-review"><span class="metric-label">候选待审核</span><strong>{{ metrics.candidates }}</strong><span>尚未形成正式 Issue</span></a>
+</div>
+
+{% macro issue_queue(section_id, title, description, items, tone) %}
+<section class="work-card" id="{{ section_id }}">
+  <div class="work-card-head"><div><h2>{{ title }}</h2><p>{{ description }}</p></div><span class="badge badge-{{ tone }}">{{ items|length }}</span></div>
+  <div class="work-list">
+    {% for item in items %}
+    <a class="work-item" href="{{ url_for('issue_detail', issue_key=item.issue_key) }}">
+      <div class="work-main">
+        <h3><span class="mono">{{ item.issue_key }}</span> · {{ item.title }}</h3>
+        <p>{{ item.project_name }} / {{ item.task_key }} · 第 {{ item.current_attempt_no }} 轮</p>
+        {% if item.developer_submitted_at %}<p>Developer 最近提交：<span class="mono">{{ item.developer_submitted_at|localtime }}</span></p>{% endif %}
+      </div>
+      <div class="work-side"><span class="sev-{{ item.severity }}">{{ item.severity|label }}</span><span class="badge badge-status-{{ item.status }}">{{ item.status|label }}</span><time>{{ item.updated_at|localtime }}</time></div>
+    </a>
+    {% else %}<div class="empty">当前没有{{ title }}。</div>{% endfor %}
+  </div>
+</section>
+{% endmacro %}
+
+{{ issue_queue('pending-review', '待审核实现', 'Developer 已提交实现，等待 Human 复核与验证。', groups.pending_review, 'amber') }}
+<section class="work-card human-confirmation-card" id="confirmation">
+  <div class="work-card-head"><div><h2>需要人工确认</h2><p>Inspector 已暂停自动流转；这里只处理 Agent 无法获得的关键事实或重大不可逆数据风险。</p></div><span class="badge badge-red">{{ groups.confirmation|length }}</span></div>
+  <div class="work-list">
+    {% for item in groups.confirmation %}
+    {% set request = item.human_request or {} %}
+    <a class="work-item human-request-item" href="{{ url_for('issue_detail', issue_key=item.issue_key) }}">
+      <div class="work-main">
+        <h3><span class="mono">{{ item.issue_key }}</span> · {{ item.title }}</h3>
+        <p>{{ item.project_name }} / {{ item.task_key }} · 自动工作流已暂停</p>
+        <dl class="human-request-summary">
+          <dt>为什么必须人工决定</dt><dd>{{ request.reason or 'Inspector 未提供结构化原因，请进入详情查看活动。' }}</dd>
+          <dt>Human 只需回答</dt><dd><strong>{{ request.question or '请进入详情查看待决问题。' }}</strong></dd>
+          {% if request.options %}<dt>可选方案</dt><dd>{% for option in request.options %}<span class="option-pill">{% if option is mapping %}{{ option.label or option.title or option.name or option|json_pretty }}{% else %}{{ option }}{% endif %}</span>{% endfor %}</dd>{% endif %}
+          {% if request.recommended_option %}<dt>Inspector 推荐</dt><dd>{{ request.recommended_option }}</dd>{% endif %}
+          {% if request.evidence %}<dt>关键风险 / 证据</dt><dd>{% for evidence in request.evidence[:3] %}<span class="risk-line">{% if evidence is mapping %}{{ evidence.risk or evidence.summary or evidence.fact or evidence.content or evidence.file_path or evidence|json_pretty }}{% else %}{{ evidence }}{% endif %}</span>{% endfor %}{% if request.evidence|length > 3 %}<span class="muted">另有 {{ request.evidence|length - 3 }} 项，进入详情查看</span>{% endif %}</dd>{% endif %}
+        </dl>
+      </div>
+      <div class="work-side"><span class="sev-{{ item.severity }}">{{ item.severity|label }}</span><span class="badge badge-status-{{ item.status }}">{{ item.status|label }}</span><time>{{ item.updated_at|localtime }}</time></div>
+    </a>
+    {% else %}<div class="empty">当前没有需要 Human 最终确认的问题。</div>{% endfor %}
+  </div>
+</section>
+{{ issue_queue('blocked', '受阻', '需要补充外部信息、依赖或人工协调。', groups.blocked, 'red') }}
+
+<section class="work-card" id="candidate-review">
+  <div class="work-card-head"><div><h2>候选问题待审核</h2><p>Developer 新发现的问题，尚未进入正式 Issue。</p></div><a class="btn btn-small" href="{{ url_for('candidate_list') }}">查看全部</a></div>
+  <div class="work-list">
+    {% for item in candidates %}
+    <a class="work-item" href="{{ url_for('candidate_list', task_key=item.task_key) }}">
+      <div class="work-main"><h3><span class="mono">{{ item.candidate_key }}</span> · {{ item.title }}</h3><p>{{ item.project_name }} / {{ item.task_key }} · 提交者 {{ item.submitted_by }}</p></div>
+      <div class="work-side"><span class="badge badge-status-{{ item.status }}">{{ item.status|label }}</span><time>{{ item.updated_at|localtime }}</time></div>
+    </a>
+    {% else %}<div class="empty">当前没有待审核候选问题。</div>{% endfor %}
+  </div>
+</section>
+{% endblock %}

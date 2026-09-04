@@ -1,0 +1,20 @@
+{% macro render_reference(item) %}
+  {% if item is mapping %}
+    {% set file_path = item.file_path or item.file or item.path %}
+    {% set excerpt = item.code_excerpt or item.snippet or item.code %}
+    <div class="evidence-card">
+      <div class="evidence-head">
+        <span class="mono">{{ file_path or '未定位文件' }}{% if item.line_start %}:{{ item.line_start }}{% if item.line_end and item.line_end != item.line_start %}-{{ item.line_end }}{% endif %}{% elif item.lines %}:{{ item.lines }}{% elif item.line %}:{{ item.line }}{% endif %}</span>
+      </div>
+      {% if excerpt %}<pre class="code"><code>{{ excerpt }}</code></pre>
+      {% elif item.content %}<div class="evidence-copy">{{ item.content|markdown }}</div>
+      {% elif not file_path %}<details class="raw-details"><summary>查看原始引用</summary><pre class="raw-json">{{ item|json_pretty }}</pre></details>{% endif %}
+    </div>
+  {% else %}
+    <div class="evidence-card"><pre class="code"><code>{{ item }}</code></pre></div>
+  {% endif %}
+{% endmacro %}
+
+{% macro render_references(items, empty_text='未提供代码引用') %}
+  {% for item in items %}{{ render_reference(item) }}{% else %}<div class="empty-inline">{{ empty_text }}</div>{% endfor %}
+{% endmacro %}

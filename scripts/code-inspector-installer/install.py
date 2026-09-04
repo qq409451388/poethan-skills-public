@@ -233,20 +233,22 @@ def generated_skill_text(platform: str, identities: list[dict[str, Any]], target
             workflow = f"""### 执行流程
 
 1. 用 `{tool} task-list`、带 `--updated-after/--limit/--fields` 的 `issue-list`、`issue-get` 和 `activity-list-recent` 增量定位待处理 issue 与新备注；不要创建 task、版本或正式 issue，不要修改评级或最终确认。
-2. 短改动可从 `PROPOSED` 直接提交 `IMPLEMENTED_PENDING_REVIEW`；需要持续处理时先进入 `IN_PROGRESS`。
-3. 分析根因、修改业务代码、补测试；完成单个 issue 后用 `implementation-submit` 原子提交实现证据和待审核状态。
-4. 遇到修复边界、验收口径或问题成立性疑问时，带明确说明转为 `INSPECTOR_CONFIRMATION_REQUIRED`，等待 inspector 裁定。
-5. 发现不属于现有 issue 的新问题时用 `candidate-submit` 提交候选，绝不调用 `issue-create`；多个 issue 同步提交时使用 `issue-update-status-batch`。默认聊天仅说明处理的 issue、改动、测试和下一步。
+2. `DESIGN_REQUIRED` 或 `REDESIGN_REQUIRED` 时只阅读、分析和讨论，用 `design-submit` 提交具体方案；`DESIGN_PENDING_REVIEW` 时等待审核。上述三种状态禁止修改业务代码和 `implementation-submit`，不得自行批准设计。
+3. 只有简单问题或 `design-review approved` 后的 `IN_PROGRESS` 才能编码。分析根因、修改业务代码、补测试；完成单个 issue 后用 `implementation-submit` 原子提交实现证据和待审核状态。
+4. 方案应按复杂度说明修改模块、类或方法、数据流、状态/幂等/并发、DB/历史/API 兼容、测试和风险；不要机械套模板。遇到验收口径或成立性疑问时，只能带明确说明转 `INSPECTOR_CONFIRMATION_REQUIRED`，不得直接进入 `HUMAN_CONFIRMATION_REQUIRED`、调用 `human-escalate` 或绕过 Inspector 请求 Human 做技术决策。
+5. `HUMAN_CONFIRMATION_REQUIRED` 时没有可执行动作，必须等待 Human 决策后由 Resolver 恢复流程。发现不属于现有 issue 的新问题时用 `candidate-submit` 提交候选，绝不调用 `issue-create`。默认聊天仅说明处理的 issue、方案或改动、测试和下一步。
 """
         else:
             workflow = f"""### 执行流程
 
-1. 先读取 `references/workflow.yaml` 和 `references/review-levels.yaml`；创建或继续检查时用 `{tool} task-resolve` 复用 `PENDING` / `IN_PROGRESS` task。
-2. 用 `candidate-list` 处理 developer 候选；扫描期间也只收集候选。若使用并行子代理，主审核者必须额外串联跨模块数据流，并检查入口、生产、传输或存储、消费、确认、清理、保留和监控各端。
+1. 先读取 `references/workflow.yaml` 和 `references/review-levels.yaml`；创建或继续检查时用 `{tool} task-resolve`。`REVIEW` 沿用基线 identity；`CONTINUOUS` 跨基线复用且所有 issue 终结也不自动关闭。
+2. 区分 `scan` 与 `report`：扫描期间先收集候选，主审核者必须额外串联跨模块数据流；向 `CONTINUOUS` 报告单个线上问题只核实证据、判定成立和去重，不触发全项目扫描。
 3. 初步合并后先做覆盖面回查和补充扫描，再按根因、修复边界和风险链路去重、评级；不能用候选数量或并行扫描完成代替覆盖判断。最后用 `issue-create-batch` 创建正式 issue。
-4. 先用 `activity-list-recent --activity-type COMMENT_ADDED` 汇总新备注；开发请求边界确认时，先用 `activity-append` 追加 `INSPECTOR_CONFIRMATION_PROVIDED` 结论，再将 issue 转为继续处理、搁置、受阻或取消。
-5. 用 `issue-list-pending-review` 汇总开发提交；执行验证并记录验证活动。只有已有 `VERIFICATION_PASSED` 才能转为 `CONFIRMED`；已核实的 `PROPOSED` 可直接确认，无需借道 `ON_HOLD`。
-6. 多个 issue 的同类评级或状态调整使用批量更新命令。不修改业务代码，不输出开发端的具体实现方案；默认聊天仅输出简短任务摘要。
+4. 对跨模块、Schema/迁移、回灌、状态机、幂等并发、ACK/retry/recovery、公共 API、大重构或方向不确定的问题优先 `design-request`，明确根因、不可破坏语义、约束、风险、推荐方向和必须回答的问题。用 `DESIGN_GUIDANCE` 补充讨论，用 `design-review` 批准或明确驳回。
+5. 用 `issue-list-pending-review` 汇总实现。审核失败必须区分：实现细节错则追加 `VERIFICATION_FAILED` 并回 `IN_PROGRESS`；方向错则转 `REDESIGN_REQUIRED`，强制重走设计。连续两次失败必须重新判断设计是否对齐，并给出必改点与验证标准。
+6. Human 是异常兜底，不是普通 Reviewer。准备 `human-escalate` 前必须确认继续读代码、补测试、查数据库/日志/运行数据、追加 `DESIGN_GUIDANCE` 或自行作出合理技术判断都不能安全解决，并且 Human 确实掌握关键业务事实，或选错方案会造成无法靠正常重试恢复的重大数据破坏。意见不一致、普通架构取舍、方案差、实现或测试失败都不得升级。
+7. 确需升级时，用 `human-escalate` 把原因、已验证/未知事实、选项与影响、推荐和 Human 唯一要回答的问题整理清楚；不得倾倒长日志、完整代码或 Agent 对话。`HUMAN_CONFIRMATION_REQUIRED` 时停止自动工作；Inspector 不得代替 Human resolve。Human 恢复后仍由 Inspector 负责设计、审核、验证和技术闭环。
+8. 只有已有 `VERIFICATION_PASSED` 才能转 `CONFIRMED`。不修改业务代码；Inspector 定义必须解决和不可破坏的边界，Developer 决定具体代码实现。默认聊天仅输出简短任务摘要。
 """
         default_label = "（默认身份）" if item.get("default") else ""
         rows.append(

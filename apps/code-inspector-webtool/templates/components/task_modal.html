@@ -1,0 +1,40 @@
+{% macro task_modal(modal_id, task_key, title, objective, remark, close_reason, status, statuses, return_to) %}
+<div class="modal-backdrop" id="{{ modal_id }}" role="dialog" aria-modal="true" aria-labelledby="{{ modal_id }}-title">
+  <div class="modal-card">
+    <div class="modal-head">
+      <div><h2 class="modal-title" id="{{ modal_id }}-title">编辑当前任务</h2><div class="modal-sub mono">{{ task_key }}</div></div>
+      <button type="button" class="modal-close" data-modal-close aria-label="关闭">×</button>
+    </div>
+    <div class="modal-tabs" role="tablist">
+      <button type="button" class="modal-tab active" data-tab-target="base">基本信息</button>
+      <button type="button" class="modal-tab" data-tab-target="status">任务状态</button>
+    </div>
+    <div class="modal-body">
+      <section class="modal-pane active" data-tab-pane="base">
+        <form method="post" action="{{ url_for('task_update', task_key=task_key) }}">
+          <input type="hidden" name="return_to" value="{{ return_to }}">
+          <div class="form-grid">
+            <div class="field form-full"><label>标题</label><input type="text" name="title" value="{{ title }}" required></div>
+            <div class="field form-full"><label>目标</label><textarea name="objective" required>{{ objective }}</textarea></div>
+            <div class="field form-full"><label>备注</label><textarea name="remark">{{ remark or '' }}</textarea></div>
+            <div class="field form-full"><label>关闭原因（可选）</label><input type="text" name="close_reason" value="{{ close_reason or '' }}"></div>
+          </div>
+          <div class="modal-actions"><button type="button" class="btn" data-modal-close>取消</button><button type="submit" class="btn btn-primary">保存基本信息</button></div>
+        </form>
+      </section>
+      <section class="modal-pane" data-tab-pane="status">
+        <form method="post" action="{{ url_for('task_update_status', task_key=task_key) }}">
+          <input type="hidden" name="return_to" value="{{ return_to }}">
+          <div class="form-grid">
+            <div class="field"><label>目标状态</label><select name="status">{% for item in statuses %}<option value="{{ item }}" {% if status == item %}selected{% endif %}>{{ item|label }}</option>{% endfor %}</select></div>
+            <div class="field"><label>备注</label><input type="text" name="remark" placeholder="状态变更备注"></div>
+            <div class="field form-full"><label>关闭原因</label><input type="text" name="close_reason" value="{{ close_reason or '' }}" placeholder="关闭任务时填写"></div>
+          </div>
+          <p class="form-note">提交仍由领域工具校验和审计。Human 拥有任务状态最高管理权限，可纠正或重新打开终态任务；Inspector 仍遵守标准任务状态机。</p>
+          <div class="modal-actions"><button type="button" class="btn" data-modal-close>取消</button><button type="submit" class="btn btn-primary">更新任务状态</button></div>
+        </form>
+      </section>
+    </div>
+  </div>
+</div>
+{% endmacro %}

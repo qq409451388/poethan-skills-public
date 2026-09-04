@@ -1,4 +1,4 @@
-version: 1.2.0
+version: 2.1.0
 
 command: review-db.py
 identity:
@@ -14,24 +14,29 @@ commands:
   task-create:
     roles: [inspector, human]
     required: [--title, --objective]
-    optional: [--task-key, --review-level, --review-scope, --baseline-ref, --started-at, --remark]
+    optional: [--task-key, --task-type, --review-level, --review-scope, --baseline-ref, --started-at, --remark]
+    defaults: {task-type: REVIEW}
   task-resolve:
     roles: [inspector, human]
-    purpose: 按项目绝对路径、等级、目标、范围和基线复用活动 task；不存在时创建。
+    purpose: 按 task 类型的稳定 identity 复用活动 task；不存在时创建。显式 task_key 优先。
     required: [--title, --objective, --review-level, --review-scope]
-    optional: [--task-key, --baseline-ref, --remark]
+    optional: [--task-key, --task-type, --baseline-ref, --remark]
+    defaults: {task-type: REVIEW}
+    identity_note: REVIEW 保留原 baseline identity；CONTINUOUS identity 忽略 baseline_ref，并复用 PENDING/IN_PROGRESS/ON_HOLD/BLOCKED 的同一治理任务。
   task-list:
     roles: [inspector, developer, human]
-    optional: [--status, --project-name, --include-closed]
+    optional: [--status, --project-name, --task-type, --include-closed]
     default: 仅返回 PENDING、IN_PROGRESS、ON_HOLD、BLOCKED。
   task-update:
     roles: [inspector, human]
     required: [--task-key]
     optional_one_or_more: [--title, --objective, --remark, --close-reason]
+    note: task_type 创建后不可修改，命令不接受 --task-type。
   task-update-status:
     roles: [inspector, human]
     required: [--task-key, --status]
     optional: [--started-at, --finished-at, --close-reason, --remark]
+    note: inspector 遵守标准 task_transitions；human 可设置任一合法 Task 状态并可重新打开终态任务，写入仍由领域命令审计。
   version-create:
     roles: [inspector, human]
     required: [--task-key, --reason]
@@ -80,7 +85,7 @@ commands:
     roles: [inspector, developer, human]
     required: [--issue-key, --status]
     optional: [--content]
-    note: developer 请求 INSPECTOR_CONFIRMATION_REQUIRED 时 --content 必填；所有流转受 workflow.yaml 强制校验。
+    note: developer 请求 INSPECTOR_CONFIRMATION_REQUIRED 时 --content 必填；Inspector/Developer 受 workflow.yaml 和原子前置条件约束。Human 具有普通 Issue 状态最高管理权限，可覆盖到任一合法状态并记录 STATUS_CHANGED/审计；但 HUMAN_CONFIRMATION_REQUIRED 仍只能由专用 human-escalate 进入、human-confirmation-resolve 离开。
   issue-update-status-batch:
     roles: [inspector, developer, human]
     required: [--updates]
@@ -94,12 +99,58 @@ commands:
     required: [--issue-key, --content]
     optional: [--status-content, --code-reference, --metadata]
     json_arguments: [--code-reference, --metadata]
-    note: 实现证据与状态变更使用同一新 attempt 和同一事务；任一步失败则全部回滚。
+    note: 实现证据与状态变更使用同一新 attempt 和同一事务；设计阶段及 REDESIGN_REQUIRED 禁止提交；任一步失败则全部回滚。
+  design-request:
+    roles: [inspector, human]
+    purpose: 原子追加 DESIGN_REQUESTED 并将问题转为 DESIGN_REQUIRED。
+    required: [--issue-key, --content]
+    allowed_from: [PROPOSED, IN_PROGRESS]
+    content_required: true
+  design-submit:
+    roles: [developer, human]
+    purpose: 原子追加 DESIGN_SUBMITTED 并将问题转为 DESIGN_PENDING_REVIEW。
+    required: [--issue-key, --content]
+    optional: [--code-reference, --metadata]
+    json_arguments: [--code-reference, --metadata]
+    allowed_from: [DESIGN_REQUIRED, REDESIGN_REQUIRED]
+    attempt_effect: none
+  design-review:
+    roles: [inspector, human]
+    purpose: 原子记录明确的设计批准或驳回结论。
+    required: [--issue-key, --decision, --content]
+    enum: {decision: [approved, rejected]}
+    allowed_from: [DESIGN_PENDING_REVIEW]
+    effects:
+      approved: [追加 DESIGN_APPROVED, 转为 IN_PROGRESS]
+      rejected: [追加 DESIGN_REJECTED, 转为 DESIGN_REQUIRED]
+  human-escalate:
+    roles: [inspector]
+    purpose: 在 Agent 无法取得关键业务事实或存在重大不可逆数据风险时，原子请求 Human 最终边界或安全决策。
+    required: [--issue-key, --reason, --question]
+    optional: [--options, --evidence, --recommended-option]
+    json_arguments: [--options, --evidence]
+    effects: [追加 HUMAN_CONFIRMATION_REQUESTED, 转为 HUMAN_CONFIRMATION_REQUIRED]
+    content_rules:
+      required_summary: [为什么必须人工决定, 已验证事实, 无法确认的事实, 可选方案及影响, Inspector 推荐方案, Human 只需回答的问题]
+      forbidden_payload: [未经整理的长日志, 完整代码, Agent 对话记录]
+    note: 这是 Inspector-only 的异常升级入口；Human 与 Developer 均不得发起。普通技术不确定性必须先由 Agent 通过证据、DESIGN_GUIDANCE、设计驳回或重新设计解决。
+  human-confirmation-resolve:
+    roles: [human]
+    purpose: 原子记录 Human 的业务边界或风险决定，并恢复 Agent 工作流。
+    required: [--issue-key, --decision, --content]
+    optional: [--next-status]
+    defaults: {next-status: DESIGN_REQUIRED}
+    enum: {next-status: [DESIGN_REQUIRED, IN_PROGRESS, ON_HOLD, BLOCKED, CANCELLED]}
+    allowed_from: [HUMAN_CONFIRMATION_REQUIRED]
+    effects: [追加 HUMAN_CONFIRMATION_PROVIDED, 离开 HUMAN_CONFIRMATION_REQUIRED]
+    note: 该专用决策命令不直接转 CONFIRMED；正常恢复后仍由 Inspector 技术闭环。若 Human 需要行使最高管理解释权，可另用 issue-update-status 显式覆盖普通状态并留下审计。
   activity-append:
     roles: [inspector, developer, human]
     required: [--issue-key, --activity-type, --content]
     optional: [--attempt-no, --result-status, --code-reference, --metadata]
     json_arguments: [--code-reference, --metadata]
+    forbidden_atomic_types: [DESIGN_REQUESTED, DESIGN_SUBMITTED, DESIGN_APPROVED, DESIGN_REJECTED, HUMAN_CONFIRMATION_REQUESTED, HUMAN_CONFIRMATION_PROVIDED]
+    note: DESIGN_GUIDANCE 可由 inspector/human 追加；核心设计活动和 Human 升级活动必须由对应原子命令生成。
     content_format:
       short: 单行纯文本，不添加 Markdown 装饰。
       multiline: 多个独立说明可直接换行；无需强制使用列表。
@@ -135,6 +186,7 @@ commands:
     note: ACCEPTED 或 REJECTED 时 --content 必填；接受候选不自动创建正式 issue。
 
 enum_values:
+  task_type: [REVIEW, CONTINUOUS]
   dimension: [functional_correctness, data_security, stability_concurrency, performance, architecture_extensibility, code_quality, test_observability]
   severity: [critical, high, medium, low]
   remediation_benefit: [high, medium, low]
@@ -154,5 +206,11 @@ restrictions:
 
 workflow_statuses:
   task: [PENDING, IN_PROGRESS, ON_HOLD, BLOCKED, CLOSED, CANCELLED]
-  issue: [PROPOSED, IN_PROGRESS, ON_HOLD, BLOCKED, INSPECTOR_CONFIRMATION_REQUIRED, IMPLEMENTED_PENDING_REVIEW, REDESIGN_REQUIRED, CONFIRMED, CANCELLED]
+  issue: [PROPOSED, DESIGN_REQUIRED, DESIGN_PENDING_REVIEW, IN_PROGRESS, ON_HOLD, BLOCKED, INSPECTOR_CONFIRMATION_REQUIRED, HUMAN_CONFIRMATION_REQUIRED, IMPLEMENTED_PENDING_REVIEW, REDESIGN_REQUIRED, CONFIRMED, CANCELLED]
   candidate: [SUBMITTED, UNDER_REVIEW, ACCEPTED, REJECTED]
+  task_type: [REVIEW, CONTINUOUS]
+
+activity_types:
+  design: [DESIGN_REQUESTED, DESIGN_GUIDANCE, DESIGN_SUBMITTED, DESIGN_APPROVED, DESIGN_REJECTED]
+  human_confirmation: [HUMAN_CONFIRMATION_REQUESTED, HUMAN_CONFIRMATION_PROVIDED]
+  legacy_compatible: [REVIEW_APPROVED, REVIEW_REJECTED, REDESIGN_SUBMITTED]

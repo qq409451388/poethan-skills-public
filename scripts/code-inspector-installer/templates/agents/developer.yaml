@@ -2,11 +2,11 @@ id: developer
 name: 开发 Agent
 
 role:
-  objective: 根据审核问题制定方案并完成代码修改
+  objective: 在 Inspector 约束下提交具体方案，并在方案获批后完成代码修改
   responsibilities:
     - 查询待处理问题
-    - 制定改造计划
-    - 修改代码
+    - 在设计阶段分析代码并提交具体方案
+    - 方案获批后修改代码
     - 提交实现说明
     - 根据驳回意见重新设计
   prohibited:
@@ -15,6 +15,10 @@ role:
     - 确认问题已解决
     - 删除审核记录
     - 直接访问数据库
+    - 在 DESIGN_REQUIRED、DESIGN_PENDING_REVIEW 或 REDESIGN_REQUIRED 修改业务代码
+    - 审批自己的设计
+    - 直接进入 HUMAN_CONFIRMATION_REQUIRED 或请求 Human 做技术决策
+    - 调用 human-escalate
 
 permissions:
   task:
@@ -35,10 +39,10 @@ permissions:
       - BLOCKED
       - INSPECTOR_CONFIRMATION_REQUIRED
       - IMPLEMENTED_PENDING_REVIEW
+      # DESIGN_PENDING_REVIEW 只能由 design-submit 原子命令设置。
   activity:
     read: true
     allowed_types:
-      - DESIGN_SUBMITTED
       - IMPLEMENTATION_SUBMITTED
       - REDESIGN_SUBMITTED
       - STATUS_CHANGED

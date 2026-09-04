@@ -5,26 +5,35 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}代码检查工作台{% endblock %}</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <script src="{{ url_for('static', filename='app.js') }}" defer></script>
 </head>
 <body>
   <header class="topbar">
     <div class="topbar-inner">
-      <a class="brand" href="{{ url_for('task_list') }}">代码检查工作台</a>
-      <nav class="nav">
-        <a href="{{ url_for('task_list') }}" class="{% if request.path == '/' or request.path.startswith('/tasks') %}active{% endif %}">检查任务</a>
+      <a class="brand" href="{{ url_for('inbox') }}">代码检查工作台</a>
+      <nav class="nav" aria-label="主导航">
+        <a href="{{ url_for('inbox') }}" class="{% if request.endpoint == 'inbox' %}active{% endif %}">待我处理</a>
+        <a href="{{ url_for('task_list') }}" class="{% if request.endpoint in ['task_list', 'task_detail', 'issue_detail'] %}active{% endif %}">检查任务</a>
+        <a href="{{ url_for('candidate_list') }}" class="{% if request.endpoint in ['candidate_list', 'candidate_update_status'] %}active{% endif %}">候选问题</a>
       </nav>
+      <div class="workqueue" aria-label="Human 当前待办">
+        <a class="queue-pill" href="{{ url_for('inbox') }}#pending-review"><strong>{{ queue_counts.pending_review }}</strong>待审核</a>
+        <a class="queue-pill" href="{{ url_for('inbox') }}#confirmation"><strong>{{ queue_counts.confirmation }}</strong>待确认</a>
+        <a class="queue-pill" href="{{ url_for('inbox') }}#blocked"><strong>{{ queue_counts.blocked }}</strong>受阻</a>
+      </div>
     </div>
   </header>
 
   <main class="container {% block page_class %}{% endblock %}">
     {% if flash_msg %}
-      <div class="flash flash-{{ flash_kind }}">{{ flash_msg }}</div>
+      <div class="flash flash-{{ flash_kind }}" role="alert">
+        <span>{{ flash_msg }}</span>
+        <button type="button" class="flash-close" aria-label="关闭提示" data-dismiss>×</button>
+      </div>
     {% endif %}
     {% block content %}{% endblock %}
   </main>
 
-  <footer class="footer">
-    <span>任务 → 问题 · 所有写入均通过 human 领域命令并记录审计</span>
-  </footer>
+  <footer class="footer">所有写入均通过 <span class="mono">review-db.py --agent human</span>，并由领域工具校验和审计。</footer>
 </body>
 </html>

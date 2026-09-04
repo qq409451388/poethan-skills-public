@@ -1,13 +1,20 @@
-version: 1.3.0
+version: 2.1.0
 
-task_statuses:
-  - PENDING
-  - IN_PROGRESS
-  - ON_HOLD
-  - BLOCKED
-  - CLOSED
-  - CANCELLED
+task_types:
+  REVIEW:
+    meaning: 一次边界明确的代码检查治理目标。
+    identity_fields: [project_path, review_level, objective, review_scope, baseline_ref]
+    baseline_in_identity: true
+    completion: 由 inspector 或 human 显式 CLOSED / CANCELLED；现有严格扫描规则不变。
+  CONTINUOUS:
+    meaning: 长期存在、可跨多个代码基线持续新增问题的治理主题。
+    identity_fields: [project_path, task_type, objective, review_scope]
+    baseline_in_identity: false
+    completion: 所有 issue 均终结也不自动关闭；仅 inspector 或 human 可显式 CLOSED / CANCELLED。
+  default: REVIEW
+  immutable_after_creation: true
 
+task_statuses: [PENDING, IN_PROGRESS, ON_HOLD, BLOCKED, CLOSED, CANCELLED]
 task_transitions:
   PENDING: [IN_PROGRESS, ON_HOLD, BLOCKED, CLOSED, CANCELLED]
   IN_PROGRESS: [ON_HOLD, BLOCKED, CLOSED, CANCELLED]
@@ -16,138 +23,254 @@ task_transitions:
   CLOSED: []
   CANCELLED: []
 
+task_status_authority:
+  inspector: 必须遵守 task_transitions；终态不能自行重新打开。
+  human: 可通过 task-update-status 将 Task 调整为任一合法 task_status，包括纠正或重新打开终态任务；所有变更仍保留领域校验与审计。
+  rationale: Human 对任务是否继续、暂停、关闭或取消具有最高解释权，但该权限不改变 Issue 的专用原子工作流约束。
+
 task_identity:
-  definition: 一个长期、稳定的代码检查目标，不是一轮扫描或单个问题。
-  reuse_when:
-    - project_path、检查目标和检查范围一致
-    - task 状态为 PENDING 或 IN_PROGRESS
-    - 后续动作是继续扫描、复核修复、补充证据或处理同一治理目标
+  definition: 一个稳定的代码检查或持续治理目标，不是一轮扫描或单个问题。
+  explicit_task_key: 若提供 task_key，优先复用该活动 task；项目路径或 task_type 冲突时拒绝。
+  review_compatibility: REVIEW 继续使用升级前的 fingerprint 算法，保证历史 task 可复用。
+  active_for_reuse:
+    REVIEW: [PENDING, IN_PROGRESS]
+    CONTINUOUS: [PENDING, IN_PROGRESS, ON_HOLD, BLOCKED]
   create_new_when:
-    - 检查目标或范围发生实质变化
-    - 基线、PR 或提交范围切换为新的独立检查对象
-    - 已有 task 已关闭且发起新的检查目标
-  scan_selection:
-    - 默认只选择 PENDING 和 IN_PROGRESS 的 task 扫描
-    - ON_HOLD、BLOCKED、CLOSED、CANCELLED task 不进入默认扫描
-    - 默认待办列表显示 PENDING、IN_PROGRESS、ON_HOLD、BLOCKED；终态默认隐藏
+    - REVIEW 的检查目标、范围或独立基线发生实质变化
+    - CONTINUOUS 的治理目标或治理范围发生实质变化
+    - 已有 task 已关闭或取消
+  list_default: [PENDING, IN_PROGRESS, ON_HOLD, BLOCKED]
+
+task_operation_modes:
+  scan:
+    triggers: [继续审核, 扫描项目, 专项检查, 完整代码检查]
+    applies_to: [REVIEW, CONTINUOUS]
+    requires: [coverage_closure, cross_module_review, dedupe, supplemental_scan]
+  report:
+    triggers: [记录线上 Bug, 加入长期治理任务, 记录线上故障]
+    applies_to: [CONTINUOUS]
+    requires: [verify_evidence, validate_issue, dedupe, create_candidate_or_issue]
+    does_not_require: [full_project_scan, coverage_closure]
 
 scan_persistence:
   collect_before_persist: true
   steps:
     - 扫描期间在会话内收集候选问题，不创建 issue
-    - 识别跨模块数据流，串联入口、生产、传输或存储、消费、确认、清理、保留和监控各端
-    - 初步合并后执行覆盖面回查；按模块、维度和资源生命周期寻找尚未被任何候选覆盖的空白
-    - 对覆盖空白执行补充扫描；不能以候选数量多或并行扫描完成代替覆盖面判断
-    - 扫描结束后按根因、修复边界和风险链路去重合并
-    - 仅将满足问题成立标准的候选问题批量创建为正式 issue
-  issue_identity: 同一根因、同一修复边界、同一风险链路为一个 issue；多个代码位置作为同一 issue 的 evidence。
+    - 串联入口、生产、传输或存储、消费、确认、清理、保留和监控各端
+    - 初步合并后执行覆盖面回查并寻找覆盖空白
+    - 对覆盖空白执行补充扫描；候选数量或并行扫描完成不能替代覆盖判断
+    - 按根因、修复边界和风险链路去重，仅批量创建成立的正式 issue
+  issue_identity: 同一根因、同一修复边界、同一风险链路为一个 issue；多个位置作为同一 issue 的 evidence。
   duplicate_policy:
     - 与未终态 issue 的 dedupe_key 相同则跳过创建并补充活动或证据
-    - 已 CONFIRMED 的问题在后续扫描中复发时，创建新的 issue 和版本
+    - 已 CONFIRMED 的问题复发时创建新的 issue 和版本
 
 coverage_closure:
-  mandatory_before_issue_creation: true
-  parallel_scan_rule: 若使用按模块或维度切分的并行子代理，主审核者必须额外执行横切检查；单个子代理的局部结论不能证明跨模块覆盖完整。
+  mandatory_for_scan: true
+  parallel_scan_rule: 并行子代理只负责局部扫描；主审核者必须额外执行跨模块横切检查。
   cross_module_data_flow:
-    identify:
-      - 外部入口和生产端
-      - 队列、Stream、事件表、缓存、对象存储或其他中间状态
-      - 消费端、重试端和恢复端
-      - ACK、offset、PEL、状态标记或其他确认机制
-      - 删除、截断、TTL、retention、compaction、归档或容量上限
-      - 积压、体积、处理延迟和清理失败的指标与告警
+    identify: [外部入口和生产端, 中间状态与存储, 消费重试恢复端, ACK与状态标记, 清理归档容量上限, 指标与告警]
     verify:
-      - 每类数据或资源都有明确所有者、终止条件和清理责任方
-      - 区分“已处理/已确认”与“消息实体或持久化数据已删除”；确认动作不能被默认视为清理动作
-      - 比较生产、消费和清理速率，检查无界增长、积压、磁盘或内存耗尽风险
-      - 检查失败、重试、恢复、重复消费和进程崩溃时生命周期是否仍能闭环
-  gap_questions:
-    - 哪些跨模块路径没有被任何一个扫描单元完整看到？
-    - 哪些中间件或持久化载体只检查了可靠性，却没有检查容量和生命周期？
-    - 哪些资源创建后没有对应释放、删除、过期、截断或归档路径？
-    - 哪些风险需要把生产端与消费端代码拼在一起才会暴露？
+      - 每类数据或资源都有所有者、终止条件和清理责任方
+      - 确认动作不能被默认视为清理动作；已处理或已确认不等于实体或持久化数据已删除
+      - 比较生产、消费和清理速率，检查无界增长与容量风险
+      - 失败、重试、恢复、重复消费和崩溃时生命周期仍能闭环
 
 issue_statuses:
   - PROPOSED
+  - DESIGN_REQUIRED
+  - DESIGN_PENDING_REVIEW
   - IN_PROGRESS
   - ON_HOLD
   - BLOCKED
   - INSPECTOR_CONFIRMATION_REQUIRED
   - IMPLEMENTED_PENDING_REVIEW
   - REDESIGN_REQUIRED
+  - HUMAN_CONFIRMATION_REQUIRED
   - CONFIRMED
   - CANCELLED
 
+# Human 可人工覆盖到任一普通合法状态；唯一例外是 HUMAN_CONFIRMATION_REQUIRED，
+# 它仍只能由 Inspector 原子发起、由 Human 原子解决。
+human_issue_override_statuses: &human_issue_override_statuses
+  [PROPOSED, DESIGN_REQUIRED, DESIGN_PENDING_REVIEW, IN_PROGRESS, ON_HOLD, BLOCKED,
+   INSPECTOR_CONFIRMATION_REQUIRED, IMPLEMENTED_PENDING_REVIEW, REDESIGN_REQUIRED, CONFIRMED, CANCELLED]
+
+# 领域状态图。Inspector/Developer 的设计边与 Human confirmation 边必须使用对应原子命令。
 transitions:
   PROPOSED:
-    inspector: [IN_PROGRESS, ON_HOLD, BLOCKED, CONFIRMED, CANCELLED]
+    inspector: [DESIGN_REQUIRED, IN_PROGRESS, ON_HOLD, BLOCKED, CONFIRMED, CANCELLED]
     developer: [IN_PROGRESS, ON_HOLD, BLOCKED, INSPECTOR_CONFIRMATION_REQUIRED, IMPLEMENTED_PENDING_REVIEW]
-    human: [IN_PROGRESS, ON_HOLD, BLOCKED, INSPECTOR_CONFIRMATION_REQUIRED, IMPLEMENTED_PENDING_REVIEW, CANCELLED]
+    human: *human_issue_override_statuses
+  DESIGN_REQUIRED:
+    inspector: [CANCELLED]
+    developer: [DESIGN_PENDING_REVIEW]
+    human: *human_issue_override_statuses
+  DESIGN_PENDING_REVIEW:
+    inspector: [IN_PROGRESS, DESIGN_REQUIRED, CANCELLED]
+    developer: []
+    human: *human_issue_override_statuses
   IN_PROGRESS:
-    inspector: [ON_HOLD, BLOCKED, CANCELLED]
+    inspector: [DESIGN_REQUIRED, ON_HOLD, BLOCKED, CANCELLED]
     developer: [ON_HOLD, BLOCKED, INSPECTOR_CONFIRMATION_REQUIRED, IMPLEMENTED_PENDING_REVIEW]
-    human: [ON_HOLD, BLOCKED, INSPECTOR_CONFIRMATION_REQUIRED, IMPLEMENTED_PENDING_REVIEW, CANCELLED]
+    human: *human_issue_override_statuses
   ON_HOLD:
     inspector: [IN_PROGRESS, BLOCKED, CANCELLED]
     developer: [IN_PROGRESS, BLOCKED, INSPECTOR_CONFIRMATION_REQUIRED]
-    human: [IN_PROGRESS, BLOCKED, INSPECTOR_CONFIRMATION_REQUIRED, CANCELLED]
+    human: *human_issue_override_statuses
   BLOCKED:
     inspector: [IN_PROGRESS, ON_HOLD, CANCELLED]
     developer: [IN_PROGRESS, ON_HOLD, INSPECTOR_CONFIRMATION_REQUIRED]
-    human: [IN_PROGRESS, ON_HOLD, INSPECTOR_CONFIRMATION_REQUIRED, CANCELLED]
+    human: *human_issue_override_statuses
   INSPECTOR_CONFIRMATION_REQUIRED:
     inspector: [IN_PROGRESS, ON_HOLD, BLOCKED, CANCELLED]
     developer: []
-    human: [IN_PROGRESS, ON_HOLD, BLOCKED, CANCELLED]
+    human: *human_issue_override_statuses
   IMPLEMENTED_PENDING_REVIEW:
-    inspector: [CONFIRMED, REDESIGN_REQUIRED, ON_HOLD, BLOCKED, CANCELLED]
+    inspector: [IN_PROGRESS, REDESIGN_REQUIRED, CONFIRMED, ON_HOLD, BLOCKED, CANCELLED]
     developer: []
-    human: [CONFIRMED, REDESIGN_REQUIRED, ON_HOLD, BLOCKED, CANCELLED]
+    human: *human_issue_override_statuses
   REDESIGN_REQUIRED:
     inspector: [ON_HOLD, BLOCKED, CANCELLED]
-    developer: [IN_PROGRESS, ON_HOLD, BLOCKED, INSPECTOR_CONFIRMATION_REQUIRED, IMPLEMENTED_PENDING_REVIEW]
-    human: [IN_PROGRESS, ON_HOLD, BLOCKED, INSPECTOR_CONFIRMATION_REQUIRED, IMPLEMENTED_PENDING_REVIEW, CANCELLED]
-  CONFIRMED:
+    developer: [DESIGN_PENDING_REVIEW, ON_HOLD, BLOCKED, INSPECTOR_CONFIRMATION_REQUIRED]
+    human: *human_issue_override_statuses
+  HUMAN_CONFIRMATION_REQUIRED:
     inspector: []
     developer: []
-    human: []
-  CANCELLED:
-    inspector: []
-    developer: []
-    human: []
+    human: [DESIGN_REQUIRED, IN_PROGRESS, ON_HOLD, BLOCKED, CANCELLED]
+  CONFIRMED: {inspector: [], developer: [], human: *human_issue_override_statuses}
+  CANCELLED: {inspector: [], developer: [], human: *human_issue_override_statuses}
+
+issue_status_authority:
+  inspector_and_developer: 必须遵守 transitions、设计原子命令、实现提交与验证前置条件。
+  human: 可通过 issue-update-status 覆盖到任一普通合法状态，包括 REDESIGN_REQUIRED -> IMPLEMENTED_PENDING_REVIEW、重开终态或人工 CONFIRMED；变更会记录 STATUS_CHANGED 与审计。
+  reserved_exception: HUMAN_CONFIRMATION_REQUIRED 仍禁止通用状态修改；只有 Inspector human-escalate 可进入，只有 Human human-confirmation-resolve 可离开。
+
+design_workflow:
+  principle: Inspector 定义必须解决什么、不能破坏什么和推荐方向；Developer 决定具体代码如何实现。
+  request:
+    atomic_command: design-request
+    roles: [inspector, human]
+    allowed_from: [PROPOSED, IN_PROGRESS]
+    activity: DESIGN_REQUESTED
+    target: DESIGN_REQUIRED
+    content_should_cover: [不宜直接编码的原因, 核心根因, 必须满足的约束, 不可破坏的语义, 推荐方向, 关键风险, 方案必须回答的问题]
+  submit:
+    atomic_command: design-submit
+    roles: [developer, human]
+    allowed_from: [DESIGN_REQUIRED, REDESIGN_REQUIRED]
+    activity: DESIGN_SUBMITTED
+    target: DESIGN_PENDING_REVIEW
+    attempt_effect: none
+  review_approved:
+    atomic_command: design-review --decision approved
+    roles: [inspector, human]
+    allowed_from: [DESIGN_PENDING_REVIEW]
+    activity: DESIGN_APPROVED
+    target: IN_PROGRESS
+    meaning: 仅表示基于当前证据允许开始实现，不保证方案永久正确。
+  review_rejected:
+    atomic_command: design-review --decision rejected
+    roles: [inspector, human]
+    allowed_from: [DESIGN_PENDING_REVIEW]
+    activity: DESIGN_REJECTED
+    target: DESIGN_REQUIRED
+    content_required: [理解错误, 无效边界, 必须调整点, 下一版建议方向]
+  guidance:
+    activity_command: activity-append --activity-type DESIGN_GUIDANCE
+    roles: [inspector, human]
+    status_effect: none
+  coding_prohibited_in: [DESIGN_REQUIRED, DESIGN_PENDING_REVIEW, REDESIGN_REQUIRED]
+
+design_trigger_guidance:
+  prefer_design_for: [跨模块, Schema或数据迁移, 历史修复或回灌, 状态机变化, 幂等并发变化, ACK重试恢复变化, 多数据源融合, 公共API或第三方兼容, 大范围重构, 边界不确定, 方向曾被推翻, 连续实现失败, 高验证成本]
+  simple_issue: 可直接 PROPOSED -> IN_PROGRESS -> implementation-submit，不机械增加设计流程。
+
+implementation_review:
+  submission:
+    preferred_command: implementation-submit
+    atomic_effects: [追加 IMPLEMENTATION_SUBMITTED, current_attempt_no 加一, 转为 IMPLEMENTED_PENDING_REVIEW]
+    forbidden_from: [DESIGN_REQUIRED, DESIGN_PENDING_REVIEW, REDESIGN_REQUIRED]
+  implementation_failure:
+    condition: 已批准方向成立，仅有遗漏分支、判断错误、测试不足或未完整执行方案。
+    activity: VERIFICATION_FAILED
+    runtime_precondition: 必须为当前 attempt 先追加 VERIFICATION_FAILED，且状态 content 必填。
+    transition: IMPLEMENTED_PENDING_REVIEW -> IN_PROGRESS
+    rule: 继续按原设计修正，并明确失败原因、必改点和验证标准。
+  design_failure:
+    condition: 新证据推翻方向、范围显著扩大、破坏其他链路或需要重做数据模型、状态、幂等或数据流。
+    transition: IMPLEMENTED_PENDING_REVIEW -> REDESIGN_REQUIRED
+    runtime_precondition: 状态 content 必填，必须明确记录推翻原设计的原因。
+    rule: 禁止继续直接编码；必须 design-submit -> DESIGN_PENDING_REVIEW -> DESIGN_APPROVED -> IN_PROGRESS。
+  repeated_failure_guard:
+    threshold: 2
+    runtime_auto_transition: false
+    inspector_requirement: 连续两次实现失败后必须判断是实现错误还是设计错误；不得机械重复提交循环。
+  human_override: Human 可用 issue-update-status 人工纠正任一普通状态，不受上述 Agent 前置条件限制；必须通过 STATUS_CHANGED 和审计保留可追踪性。
+
+human_escalation:
+  principle: Human escalation 是极低频异常路径；正常设计、实现、验证与确认由 Inspector 和 Developer 自主闭环。
+  distinction:
+    INSPECTOR_CONFIRMATION_REQUIRED: Developer 请求 Inspector 做正常技术边界判断，不通知 Human。
+    HUMAN_CONFIRMATION_REQUIRED: Inspector 确认两个 Agent 无法获得关键决策事实，或继续自动决策存在重大不可逆数据风险。
+  only_entry:
+    atomic_command: human-escalate
+    role: inspector
+    activity: HUMAN_CONFIRMATION_REQUESTED
+    target: HUMAN_CONFIRMATION_REQUIRED
+    required: [reason, question]
+    optional: [options, evidence, recommended_option]
+  allowed_reasons:
+    unavailable_decision_fact:
+      - 关键业务事实或外部约束无法从代码、测试、数据库结构、项目文档、协议、历史活动或可获得运行数据确认
+      - 未知条件直接决定实现结果，且继续设计指导仍无法消除
+    irreversible_data_risk:
+      - 方案可能造成无法通过正常重试恢复的重大数据破坏
+      - 包括不可逆历史重写、无可靠回滚的数据修复或迁移、跨租户污染、账务支付结算事实永久错误
+  forbidden_reasons: [Inspector 自己不确定, Developer 方案质量不足, 首次实现或测试失败, 普通架构选择, 代码风格, 普通性能取舍, 模块边界讨论, 两种技术方案都可工作]
+  preflight_questions:
+    - 能否通过继续阅读代码解决
+    - 能否通过测试、数据库、日志或运行数据验证
+    - 能否通过 DESIGN_GUIDANCE 或 Inspector 的合理技术判断解决
+    - 判断错误是否确有重大不可逆风险
+    - Human 是否掌握 Agent 无法获得的业务事实
+  request_summary_must_include: [为什么必须人工决定, 关键事实, 已验证内容, 无法确认内容, 方案及主要影响, Inspector 推荐, Human 只需回答的问题]
+  request_summary_must_not_include: [未经整理的长日志, 完整代码, Agent 对话记录]
+  resolver_behavior: 任一 issue 进入 HUMAN_CONFIRMATION_REQUIRED，next_actor=HUMAN、needs_human=true，并暂停整个 Task 的 Agent 调度；Orchestrator 仅监听状态，Human resolve 后重新计算 next_actor 并自动恢复。
+  resolution:
+    atomic_command: human-confirmation-resolve
+    role: human
+    activity: HUMAN_CONFIRMATION_PROVIDED
+    default_next_status: DESIGN_REQUIRED
+    allowed_next_statuses: [DESIGN_REQUIRED, IN_PROGRESS, ON_HOLD, BLOCKED, CANCELLED]
+    forbidden_next_statuses: [CONFIRMED]
+    note: Human 只解决业务边界、事实归属或风险接受；Inspector 仍负责设计审核、实现审核、验证和最终确认。
 
 confirmation_protocol:
-  developer_request:
-    status: INSPECTOR_CONFIRMATION_REQUIRED
-    required_activity: COMMENT_ADDED
-    content: 说明待确认边界、依据、可选方案与阻塞点。
+  developer_request: {status: INSPECTOR_CONFIRMATION_REQUIRED, content_required: true}
   inspector_response:
     required_activity: INSPECTOR_CONFIRMATION_PROVIDED
     next_status: [IN_PROGRESS, ON_HOLD, BLOCKED, CANCELLED]
-    note: INSPECTOR_CONFIRMATION_REQUIRED 不是最终关闭；只有验证通过后的 CONFIRMED 才是最终确认。
+  final_confirmation:
+    inspector_precondition: VERIFICATION_PASSED
+    human_override: Human 可基于最高解释权直接指定 CONFIRMED，并记录 STATUS_CHANGED 与审计。
 
-direct_inspector_resolution:
-  allowed_from_proposed: [IN_PROGRESS, CONFIRMED]
-  confirmed_precondition: 必须先追加 VERIFICATION_PASSED；评级调整或用户异议本身不能替代验证记录。
-  purpose: inspector 可直接接手处理或确认已核实的问题，无需借道 ON_HOLD。
-
-implementation_submission:
-  preferred_command: implementation-submit
-  atomic_effects: [追加 IMPLEMENTATION_SUBMITTED, attempt_no 加一, 转为 IMPLEMENTED_PENDING_REVIEW]
-  rule: 单个 issue 完成实现时优先使用原子命令；多个 issue 同步提交时才使用批量状态命令并分别保证证据完整。
+activity_types:
+  design: [DESIGN_REQUESTED, DESIGN_GUIDANCE, DESIGN_SUBMITTED, DESIGN_APPROVED, DESIGN_REJECTED]
+  human_confirmation: [HUMAN_CONFIRMATION_REQUESTED, HUMAN_CONFIRMATION_PROVIDED]
+  legacy_read_compatible: [REVIEW_APPROVED, REVIEW_REJECTED, REDESIGN_SUBMITTED]
 
 candidate_review:
-  purpose: developer 可报告审核过程中发现的新问题，但不能创建正式 issue。
   transitions:
     SUBMITTED: [UNDER_REVIEW, ACCEPTED, REJECTED]
     UNDER_REVIEW: [ACCEPTED, REJECTED]
     ACCEPTED: []
     REJECTED: []
   rules:
-    - developer 仅使用 candidate-submit 提交，不调用 issue-create。
-    - inspector 使用 candidate-list 处理队列并记录接受或拒绝结论。
-    - ACCEPTED 仅表示候选成立；inspector 仍须按正式 issue 规则去重、评级并创建 issue。
+    - developer 仅使用 candidate-submit 提交，不调用 issue-create
+    - ACCEPTED 只表示候选成立，不自动创建正式 issue
 
 version_rules:
   create_only_for_new_independent_issues: true
-  evidence_or_redesign_does_not_create_version: true
+  evidence_design_or_redesign_does_not_create_version: true
+  implementation_attempt_only: current_attempt_no 只随实现提交递增；设计提交与设计审核不递增。

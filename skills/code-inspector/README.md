@@ -8,10 +8,10 @@
 
 | 机器 Agent | 平台 | Code Inspector 角色 |
 | --- | --- | --- |
-| `codex-dev` | Codex | `developer`：分析、修改代码、提交设计和实现 |
-| `codex-insp` | Codex | `inspector`：创建任务和问题、验证修复、最终确认 |
-| `trae-inspector` | Trae-CN | `inspector`：创建任务和问题、验证修复、最终确认 |
-| `claude-inspector` | Claude | `inspector`：创建任务和问题、验证修复、最终确认 |
+| `codex-dev` | Codex | `developer`：提交具体方案，获批后修改代码并提交实现 |
+| `codex-insp` | Codex | `inspector`：创建任务和问题、提出设计约束、审核方案和实现、最终确认 |
+| `trae-inspector` | Trae-CN | `inspector`：创建任务和问题、提出设计约束、审核方案和实现、最终确认 |
+| `claude-inspector` | Claude | `inspector`：创建任务和问题、提出设计约束、审核方案和实现、最终确认 |
 
 `inspector` 同时承担验证职责，不使用独立 `verifier` Agent。
 
@@ -95,11 +95,29 @@ $code-inspector stop
 
 ## 任务与问题的边界
 
-`task` 是长期、稳定的检查目标，例如“订单模块稳定性检查”，不是一次扫描、一次聊天或一个问题。相同项目、目标、范围和基线下的继续扫描、修复复核和证据补充必须复用未关闭 task；默认列表不会返回 `CLOSED` task。
+Task 有两类：`REVIEW` 是一次边界明确的检查治理目标，继续沿用项目、等级、目标、范围和基线 identity；`CONTINUOUS` 是可持续数月的治理主题，identity 不包含 `baseline_ref`，代码基线变化仍复用同一 Task。类型创建后不可修改。`CONTINUOUS` 的全部 Issue 关闭后 Task 仍保持活动，只有 Inspector/Human 显式关闭或取消才结束。
+
+Inspector 修改 Task 状态时遵守标准状态机。Human 具有 Task 状态最高管理权限，可纠正状态或重新打开 `CLOSED / CANCELLED` 任务；操作仍通过 `task-update-status` 记录审计，不改变 Issue 级专用流程约束。
+
+同样，Human 可通过 `issue-update-status` 覆盖任一普通 Issue 状态，例如从 `REDESIGN_REQUIRED` 直接指定为 `IMPLEMENTED_PENDING_REVIEW`、重新打开终态或人工确认。该操作用于人工纠错和最高解释，不改变 Inspector/Developer 的标准规则。`HUMAN_CONFIRMATION_REQUIRED` 仍是保留异常通道，禁止用通用状态命令进入或离开。
+
+“继续审核、扫描项目、专项检查”属于 `scan`，无论 Task 类型都必须执行 coverage closure、跨模块回查、补扫和完整去重。“把这个线上 Bug 记入长期任务”属于 `report`，只需核实证据、确认成立、去重并创建 Candidate/Issue，不要求重新扫描整个项目。
 
 扫描时先收集候选问题，完成范围扫描后再统一去重和落库。相同根因、修复边界和风险链路只能是一个 issue，多个位置应作为它的证据。未终态 issue 重复出现时不新建；已经确认的问题再次出现时才创建新的 issue 和版本。
 
 默认聊天输出仅包含 task 编号、本轮新增/重复问题数、最高风险和下一步。只有明确要求导出时才输出完整 Markdown 或 JSON 报告。
+
+## 设计与实现协作
+
+复杂或高风险 Issue 应在编码前进入设计阶段：Inspector 用 `design-request` 写清根因、约束、不可破坏语义、风险、推荐方向和方案必须回答的问题；Developer 用 `design-submit` 提交具体类、方法、数据流、兼容与测试方案；Inspector 用 `design-review` 明确批准或驳回。设计状态下 Developer 不得修改业务代码或提交实现。
+
+实现审核失败时，若只是代码未按批准方案正确落地，则记录 `VERIFICATION_FAILED` 并回 `IN_PROGRESS`；若方向本身被新证据推翻，则转 `REDESIGN_REQUIRED`，强制重新走方案审核。连续两次失败后 Inspector 必须主动重新判断失败属于实现还是设计，避免重复阅读与大范围返工。
+
+## Human 最终兜底
+
+`INSPECTOR_CONFIRMATION_REQUIRED` 是 Developer 向 Inspector 请求技术边界的正常协作状态，不会通知 Human。`HUMAN_CONFIRMATION_REQUIRED` 是异常升级：只有 Inspector 在穷尽可得证据后，确认缺少只能由 Human 提供的关键业务事实，或存在重大且不可逆的数据安全风险时，才能用 `human-escalate` 进入。普通技术分歧、架构选择、方案驳回、实现或测试失败不得升级。
+
+该状态会让 Resolver 返回 `HUMAN / needs_human` 并暂停 Task 自动调度。Human 使用 `human-confirmation-resolve` 记录业务边界或风险决定，恢复到 `DESIGN_REQUIRED`、`IN_PROGRESS`、`ON_HOLD`、`BLOCKED` 或 `CANCELLED`。Human 不能借此直接确认 Issue；后续设计、实现、验证和 `CONFIRMED` 仍由 Inspector 与 Developer 完成。
 
 ## Git 更新后的行为
 

@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% from "components/evidence.html" import render_references %}
+{% block title %}候选问题 · 代码检查工作台{% endblock %}
+{% block content %}
+<div class="page-head"><div class="page-title"><h1>候选问题</h1><p>Developer 新发现先进入候选队列；Human / Inspector 审核后再决定是否成立。</p></div></div>
+
+<div class="metrics">
+  <div class="metric"><span class="metric-label">待审核</span><strong>{{ metrics.get('SUBMITTED', 0) }}</strong><span>SUBMITTED</span></div>
+  <div class="metric"><span class="metric-label">审核中</span><strong>{{ metrics.get('UNDER_REVIEW', 0) }}</strong><span>UNDER_REVIEW</span></div>
+  <div class="metric"><span class="metric-label">已接受</span><strong>{{ metrics.get('ACCEPTED', 0) }}</strong><span>ACCEPTED</span></div>
+  <div class="metric"><span class="metric-label">已拒绝</span><strong>{{ metrics.get('REJECTED', 0) }}</strong><span>REJECTED</span></div>
+</div>
+
+<section class="panel">
+  <form method="get" class="toolbar">
+    <label for="candidate-task">任务</label><select id="candidate-task" name="task_key"><option value="">全部任务</option>{% for task in tasks %}<option value="{{ task.task_key }}" {% if filters.task_key == task.task_key %}selected{% endif %}>{{ task.task_key }} · {{ task.title }}</option>{% endfor %}</select>
+    <label for="candidate-status">状态</label><select id="candidate-status" name="status"><option value="">待审核 + 审核中</option>{% for item in statuses %}<option value="{{ item }}" {% if filters.status == item %}selected{% endif %}>{{ item|label }}</option>{% endfor %}</select>
+    <button type="submit" class="btn btn-primary">筛选</button><a class="btn" href="{{ url_for('candidate_list') }}">重置</a>
+  </form>
+  <div class="action-note"><strong>候选“接受”不会创建正式 Issue。</strong> 接受只代表问题成立；仍需按正式 Issue 规则去重、评级并创建。</div>
+
+  <div class="candidate-list">
+  {% for candidate in candidates %}
+    <article class="candidate-card">
+      <div class="candidate-main">
+        <div class="candidate-meta"><span class="badge badge-status-{{ candidate.status }}">{{ candidate.status|label }}</span>{% if candidate.suggested_dimension %}<span class="badge badge-blue">{{ candidate.suggested_dimension|label }}</span>{% endif %}{% if candidate.suggested_severity %}<span class="badge sev-chip-{{ candidate.suggested_severity }}">{{ candidate.suggested_severity|label }}</span>{% endif %}{% if candidate.suggested_confidence %}<span class="badge badge-green">置信度{{ candidate.suggested_confidence|label }}</span>{% endif %}</div>
+        <h2><span class="mono">{{ candidate.candidate_key }}</span> · {{ candidate.title }}</h2>
+        <dl class="candidate-copy"><dt>描述</dt><dd>{{ candidate.description }}</dd><dt>事实</dt><dd>{{ candidate.facts }}</dd><dt>判断依据</dt><dd>{{ candidate.rationale }}</dd></dl>
+        {% if candidate.evidence %}<details class="collapsible"><summary>查看候选证据（{{ candidate.evidence|length }}）</summary><div class="details-body">{{ render_references(candidate.evidence) }}</div></details>{% endif %}
+        {% if candidate.review_comment %}<div class="review-conclusion"><strong>审核结论</strong><p>{{ candidate.review_comment }}</p></div>{% endif %}
+      </div>
+      <aside class="candidate-side">
+        <dl><dt>提交者</dt><dd class="mono">{{ candidate.submitted_by }}</dd><dt>所属任务</dt><dd><a class="mono" href="{{ url_for('task_detail', task_key=candidate.task_key) }}">{{ candidate.task_key }}</a></dd><dt>项目</dt><dd>{{ candidate.project_name }}</dd><dt>更新时间</dt><dd class="mono">{{ candidate.updated_at|localtime }}</dd>{% if candidate.reviewed_by %}<dt>审核者</dt><dd class="mono">{{ candidate.reviewed_by }}</dd>{% endif %}</dl>
+        {% if candidate.status in ['SUBMITTED', 'UNDER_REVIEW'] %}
+        <div class="candidate-actions">
+          <button type="button" class="btn btn-green" data-candidate-review data-modal-open="candidate-review-modal" data-review-status="ACCEPTED" data-review-url="{{ url_for('candidate_update_status', candidate_key=candidate.candidate_key) }}" data-candidate-title="{{ candidate.candidate_key }} · {{ candidate.title }}">接受</button>
+          <button type="button" class="btn btn-danger" data-candidate-review data-modal-open="candidate-review-modal" data-review-status="REJECTED" data-review-url="{{ url_for('candidate_update_status', candidate_key=candidate.candidate_key) }}" data-candidate-title="{{ candidate.candidate_key }} · {{ candidate.title }}">拒绝</button>
+        </div>
+        {% endif %}
+      </aside>
+    </article>
+  {% else %}<div class="empty">没有符合当前筛选的候选问题。</div>{% endfor %}
+  </div>
+</section>
+
+<div class="modal-backdrop" id="candidate-review-modal" role="dialog" aria-modal="true" aria-labelledby="candidate-review-title">
+  <div class="modal-card modal-card-small">
+    <div class="modal-head"><div><h2 class="modal-title" id="candidate-review-title">审核候选问题</h2><div class="modal-sub" data-candidate-name></div></div><button type="button" class="modal-close" data-modal-close aria-label="关闭">×</button></div>
+    <form method="post" id="candidate-review-form">
+      <div class="modal-body">
+        <input type="hidden" name="status" data-review-status-input>
+        <input type="hidden" name="return_to" value="{{ return_to }}">
+        <div class="decision-banner">你将把候选标记为 <strong data-review-status-label></strong>。</div>
+        <div class="field"><label for="candidate-content">审核结论 <span class="required">必填</span></label><textarea id="candidate-content" name="content" required placeholder="记录证据是否成立、接受或拒绝的依据"></textarea></div>
+        <p class="form-note">接受候选后，仍需另行按正式 Issue 规则去重、评级并创建。</p>
+      </div>
+      <div class="modal-foot"><button type="button" class="btn" data-modal-close>取消</button><button type="submit" class="btn btn-primary">保存审核结论</button></div>
+    </form>
+  </div>
+</div>
+{% endblock %}

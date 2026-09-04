@@ -1,6 +1,8 @@
 import importlib.util
 import json
 import os
+import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -33,6 +35,12 @@ class CodeInspectorInstallerTest(unittest.TestCase):
         if result.returncode != 0:
             self.fail(f"命令执行失败 ({result.returncode}): {result.stderr}")
         return json.loads(result.stdout)
+
+    def run_raw(self, home: Path, *args: str, cwd: Path | None = None) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [sys.executable, *args], cwd=cwd or ROOT, env=self.home_env(home),
+            text=True, capture_output=True,
+        )
 
     def test_symlink_failure_falls_back_to_copy(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -166,6 +174,14 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             self.assertIn("只有代码、命令", trae_skill_text)
             self.assertIn("主审核者必须额外串联跨模块数据流", trae_skill_text)
             self.assertIn("先做覆盖面回查和补充扫描", trae_skill_text)
+            self.assertIn("design-submit", codex_skill_text)
+            self.assertIn("design-request", trae_skill_text)
+            self.assertIn("不得直接进入 `HUMAN_CONFIRMATION_REQUIRED`", codex_skill_text)
+            self.assertIn("human-escalate", trae_skill_text)
+            self.assertIn("Human 是异常兜底，不是普通 Reviewer", trae_skill_text)
+            self.assertIn("不得倾倒长日志、完整代码或 Agent 对话", trae_skill_text)
+            self.assertIn("连续两次失败必须重新判断设计是否对齐", trae_skill_text)
+            self.assertIn("CONTINUOUS", trae_skill_text)
             workflow_text = (trae_skill / "references" / "workflow.yaml").read_text(encoding="utf-8")
             levels_text = (trae_skill / "references" / "review-levels.yaml").read_text(encoding="utf-8")
             self.assertIn("确认动作不能被默认视为清理动作", workflow_text)
@@ -486,7 +502,552 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             accepted_items = db("inspector", "candidate-list", "--status", "ACCEPTED")
             self.assertEqual(accepted_items[0]["reviewed_by"], "trae-inspector")
 
-    def test_webtool_uses_task_as_the_only_top_level_list(self):
+    def test_task_types_identity_filter_and_continuous_lifecycle(self):
+        with tempfile.TemporaryDirectory() as temp:
+            home = Path(temp)
+            self.run_cmd(home, str(INSTALLER), "install")
+            workspace = home / "project"
+            workspace.mkdir()
+            db_tool = home / ".agent-review" / "bin" / "review-db.py"
+
+            def db(*args: str) -> dict | list:
+                role, *command = args
+                alias = {"inspector": "trae-inspector", "developer": "codex-dev", "human": "human"}[role]
+                return self.run_cmd(
+                    home, str(db_tool), "--agent", role, "--operator-id", alias, *command, cwd=workspace
+                )
+
+            created_review = db(
+                "inspector", "task-create", "--task-key", "RT-REVIEW", "--title", "一次检查",
+                "--objective", "检查发布变更", "--task-type", "REVIEW",
+            )
+            self.assertEqual(created_review["task_type"], "REVIEW")
+            db("inspector", "task-update-status", "--task-key", "RT-REVIEW", "--status", "CLOSED")
+            inspector_reopen = self.run_raw(
+                home, str(db_tool), "--agent", "inspector", "--operator-id", "trae-inspector",
+                "task-update-status", "--task-key", "RT-REVIEW", "--status", "IN_PROGRESS",
+                cwd=workspace,
+            )
+            self.assertNotEqual(inspector_reopen.returncode, 0)
+            self.assertIn("不允许任务状态流转", inspector_reopen.stderr)
+            human_reopen = db(
+                "human", "task-update-status", "--task-key", "RT-REVIEW", "--status", "IN_PROGRESS",
+                "--remark", "Human 判定任务需要继续",
+            )
+            self.assertEqual(human_reopen["status"], "IN_PROGRESS")
+            db("human", "task-update-status", "--task-key", "RT-REVIEW", "--status", "CANCELLED")
+            self.assertEqual(
+                db("human", "task-update-status", "--task-key", "RT-REVIEW", "--status", "PENDING")["status"],
+                "PENDING",
+            )
+            continuous_args = (
+                "task-resolve", "--title", "长期线上 Bug", "--objective", "持续收集线上 Bug",
+                "--review-level", "L2", "--review-scope", "trade-flow", "--task-type", "CONTINUOUS",
+            )
+            continuous_a = db("inspector", *continuous_args, "--baseline-ref", "commit-A")
+            continuous_b = db("inspector", *continuous_args, "--baseline-ref", "commit-B")
+            self.assertTrue(continuous_a["created"])
+            self.assertFalse(continuous_b["created"])
+            self.assertEqual(continuous_a["task_key"], continuous_b["task_key"])
+
+            review_args = (
+                "task-resolve", "--title", "基线检查", "--objective", "验证 REVIEW identity",
+                "--review-level", "L2", "--review-scope", "trade-flow", "--task-type", "REVIEW",
+            )
+            review_a = db("inspector", *review_args, "--baseline-ref", "commit-A")
+            review_b = db("inspector", *review_args, "--baseline-ref", "commit-B")
+            self.assertNotEqual(review_a["task_key"], review_b["task_key"])
+            continuous_only = db("developer", "task-list", "--task-type", "CONTINUOUS")
+            self.assertEqual([item["task_key"] for item in continuous_only], [continuous_a["task_key"]])
+            self.assertTrue(all(item["task_type"] == "CONTINUOUS" for item in continuous_only))
+
+            explicit = db(
+                "inspector", *continuous_args, "--task-key", continuous_a["task_key"],
+                "--baseline-ref", "commit-C",
+            )
+            self.assertFalse(explicit["created"])
+            db("inspector", "task-update-status", "--task-key", continuous_a["task_key"], "--status", "ON_HOLD")
+            held = db("inspector", *continuous_args, "--baseline-ref", "commit-D")
+            self.assertEqual((held["task_key"], held["status"], held["created"]),
+                             (continuous_a["task_key"], "ON_HOLD", False))
+            db("human", "task-update-status", "--task-key", continuous_a["task_key"], "--status", "IN_PROGRESS")
+            mismatch = self.run_raw(
+                home, str(db_tool), "--agent", "inspector", "--operator-id", "trae-inspector",
+                "task-resolve", "--task-key", continuous_a["task_key"], "--title", "长期线上 Bug",
+                "--objective", "持续收集线上 Bug", "--review-level", "L2",
+                "--review-scope", "trade-flow", "--task-type", "REVIEW", cwd=workspace,
+            )
+            self.assertNotEqual(mismatch.returncode, 0)
+            self.assertIn("task_type 创建后不可修改", mismatch.stderr)
+
+            issue = {
+                "issue_key": "RI-CONTINUOUS", "title": "长期任务问题", "dimension": "code_quality",
+                "severity": "low", "remediation_benefit": "medium", "remediation_cost": "low",
+                "disposition": "current_iteration", "confidence": "high", "description": "描述",
+                "facts": "事实", "rationale": "依据",
+            }
+            db(
+                "inspector", "issue-create-batch", "--task-key", continuous_a["task_key"],
+                "--reason", "报告线上问题", "--issues", json.dumps([issue], ensure_ascii=False),
+            )
+            db(
+                "inspector", "activity-append", "--issue-key", "RI-CONTINUOUS",
+                "--activity-type", "VERIFICATION_PASSED", "--content", "无需改码，事实已消除",
+            )
+            db("inspector", "issue-update-status", "--issue-key", "RI-CONTINUOUS", "--status", "CONFIRMED")
+            still_open = db("inspector", "task-list", "--task-type", "CONTINUOUS")
+            self.assertEqual(still_open[0]["status"], "IN_PROGRESS")
+
+    def test_v006_database_migrates_without_losing_history(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            legacy_script_dir = root / "legacy-installer"
+            legacy_migrations = legacy_script_dir / "migrations"
+            legacy_migrations.mkdir(parents=True)
+            source_migrations = ROOT / "scripts" / "code-inspector-installer" / "migrations"
+            for migration in sorted(source_migrations.glob("V00[1-6]__*.sql")):
+                shutil.copy2(migration, legacy_migrations / migration.name)
+            database = root / "review.db"
+            with mock.patch.object(INSTALLER_MODULE, "SCRIPT_DIR", legacy_script_dir):
+                first = INSTALLER_MODULE.migrate(database)
+            self.assertEqual(len(first["applied"]), 6)
+
+            with sqlite3.connect(database) as conn:
+                conn.execute(
+                    """INSERT INTO review_task(
+                        id, task_key, project_name, project_path, title, objective, current_version,
+                        status, review_level, review_scope, baseline_ref, scope_fingerprint
+                    ) VALUES (41, 'RT-OLD', 'project', '/project', '旧任务', '旧目标', 1,
+                              'IN_PROGRESS', 'L2', 'scope', 'commit-old', 'old-fingerprint')"""
+                )
+                conn.execute(
+                    """INSERT INTO review_task_version(id, task_id, version_no, reason, created_by)
+                       VALUES (42, 41, 1, '旧扫描', 'old-inspector')"""
+                )
+                conn.execute(
+                    """INSERT INTO review_issue(
+                        id, issue_key, task_id, introduced_version, title, dimension, severity,
+                        remediation_benefit, remediation_cost, disposition, confidence, status,
+                        description, facts, rationale, current_attempt_no, dedupe_key
+                    ) VALUES (43, 'RI-OLD', 41, 1, '旧问题', 'code_quality', 'medium',
+                              'medium', 'low', 'current_iteration', 'high', 'IN_PROGRESS',
+                              '旧描述', '旧事实', '旧依据', 2, 'old-dedupe')"""
+                )
+                conn.execute("UPDATE review_task_version SET source_issue_id = 43 WHERE id = 42")
+                conn.execute(
+                    """INSERT INTO review_issue(
+                        id, issue_key, task_id, introduced_version, parent_issue_id, title, dimension,
+                        severity, remediation_benefit, remediation_cost, disposition, confidence, status,
+                        description, facts, rationale, current_attempt_no, dedupe_key
+                    ) VALUES (47, 'RI-OLD-CHILD', 41, 1, 43, '旧子问题', 'code_quality', 'low',
+                              'low', 'low', 'observe', 'medium', 'PROPOSED', '子描述', '子事实',
+                              '子依据', 0, 'old-child-dedupe')"""
+                )
+                conn.execute(
+                    """INSERT INTO issue_activity(
+                        id, issue_id, attempt_no, activity_type, operator_type, operator_id,
+                        content, result_status, code_reference_json, metadata_json
+                    ) VALUES (44, 43, 2, 'COMMENT_ADDED', 'INSPECTOR_AGENT', 'old-inspector',
+                              '旧活动', 'IN_PROGRESS', '[{\"file_path\":\"old.py\"}]', '{\"kept\":true}')"""
+                )
+                conn.execute(
+                    """INSERT INTO agent_audit_log(
+                        id, agent_id, action, resource_type, resource_id, success, detail
+                    ) VALUES (45, 'old-inspector', 'old.action', 'review_issue', 'RI-OLD', 1, '旧审计')"""
+                )
+                conn.execute(
+                    """INSERT INTO issue_candidate(
+                        id, candidate_key, task_id, title, description, facts, rationale,
+                        submitted_by, status
+                    ) VALUES (46, 'RC-OLD', 41, '旧候选', '描述', '事实', '依据',
+                              'old-developer', 'SUBMITTED')"""
+                )
+                conn.commit()
+
+            upgraded = INSTALLER_MODULE.migrate(database, root / "backups")
+            self.assertEqual(upgraded["applied"], [
+                "V007__design_workflow_and_continuous_tasks.sql",
+                "V008__human_confirmation_escalation.sql",
+            ])
+            self.assertIsNotNone(upgraded["backup"])
+            with sqlite3.connect(database) as conn:
+                conn.row_factory = sqlite3.Row
+                self.assertEqual(conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0], 8)
+                task = conn.execute("SELECT * FROM review_task WHERE id = 41").fetchone()
+                self.assertEqual((task["task_key"], task["task_type"], task["scope_fingerprint"]),
+                                 ("RT-OLD", "REVIEW", "old-fingerprint"))
+                issue = conn.execute("SELECT * FROM review_issue WHERE id = 43").fetchone()
+                self.assertEqual((issue["issue_key"], issue["current_attempt_no"], issue["dedupe_key"]),
+                                 ("RI-OLD", 2, "old-dedupe"))
+                self.assertEqual(conn.execute("SELECT parent_issue_id FROM review_issue WHERE id = 47").fetchone()[0], 43)
+                activity = conn.execute("SELECT * FROM issue_activity WHERE id = 44").fetchone()
+                self.assertEqual((activity["content"], activity["created_at"] is not None), ("旧活动", True))
+                self.assertEqual(conn.execute("SELECT source_issue_id FROM review_task_version WHERE id = 42").fetchone()[0], 43)
+                self.assertEqual(conn.execute("SELECT COUNT(*) FROM agent_audit_log WHERE id = 45").fetchone()[0], 1)
+                self.assertEqual(conn.execute("SELECT COUNT(*) FROM issue_candidate WHERE id = 46").fetchone()[0], 1)
+                self.assertEqual(conn.execute("PRAGMA foreign_key_check").fetchall(), [])
+                conn.execute("UPDATE review_issue SET status = 'DESIGN_REQUIRED' WHERE id = 43")
+                conn.execute(
+                    """INSERT INTO issue_activity(
+                        issue_id, attempt_no, activity_type, operator_type, operator_id, content
+                    ) VALUES (43, 2, 'DESIGN_REQUESTED', 'INSPECTOR_AGENT', 'new-inspector', '新设计约束')"""
+                )
+                conn.execute("UPDATE review_issue SET status = 'HUMAN_CONFIRMATION_REQUIRED' WHERE id = 43")
+                conn.execute(
+                    """INSERT INTO issue_activity(
+                        issue_id, attempt_no, activity_type, operator_type, operator_id, content
+                    ) VALUES (43, 2, 'HUMAN_CONFIRMATION_REQUESTED', 'INSPECTOR_AGENT',
+                              'new-inspector', '需要人工决定')"""
+                )
+
+    def test_design_commands_permissions_atomicity_and_attempt_semantics(self):
+        with tempfile.TemporaryDirectory() as temp:
+            home = Path(temp)
+            self.run_cmd(home, str(INSTALLER), "install")
+            workspace = home / "project"
+            workspace.mkdir()
+            db_tool = home / ".agent-review" / "bin" / "review-db.py"
+
+            def db(*args: str) -> dict | list:
+                role, *command = args
+                alias = {"inspector": "trae-inspector", "developer": "codex-dev", "human": "human"}[role]
+                return self.run_cmd(
+                    home, str(db_tool), "--agent", role, "--operator-id", alias, *command, cwd=workspace
+                )
+
+            def fails(role: str, *command: str) -> subprocess.CompletedProcess:
+                alias = {"inspector": "trae-inspector", "developer": "codex-dev", "human": "human"}[role]
+                result = self.run_raw(
+                    home, str(db_tool), "--agent", role, "--operator-id", alias, *command, cwd=workspace
+                )
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                return result
+
+            task = db(
+                "inspector", "task-resolve", "--title", "复杂设计", "--objective", "验证设计审核",
+                "--review-level", "L3", "--review-scope", "all",
+            )
+            issue = {
+                "issue_key": "RI-DESIGN", "title": "跨模块版本覆盖", "dimension": "architecture_extensibility",
+                "severity": "high", "remediation_benefit": "high", "remediation_cost": "high",
+                "disposition": "current_iteration", "confidence": "high", "description": "描述",
+                "facts": "事实", "rationale": "依据",
+            }
+            db(
+                "inspector", "issue-create-batch", "--task-key", task["task_key"],
+                "--reason", "复杂问题", "--issues", json.dumps([issue], ensure_ascii=False),
+            )
+            initial_activity_count = len(db("developer", "activity-list", "--issue-key", "RI-DESIGN"))
+            database = home / ".agent-review" / "data" / "review.db"
+            with sqlite3.connect(database) as conn:
+                conn.execute(
+                    """CREATE TRIGGER force_design_update_failure
+                       BEFORE UPDATE OF status ON review_issue
+                       WHEN NEW.status = 'DESIGN_REQUIRED'
+                       BEGIN SELECT RAISE(ABORT, 'forced design rollback'); END"""
+                )
+            fails(
+                "inspector", "design-request", "--issue-key", "RI-DESIGN",
+                "--content", "该调用用于验证活动与状态同事务回滚",
+            )
+            self.assertEqual(db("developer", "issue-get", "--issue-key", "RI-DESIGN")["status"], "PROPOSED")
+            self.assertEqual(len(db("developer", "activity-list", "--issue-key", "RI-DESIGN")), initial_activity_count)
+            with sqlite3.connect(database) as conn:
+                conn.execute("DROP TRIGGER force_design_update_failure")
+            fails("developer", "design-request", "--issue-key", "RI-DESIGN", "--content", "越权")
+            fails(
+                "developer", "activity-append", "--issue-key", "RI-DESIGN",
+                "--activity-type", "DESIGN_SUBMITTED", "--content", "不得用活动拼装设计提交",
+            )
+            self.assertEqual(len(db("developer", "activity-list", "--issue-key", "RI-DESIGN")), initial_activity_count)
+
+            requested = db(
+                "inspector", "design-request", "--issue-key", "RI-DESIGN", "--content",
+                "跨模块版本语义不能复用；需说明兼容、并发和回灌边界",
+            )
+            self.assertEqual((requested["status"], requested["attempt_no"]), ("DESIGN_REQUIRED", 0))
+            fails("developer", "implementation-submit", "--issue-key", "RI-DESIGN", "--content", "禁止实现")
+            submitted = db(
+                "developer", "design-submit", "--issue-key", "RI-DESIGN", "--content", "按 Domain 拆分版本并兼容历史",
+                "--code-reference", json.dumps([{"file_path": "writer.py", "line_start": 20}]),
+                "--metadata", json.dumps({"tests": ["backfill", "concurrency"]}),
+            )
+            self.assertEqual((submitted["status"], submitted["attempt_no"]), ("DESIGN_PENDING_REVIEW", 0))
+            activity_count = len(db("developer", "activity-list", "--issue-key", "RI-DESIGN"))
+            fails("developer", "design-review", "--issue-key", "RI-DESIGN", "--decision", "approved", "--content", "越权批准")
+            fails("developer", "implementation-submit", "--issue-key", "RI-DESIGN", "--content", "尚未批准")
+            self.assertEqual(len(db("developer", "activity-list", "--issue-key", "RI-DESIGN")), activity_count)
+
+            db(
+                "inspector", "activity-append", "--issue-key", "RI-DESIGN",
+                "--activity-type", "DESIGN_GUIDANCE", "--content", "补充：实时消费与回灌不能互相覆盖",
+            )
+            rejected = db(
+                "inspector", "design-review", "--issue-key", "RI-DESIGN", "--decision", "rejected",
+                "--content", "历史缺失版本的兼容路径未说明，请补充读取回退规则",
+            )
+            self.assertEqual((rejected["status"], rejected["attempt_no"]), ("DESIGN_REQUIRED", 0))
+            db("developer", "design-submit", "--issue-key", "RI-DESIGN", "--content", "补充 legacy fallback")
+            approved = db(
+                "inspector", "design-review", "--issue-key", "RI-DESIGN", "--decision", "approved",
+                "--content", "批准；不得改变历史数据读取语义",
+            )
+            self.assertEqual((approved["status"], approved["attempt_no"]), ("IN_PROGRESS", 0))
+            fails("inspector", "implementation-submit", "--issue-key", "RI-DESIGN", "--content", "Inspector 禁止实现")
+
+            first_impl = db("developer", "implementation-submit", "--issue-key", "RI-DESIGN", "--content", "首次实现")
+            self.assertEqual(first_impl["attempt_no"], 1)
+            fails(
+                "inspector", "issue-update-status", "--issue-key", "RI-DESIGN", "--status", "IN_PROGRESS",
+                "--content", "不能只改状态而不记录实现失败",
+            )
+            db(
+                "inspector", "activity-append", "--issue-key", "RI-DESIGN",
+                "--activity-type", "VERIFICATION_FAILED", "--content", "遗漏一个已批准分支",
+            )
+            returned = db(
+                "inspector", "issue-update-status", "--issue-key", "RI-DESIGN", "--status", "IN_PROGRESS",
+                "--content", "设计正确，补齐遗漏分支",
+            )
+            self.assertEqual(returned["attempt_no"], 1)
+            second_impl = db("developer", "implementation-submit", "--issue-key", "RI-DESIGN", "--content", "第二次实现")
+            self.assertEqual(second_impl["attempt_no"], 2)
+            redesign = db(
+                "inspector", "issue-update-status", "--issue-key", "RI-DESIGN", "--status", "REDESIGN_REQUIRED",
+                "--content", "新证据推翻原数据流，需要重新设计",
+            )
+            self.assertEqual(redesign["attempt_no"], 2)
+            fails("developer", "implementation-submit", "--issue-key", "RI-DESIGN", "--content", "不得继续实现")
+            fails("developer", "issue-update-status", "--issue-key", "RI-DESIGN", "--status", "IN_PROGRESS")
+            db("developer", "design-submit", "--issue-key", "RI-DESIGN", "--content", "重做数据流方案")
+            db(
+                "inspector", "design-review", "--issue-key", "RI-DESIGN", "--decision", "approved",
+                "--content", "基于新证据批准",
+            )
+            third_impl = db("developer", "implementation-submit", "--issue-key", "RI-DESIGN", "--content", "重设计后实现")
+            self.assertEqual(third_impl["attempt_no"], 3)
+            db(
+                "inspector", "activity-append", "--issue-key", "RI-DESIGN",
+                "--activity-type", "VERIFICATION_PASSED", "--content", "验证通过",
+            )
+            confirmed = db("inspector", "issue-update-status", "--issue-key", "RI-DESIGN", "--status", "CONFIRMED")
+            self.assertEqual(confirmed["status"], "CONFIRMED")
+            activities = db("developer", "activity-list", "--issue-key", "RI-DESIGN")
+            self.assertTrue({"DESIGN_REQUESTED", "DESIGN_SUBMITTED", "DESIGN_REJECTED", "DESIGN_APPROVED"}.issubset(
+                {item["activity_type"] for item in activities}
+            ))
+            self.assertEqual(
+                [item["attempt_no"] for item in activities if item["activity_type"] == "DESIGN_SUBMITTED"],
+                [0, 0, 2],
+            )
+
+    def test_human_confirmation_permissions_atomicity_and_workflow_resume(self):
+        with tempfile.TemporaryDirectory() as temp:
+            home = Path(temp)
+            self.run_cmd(home, str(INSTALLER), "install")
+            workspace = home / "project"
+            workspace.mkdir()
+            db_tool = home / ".agent-review" / "bin" / "review-db.py"
+
+            def db(*args: str) -> dict | list:
+                role, *command = args
+                alias = {"inspector": "trae-inspector", "developer": "codex-dev", "human": "human"}[role]
+                return self.run_cmd(
+                    home, str(db_tool), "--agent", role, "--operator-id", alias, *command, cwd=workspace
+                )
+
+            def fails(role: str, *command: str) -> subprocess.CompletedProcess:
+                alias = {"inspector": "trae-inspector", "developer": "codex-dev", "human": "human"}[role]
+                result = self.run_raw(
+                    home, str(db_tool), "--agent", role, "--operator-id", alias, *command, cwd=workspace
+                )
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                return result
+
+            task = db(
+                "inspector", "task-resolve", "--title", "高风险历史修复",
+                "--objective", "验证 Human 异常兜底", "--review-level", "L3", "--review-scope", "all",
+            )
+            issue = {
+                "issue_key": "RI-HUMAN", "title": "历史账务事实源不明确",
+                "dimension": "data_security", "severity": "critical",
+                "remediation_benefit": "high", "remediation_cost": "extreme",
+                "disposition": "business_confirmation", "confidence": "medium",
+                "description": "两个系统都保存历史账务事实", "facts": "代码无法证明最终事实源",
+                "rationale": "错误覆盖将造成不可逆历史数据破坏",
+            }
+            db(
+                "inspector", "issue-create-batch", "--task-key", task["task_key"],
+                "--reason", "发现高风险事实缺口", "--issues", json.dumps([issue], ensure_ascii=False),
+            )
+            initial_activities = db("developer", "activity-list", "--issue-key", "RI-HUMAN")
+            database = home / ".agent-review" / "data" / "review.db"
+
+            # 不能通过通用状态命令、Developer 或 Human 越权发起升级。
+            fails(
+                "developer", "issue-update-status", "--issue-key", "RI-HUMAN",
+                "--status", "HUMAN_CONFIRMATION_REQUIRED",
+            )
+            fails(
+                "human", "issue-update-status", "--issue-key", "RI-HUMAN",
+                "--status", "HUMAN_CONFIRMATION_REQUIRED",
+            )
+            fails(
+                "developer", "human-escalate", "--issue-key", "RI-HUMAN",
+                "--reason", "越权", "--question", "怎么做？",
+            )
+            fails(
+                "human", "human-escalate", "--issue-key", "RI-HUMAN",
+                "--reason", "越权", "--question", "怎么做？",
+            )
+            fails(
+                "inspector", "human-escalate", "--issue-key", "RI-HUMAN",
+                "--reason", "", "--question", "谁是事实源？",
+            )
+            fails(
+                "inspector", "human-escalate", "--issue-key", "RI-HUMAN",
+                "--reason", "项目内没有依据", "--question", "",
+            )
+
+            # Activity 与状态必须在同一事务；状态更新失败时活动不能残留。
+            with sqlite3.connect(database) as conn:
+                conn.execute(
+                    """CREATE TRIGGER force_human_escalation_update_failure
+                       BEFORE UPDATE OF status ON review_issue
+                       WHEN NEW.status = 'HUMAN_CONFIRMATION_REQUIRED'
+                       BEGIN SELECT RAISE(ABORT, 'forced escalation rollback'); END"""
+                )
+            fails(
+                "inspector", "human-escalate", "--issue-key", "RI-HUMAN",
+                "--reason", "项目内无法确定账务事实源", "--question", "应以哪个系统为准？",
+            )
+            self.assertEqual(db("developer", "issue-get", "--issue-key", "RI-HUMAN")["status"], "PROPOSED")
+            self.assertEqual(
+                len(db("developer", "activity-list", "--issue-key", "RI-HUMAN")),
+                len(initial_activities),
+            )
+            with sqlite3.connect(database) as conn:
+                conn.execute("DROP TRIGGER force_human_escalation_update_failure")
+
+            escalation = db(
+                "inspector", "human-escalate", "--issue-key", "RI-HUMAN",
+                "--reason", "代码、测试、Schema 与历史活动均不能确定两个账务系统的最终事实归属",
+                "--question", "历史冲突时应以 ledger 还是 settlement 为最终事实源？",
+                "--options", json.dumps([
+                    {"label": "ledger", "impact": "保留总账事实"},
+                    {"label": "settlement", "impact": "保留结算事实"},
+                ], ensure_ascii=False),
+                "--evidence", json.dumps([
+                    {"file_path": "migration/reconcile.sql", "line_start": 10, "line_end": 35},
+                ], ensure_ascii=False),
+                "--recommended-option", "ledger（可审计且已有不可变流水）",
+            )
+            self.assertEqual(
+                (escalation["status"], escalation["activity_type"], escalation["attempt_no"]),
+                ("HUMAN_CONFIRMATION_REQUIRED", "HUMAN_CONFIRMATION_REQUESTED", 0),
+            )
+            activities = db("developer", "activity-list", "--issue-key", "RI-HUMAN")
+            request_activity = [a for a in activities if a["activity_type"] == "HUMAN_CONFIRMATION_REQUESTED"][-1]
+            self.assertEqual(request_activity["metadata_json"]["question"], "历史冲突时应以 ledger 还是 settlement 为最终事实源？")
+            self.assertEqual(request_activity["metadata_json"]["options"][0]["label"], "ledger")
+            self.assertEqual(request_activity["code_reference_json"][0]["file_path"], "migration/reconcile.sql")
+
+            # 两个 Agent 在等待 Human 时没有自动继续动作，且原子活动不能伪造。
+            fails("developer", "implementation-submit", "--issue-key", "RI-HUMAN", "--content", "越权继续")
+            fails("inspector", "issue-update-status", "--issue-key", "RI-HUMAN", "--status", "IN_PROGRESS")
+            fails(
+                "inspector", "activity-append", "--issue-key", "RI-HUMAN",
+                "--activity-type", "HUMAN_CONFIRMATION_PROVIDED", "--content", "伪造 Human 决策",
+            )
+            fails(
+                "inspector", "human-confirmation-resolve", "--issue-key", "RI-HUMAN",
+                "--decision", "ledger", "--content", "越权 resolve",
+            )
+            fails(
+                "developer", "human-confirmation-resolve", "--issue-key", "RI-HUMAN",
+                "--decision", "ledger", "--content", "越权 resolve",
+            )
+            fails(
+                "human", "human-confirmation-resolve", "--issue-key", "RI-HUMAN",
+                "--decision", "ledger", "--content", "试图直接确认", "--next-status", "CONFIRMED",
+            )
+
+            # Human resolve 同样必须原子；默认恢复设计阶段，implementation attempt 不增加。
+            before_resolve_count = len(activities)
+            with sqlite3.connect(database) as conn:
+                conn.execute(
+                    """CREATE TRIGGER force_human_resolve_update_failure
+                       BEFORE UPDATE OF status ON review_issue
+                       WHEN OLD.status = 'HUMAN_CONFIRMATION_REQUIRED' AND NEW.status = 'DESIGN_REQUIRED'
+                       BEGIN SELECT RAISE(ABORT, 'forced human resolve rollback'); END"""
+                )
+            fails(
+                "human", "human-confirmation-resolve", "--issue-key", "RI-HUMAN",
+                "--decision", "ledger", "--content", "以 ledger 为最终事实源",
+            )
+            self.assertEqual(
+                db("developer", "issue-get", "--issue-key", "RI-HUMAN")["status"],
+                "HUMAN_CONFIRMATION_REQUIRED",
+            )
+            self.assertEqual(
+                len(db("developer", "activity-list", "--issue-key", "RI-HUMAN")),
+                before_resolve_count,
+            )
+            with sqlite3.connect(database) as conn:
+                conn.execute("DROP TRIGGER force_human_resolve_update_failure")
+
+            resolved = db(
+                "human", "human-confirmation-resolve", "--issue-key", "RI-HUMAN",
+                "--decision", "ledger", "--content", "冲突时以不可变总账流水为最终事实源",
+            )
+            self.assertEqual(
+                (resolved["status"], resolved["activity_type"], resolved["attempt_no"]),
+                ("DESIGN_REQUIRED", "HUMAN_CONFIRMATION_PROVIDED", 0),
+            )
+            db("developer", "design-submit", "--issue-key", "RI-HUMAN", "--content", "按 Human 边界重做冲突合并方案")
+            db(
+                "inspector", "design-review", "--issue-key", "RI-HUMAN", "--decision", "approved",
+                "--content", "方案符合 ledger 最终事实源边界，允许实现",
+            )
+            implementation = db(
+                "developer", "implementation-submit", "--issue-key", "RI-HUMAN", "--content", "实现并补充冲突回归测试",
+            )
+            self.assertEqual(implementation["attempt_no"], 1)
+            verification_required = fails(
+                "inspector", "issue-update-status", "--issue-key", "RI-HUMAN", "--status", "CONFIRMED",
+            )
+            self.assertIn("VERIFICATION_PASSED", verification_required.stderr)
+            db(
+                "inspector", "activity-append", "--issue-key", "RI-HUMAN",
+                "--activity-type", "VERIFICATION_PASSED", "--content", "回归及历史样本验证通过",
+            )
+            confirmed = db("inspector", "issue-update-status", "--issue-key", "RI-HUMAN", "--status", "CONFIRMED")
+            self.assertEqual(confirmed["status"], "CONFIRMED")
+
+            override_issue = {**issue, "issue_key": "RI-HUMAN-OVERRIDE", "title": "人工状态纠正"}
+            db(
+                "inspector", "issue-create-batch", "--task-key", task["task_key"],
+                "--reason", "验证 Human 最高解释权", "--issues", json.dumps([override_issue], ensure_ascii=False),
+            )
+            db(
+                "human", "issue-update-status", "--issue-key", "RI-HUMAN-OVERRIDE",
+                "--status", "REDESIGN_REQUIRED", "--content", "人工判定当前方案需要重做",
+            )
+            human_pending_review = db(
+                "human", "issue-update-status", "--issue-key", "RI-HUMAN-OVERRIDE",
+                "--status", "IMPLEMENTED_PENDING_REVIEW", "--content", "人工确认实现已经提交，纠正状态",
+            )
+            self.assertEqual(
+                (human_pending_review["status"], human_pending_review["attempt_no"]),
+                ("IMPLEMENTED_PENDING_REVIEW", 1),
+            )
+            human_confirmed = db(
+                "human", "issue-update-status", "--issue-key", "RI-HUMAN-OVERRIDE",
+                "--status", "CONFIRMED", "--content", "Human 最终确认并覆盖普通验证前置条件",
+            )
+            self.assertEqual(human_confirmed["status"], "CONFIRMED")
+
+    def test_webtool_human_workspace_routes_and_domain_writes(self):
         with tempfile.TemporaryDirectory() as temp:
             home = Path(temp)
             self.run_cmd(home, str(INSTALLER), "install")
@@ -510,9 +1071,32 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 "remediation_benefit": "high", "remediation_cost": "medium",
                 "disposition": "current_iteration", "confidence": "high", "description": "描述",
                 "facts": "事实", "rationale": "依据",
+                "trigger_conditions": ["同一请求重复提交"], "potential_impact": ["产生重复订单"],
+                "impact_scope": ["order-service"],
+                "evidence": [{"file_path": "order.py", "line_start": 5, "line_end": 8, "code_excerpt": "save(order)"}],
+                "estimated_change": {
+                    "file_count": 2, "change_points": 3, "affects_database": False,
+                    "affects_public_api": True, "requires_data_migration": False,
+                    "affects_upstream_downstream": True, "modules": ["order-service"],
+                    "verification_scope": ["重复请求回归"],
+                },
             }
             created = db("inspector", "issue-create-batch", "--task-key", task["task_key"], "--reason", "扫描", "--issues", json.dumps([issue]))
             issue_key = created["created"][0]
+            candidate = db(
+                "developer", "candidate-submit", "--task-key", task["task_key"],
+                "--candidate-key", "RC-WEB-QUEUE", "--title", "候选缓存泄漏",
+                "--description", "候选描述", "--facts", "候选事实", "--rationale", "候选依据",
+                "--evidence", json.dumps([{"file_path": "cache.py", "line_start": 7, "code_excerpt": "cache[key] = value"}]),
+                "--suggested-dimension", "stability_concurrency", "--suggested-severity", "medium",
+                "--suggested-confidence", "high",
+            )
+            self.assertEqual(candidate["status"], "SUBMITTED")
+            db(
+                "developer", "candidate-submit", "--task-key", task["task_key"],
+                "--candidate-key", "RC-WEB-REJECT", "--title", "证据不足的候选",
+                "--description", "候选描述", "--facts", "候选事实", "--rationale", "候选依据",
+            )
 
             previous_home = os.environ.get("AGENT_REVIEW_HOME")
             previous_db = os.environ.get("AGENT_REVIEW_DB")
@@ -529,15 +1113,42 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 self.assertIn('<code class="language-python">', rendered)
                 self.assertIn("&lt;safe&gt;", rendered)
                 self.assertNotIn("<safe>", rendered)
+                escaped_newlines = str(markdown(r"第一行\n第二行\n第三行"))
+                self.assertIn("第一行<br>第二行<br>第三行", escaped_newlines)
+                intentional_escape = str(markdown("说明\n`value\\n`"))
+                self.assertIn("value\\n", intentional_escape)
                 client = app.test_client()
-                listing = client.get("/")
+                inbox = client.get("/")
+                self.assertEqual(inbox.status_code, 200)
+                self.assertIn("待我处理", inbox.get_data(as_text=True))
+                self.assertIn("最近活跃的任务", inbox.get_data(as_text=True))
+                self.assertIn(task["task_key"], inbox.get_data(as_text=True))
+                self.assertIn("候选问题待审核", inbox.get_data(as_text=True))
+
+                listing = client.get("/tasks")
                 self.assertEqual(listing.status_code, 200)
-                self.assertIn("检查任务", listing.get_data(as_text=True))
                 self.assertIn(task["task_key"], listing.get_data(as_text=True))
                 self.assertEqual(client.get("/issues", follow_redirects=False).status_code, 302)
                 detail = client.get(f"/tasks/{task['task_key']}")
                 self.assertEqual(detail.status_code, 200)
                 self.assertIn("重复提交缺少幂等保护", detail.get_data(as_text=True))
+                self.assertIn("编辑当前任务", detail.get_data(as_text=True))
+                self.assertEqual(
+                    client.get(f"/tasks/{task['task_key']}?dimension=data_security").status_code, 200,
+                )
+
+                task_update = client.post(
+                    f"/tasks/{task['task_key']}/edit",
+                    data={"title": "订单模块持续检查", "objective": "检查稳定性与幂等", "remark": "Human 补充", "close_reason": "预留关闭说明"},
+                    follow_redirects=False,
+                )
+                self.assertEqual(task_update.status_code, 302)
+                updated_task = db("inspector", "task-list", "--project-name", "project")[0]
+                self.assertEqual(updated_task["title"], "订单模块持续检查")
+                self.assertEqual(updated_task["objective"], "检查稳定性与幂等")
+                self.assertEqual(updated_task["remark"], "Human 补充")
+                self.assertEqual(updated_task["close_reason"], "预留关闭说明")
+
                 update = client.post(
                     f"/issues/{issue_key}/body",
                     data={"title": "已由人工补充", "description": "描述", "facts": "事实", "rationale": "依据"},
@@ -547,6 +1158,205 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 self.assertEqual(
                     db("inspector", "issue-list", "--task-key", task["task_key"])[0]["title"],
                     "已由人工补充",
+                )
+
+                assessment = client.post(
+                    f"/issues/{issue_key}/assessment",
+                    data={
+                        "dimension": "functional_correctness", "severity": "critical",
+                        "remediation_benefit": "medium", "remediation_cost": "high",
+                        "disposition": "immediate_fix", "confidence": "medium",
+                    }, follow_redirects=False,
+                )
+                self.assertEqual(assessment.status_code, 302)
+                assessed_issue = db("inspector", "issue-list", "--task-key", task["task_key"])[0]
+                self.assertEqual(
+                    tuple(assessed_issue[key] for key in (
+                        "dimension", "severity", "remediation_benefit", "remediation_cost", "disposition", "confidence",
+                    )),
+                    ("functional_correctness", "critical", "medium", "high", "immediate_fix", "medium"),
+                )
+                activity = client.post(
+                    f"/issues/{issue_key}/activities",
+                    data={"activity_type": "COMMENT_ADDED", "content": "回归项\n\n```python\nassert safe\n```"},
+                    follow_redirects=False,
+                )
+                self.assertEqual(activity.status_code, 302)
+                self.assertEqual(
+                    client.post(
+                        f"/issues/{issue_key}/status", data={"status": "ON_HOLD", "content": "等待测试环境"},
+                        follow_redirects=False,
+                    ).status_code,
+                    302,
+                )
+                self.assertEqual(
+                    client.post(
+                        f"/issues/{issue_key}/status", data={"status": "IN_PROGRESS", "content": "环境就绪"},
+                        follow_redirects=False,
+                    ).status_code,
+                    302,
+                )
+
+                issue_page = client.get(f"/issues/{issue_key}")
+                issue_html = issue_page.get_data(as_text=True)
+                self.assertEqual(issue_page.status_code, 200)
+                self.assertIn("编辑当前 Issue", issue_html)
+                self.assertIn("问题证据", issue_html)
+                self.assertIn("处理历史", issue_html)
+                self.assertIn("高级状态", issue_html)
+                self.assertIn("order.py", issue_html)
+                self.assertIn("重复请求回归", issue_html)
+                self.assertIn('<code class="language-python">', issue_html)
+
+                candidates = client.get("/candidates")
+                candidate_html = candidates.get_data(as_text=True)
+                self.assertEqual(candidates.status_code, 200)
+                self.assertIn("RC-WEB-QUEUE", candidate_html)
+                self.assertIn("cache.py", candidate_html)
+                missing_comment = client.post(
+                    "/candidates/RC-WEB-QUEUE/status", data={"status": "ACCEPTED", "content": ""},
+                    follow_redirects=False,
+                )
+                self.assertIn("err=", missing_comment.location)
+                accepted = client.post(
+                    "/candidates/RC-WEB-QUEUE/status",
+                    data={"status": "ACCEPTED", "content": "证据成立，但不自动创建 Issue"},
+                    follow_redirects=False,
+                )
+                self.assertEqual(accepted.status_code, 302)
+                self.assertEqual(db("inspector", "candidate-list", "--status", "ACCEPTED")[0]["status"], "ACCEPTED")
+                rejected = client.post(
+                    "/candidates/RC-WEB-REJECT/status",
+                    data={"status": "REJECTED", "content": "当前证据不能支持结论"}, follow_redirects=False,
+                )
+                self.assertEqual(rejected.status_code, 302)
+                self.assertEqual(db("inspector", "candidate-list", "--status", "REJECTED")[0]["status"], "REJECTED")
+
+                submitted = db(
+                    "developer", "implementation-submit", "--issue-key", issue_key,
+                    "--content", "已增加幂等键校验\n\n- 单测通过\n- 集成测试通过",
+                    "--code-reference", json.dumps([{"file_path": "order.py", "line_start": 10, "line_end": 14, "code_excerpt": "if key in seen:\n    return"}]),
+                    "--metadata", json.dumps({"tests": "passed"}),
+                )
+                self.assertEqual(submitted["status"], "IMPLEMENTED_PENDING_REVIEW")
+                inbox_after_submit = client.get("/").get_data(as_text=True)
+                self.assertIn(issue_key, inbox_after_submit)
+                review_page = client.get(f"/issues/{issue_key}").get_data(as_text=True)
+                self.assertIn("本次实现", review_page)
+                self.assertIn("Human 操作台", review_page)
+                self.assertIn("order.py", review_page)
+
+                confirmed = client.post(
+                    f"/issues/{issue_key}/human-action",
+                    data={"action": "confirm", "content": "Human 已验证测试与实现"},
+                    follow_redirects=False,
+                )
+                self.assertEqual(confirmed.status_code, 302)
+                final_issue = db("inspector", "issue-list", "--task-key", task["task_key"])[0]
+                self.assertEqual(final_issue["status"], "CONFIRMED")
+                activities = db("inspector", "activity-list", "--issue-key", issue_key)
+                self.assertIn("VERIFICATION_PASSED", {item["activity_type"] for item in activities})
+                rejected_transition = client.post(
+                    f"/issues/{issue_key}/status",
+                    data={"status": "CANCELLED", "content": "终态后再次操作"}, follow_redirects=True,
+                )
+                self.assertEqual(rejected_transition.status_code, 200)
+                self.assertIn("问题状态已更新", rejected_transition.get_data(as_text=True))
+                self.assertEqual(db("human", "issue-get", "--issue-key", issue_key)["status"], "CANCELLED")
+                design_issue = {**issue, "issue_key": "RI-WEB-DESIGN", "title": "Web 设计审核"}
+                db(
+                    "inspector", "issue-create-batch", "--task-key", task["task_key"],
+                    "--reason", "Web 设计链路", "--issues", json.dumps([design_issue], ensure_ascii=False),
+                )
+                self.assertEqual(
+                    client.post(
+                        "/issues/RI-WEB-DESIGN/design-request", data={"content": "先明确兼容和并发边界"},
+                        follow_redirects=False,
+                    ).status_code,
+                    302,
+                )
+                self.assertEqual(db("inspector", "issue-get", "--issue-key", "RI-WEB-DESIGN")["status"], "DESIGN_REQUIRED")
+                client.post(
+                    "/issues/RI-WEB-DESIGN/design-submit", data={"content": "Human 代为补充具体方案"},
+                    follow_redirects=False,
+                )
+                design_page = client.get("/issues/RI-WEB-DESIGN").get_data(as_text=True)
+                self.assertIn("审核设计方案", design_page)
+                client.post(
+                    "/issues/RI-WEB-DESIGN/design-review",
+                    data={"decision": "approved", "content": "方案边界明确，可以实现"},
+                    follow_redirects=False,
+                )
+                self.assertEqual(db("inspector", "issue-get", "--issue-key", "RI-WEB-DESIGN")["status"], "IN_PROGRESS")
+                client.post(
+                    "/issues/RI-WEB-DESIGN/status",
+                    data={"status": "REDESIGN_REQUIRED", "content": "Human 人工纠正为重设计"},
+                    follow_redirects=False,
+                )
+                human_override = client.post(
+                    "/issues/RI-WEB-DESIGN/status",
+                    data={"status": "IMPLEMENTED_PENDING_REVIEW", "content": "Human 确认实现已提交"},
+                    follow_redirects=False,
+                )
+                self.assertEqual(human_override.status_code, 302)
+                self.assertEqual(
+                    db("inspector", "issue-get", "--issue-key", "RI-WEB-DESIGN")["status"],
+                    "IMPLEMENTED_PENDING_REVIEW",
+                )
+
+                human_issue = {**issue, "issue_key": "RI-WEB-HUMAN", "title": "需要业务事实源决策"}
+                db(
+                    "inspector", "issue-create-batch", "--task-key", task["task_key"],
+                    "--reason", "Web Human 兜底链路", "--issues", json.dumps([human_issue], ensure_ascii=False),
+                )
+                db(
+                    "inspector", "human-escalate", "--issue-key", "RI-WEB-HUMAN",
+                    "--reason", "项目内无法确定冲突数据的最终业务事实源",
+                    "--question", "冲突时应保留订单系统还是账务系统结果？",
+                    "--options", json.dumps(["订单系统", "账务系统"], ensure_ascii=False),
+                    "--evidence", json.dumps([{"file_path": "reconcile.py", "line_start": 41}], ensure_ascii=False),
+                    "--recommended-option", "账务系统",
+                )
+                human_inbox = client.get("/").get_data(as_text=True)
+                self.assertIn("需要人工确认", human_inbox)
+                self.assertIn("冲突时应保留订单系统还是账务系统结果", human_inbox)
+                self.assertIn("账务系统", human_inbox)
+                human_page = client.get("/issues/RI-WEB-HUMAN").get_data(as_text=True)
+                self.assertIn("自动工作流已暂停", human_page)
+                self.assertIn("reconcile.py", human_page)
+                human_resolved = client.post(
+                    "/issues/RI-WEB-HUMAN/human-confirmation-resolve",
+                    data={
+                        "decision": "账务系统为事实源", "content": "以不可变账务流水为准",
+                        "next_status": "DESIGN_REQUIRED",
+                    },
+                    follow_redirects=False,
+                )
+                self.assertEqual(human_resolved.status_code, 302)
+                self.assertEqual(
+                    db("inspector", "issue-get", "--issue-key", "RI-WEB-HUMAN")["status"],
+                    "DESIGN_REQUIRED",
+                )
+                task_status = client.post(
+                    f"/tasks/{task['task_key']}/status",
+                    data={"status": "ON_HOLD", "remark": "等待下一轮", "close_reason": "预留关闭说明"},
+                    follow_redirects=False,
+                )
+                self.assertEqual(task_status.status_code, 302)
+                self.assertEqual(db("inspector", "task-list", "--status", "ON_HOLD")[0]["status"], "ON_HOLD")
+                client.post(
+                    f"/tasks/{task['task_key']}/status",
+                    data={"status": "CLOSED", "close_reason": "阶段完成"}, follow_redirects=False,
+                )
+                reopened = client.post(
+                    f"/tasks/{task['task_key']}/status",
+                    data={"status": "IN_PROGRESS", "remark": "Human 重新开启"}, follow_redirects=False,
+                )
+                self.assertEqual(reopened.status_code, 302)
+                reopened_tasks = db("human", "task-list", "--status", "IN_PROGRESS")
+                self.assertEqual(
+                    next(item for item in reopened_tasks if item["task_key"] == task["task_key"])["status"],
+                    "IN_PROGRESS",
                 )
             finally:
                 sys.path.pop(0)
