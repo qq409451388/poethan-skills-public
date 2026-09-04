@@ -306,7 +306,7 @@ def inbox():
     )
 
 
-@app.route("/tasks")
+@app.route("/tasks", strict_slashes=False)
 def task_list():
     status = request.args.get("status", "")
     project = request.args.get("project_name", "")
@@ -331,12 +331,40 @@ def task_list():
                    SUM(CASE WHEN i.severity = 'high' AND i.status NOT IN ('CONFIRMED', 'CANCELLED') THEN 1 ELSE 0 END) AS high_total
             FROM review_task t LEFT JOIN review_issue i ON i.task_id = t.id
             {' '.join(filters)} GROUP BY t.id
-            ORDER BY CASE t.status WHEN 'IN_PROGRESS' THEN 1 WHEN 'PENDING' THEN 2 ELSE 3 END,
+            ORDER BY CASE t.task_type WHEN 'CONTINUOUS' THEN 1 ELSE 2 END,
                      t.updated_at DESC, t.id DESC""", params,
     )
-    return render_template("tasks_list.html", tasks=tasks, statuses=TASK_STATUSES, task_types=TASK_TYPES,
-                           filters={"status": status, "project_name": project, "task_type": task_type,
-                                    "include_closed": include_closed})
+    projects: list[dict] = []
+    selected_project_path = ""
+    if project:
+        selected_project_path = tasks[0]["project_path"] if tasks else ""
+    else:
+        project_groups: OrderedDict[str, dict] = OrderedDict()
+        for task in tasks:
+            item = project_groups.setdefault(task["project_name"], {
+                "project_name": task["project_name"], "project_paths": [], "task_total": 0,
+                "continuous_total": 0, "review_total": 0, "open_issue_total": 0,
+                "updated_at": task["updated_at"],
+            })
+            if task["project_path"] not in item["project_paths"]:
+                item["project_paths"].append(task["project_path"])
+            item["task_total"] += 1
+            item["continuous_total"] += int(task["task_type"] == "CONTINUOUS")
+            item["review_total"] += int(task["task_type"] == "REVIEW")
+            item["open_issue_total"] += task["open_issue_total"] or 0
+            item["updated_at"] = max(item["updated_at"], task["updated_at"])
+        projects = list(project_groups.values())
+        for item in projects:
+            item["url"] = url_for(
+                "task_list", project_name=item["project_name"], status=status or None,
+                task_type=task_type or None, include_closed=1 if include_closed else None,
+            )
+    return render_template(
+        "tasks_list.html", tasks=tasks if project else [], projects=projects,
+        selected_project_path=selected_project_path, statuses=TASK_STATUSES, task_types=TASK_TYPES,
+        filters={"status": status, "project_name": project, "task_type": task_type,
+                 "include_closed": include_closed},
+    )
 
 
 @app.route("/tasks/create", methods=["POST"])

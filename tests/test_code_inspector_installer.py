@@ -305,13 +305,53 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             self.assertEqual(repeated["created"], [])
             self.assertEqual(len(repeated["skipped"]), 1)
 
+            confirmed_issue = {
+                **issue, "issue_key": "RI-TASK-CLOSE-CONFIRMED", "title": "已经完成验证的问题",
+                "facts": "该问题已完成独立验证",
+            }
+            db(
+                "inspector", "issue-create-batch", "--task-key", first["task_key"],
+                "--reason", "补充已验证问题", "--issues", json.dumps([confirmed_issue], ensure_ascii=False),
+            )
+            db(
+                "inspector", "activity-append", "--issue-key", "RI-TASK-CLOSE-CONFIRMED",
+                "--activity-type", "VERIFICATION_PASSED", "--content", "验证通过",
+            )
+            db(
+                "inspector", "issue-update-status", "--issue-key", "RI-TASK-CLOSE-CONFIRMED",
+                "--status", "CONFIRMED", "--content", "完成技术确认",
+            )
+
             direct_submit = db(
                 "developer", "issue-update-status", "--issue-key", created["created"][0],
                 "--status", "IMPLEMENTED_PENDING_REVIEW",
             )
             self.assertEqual(direct_submit["status"], "IMPLEMENTED_PENDING_REVIEW")
 
-            db("inspector", "task-update-status", "--task-key", first["task_key"], "--status", "CLOSED")
+            db("inspector", "task-update-status", "--task-key", first["task_key"], "--status", "ON_HOLD")
+            self.assertEqual(
+                db("inspector", "issue-get", "--issue-key", created["created"][0])["status"],
+                "IMPLEMENTED_PENDING_REVIEW",
+            )
+            db("inspector", "task-update-status", "--task-key", first["task_key"], "--status", "IN_PROGRESS")
+            closed_result = db(
+                "inspector", "task-update-status", "--task-key", first["task_key"],
+                "--status", "CLOSED", "--close-reason", "本轮治理结束",
+            )
+            self.assertEqual(closed_result["cancelled_issue_count"], 1)
+            self.assertEqual(
+                db("inspector", "issue-get", "--issue-key", created["created"][0])["status"],
+                "CANCELLED",
+            )
+            self.assertEqual(
+                db("inspector", "issue-get", "--issue-key", "RI-TASK-CLOSE-CONFIRMED")["status"],
+                "CONFIRMED",
+            )
+            close_activities = db("inspector", "activity-list", "--issue-key", created["created"][0])
+            task_close_activity = close_activities[-1]
+            self.assertEqual(task_close_activity["result_status"], "CANCELLED")
+            self.assertEqual(task_close_activity["metadata_json"]["source"], "task-update-status")
+            self.assertIn("本轮治理结束", task_close_activity["content"])
             self.assertEqual(db("inspector", "task-list"), [])
             closed = db("inspector", "task-list", "--status", "CLOSED")
             self.assertEqual(closed[0]["task_key"], first["task_key"])
@@ -1340,10 +1380,18 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 self.assertIn(task["task_key"], inbox.get_data(as_text=True))
                 self.assertIn("候选问题待审核", inbox.get_data(as_text=True))
 
-                listing = client.get("/tasks")
+                project_picker = client.get("/tasks")
+                self.assertEqual(project_picker.status_code, 200)
+                project_picker_html = project_picker.get_data(as_text=True)
+                self.assertIn("选择项目", project_picker_html)
+                self.assertIn("project", project_picker_html)
+                self.assertNotIn('class="task-table"', project_picker_html)
+                self.assertNotIn(task["task_key"], project_picker_html)
+                self.assertIn("创建任务", project_picker_html)
+                self.assertEqual(client.get("/tasks/").status_code, 200)
+                listing = client.get("/tasks?project_name=project")
                 self.assertEqual(listing.status_code, 200)
                 self.assertIn(task["task_key"], listing.get_data(as_text=True))
-                self.assertIn("创建任务", listing.get_data(as_text=True))
                 created_task_response = client.post(
                     "/tasks/create",
                     data={
@@ -1360,6 +1408,10 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                     if item["title"] == "长期线上 Bug 汇报"
                 )
                 self.assertEqual(continuous_web_task["project_path"], str(workspace.resolve()))
+                ordered_listing = client.get("/tasks?project_name=project").get_data(as_text=True)
+                self.assertLess(ordered_listing.index(continuous_web_task["task_key"]), ordered_listing.index(task["task_key"]))
+                self.assertIn("badge-task-type-CONTINUOUS", ordered_listing)
+                self.assertIn("badge-task-type-REVIEW", ordered_listing)
                 continuous_detail = client.get(f"/tasks/{continuous_web_task['task_key']}").get_data(as_text=True)
                 self.assertIn("持续治理", continuous_detail)
                 self.assertIn("创建后不可修改", continuous_detail)
@@ -1368,6 +1420,8 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 self.assertEqual(detail.status_code, 200)
                 self.assertIn("重复提交缺少幂等保护", detail.get_data(as_text=True))
                 self.assertIn("编辑当前任务", detail.get_data(as_text=True))
+                self.assertIn("快捷变更状态", detail.get_data(as_text=True))
+                self.assertIn("关闭任务会同步取消所有尚未结束的 Issue", detail.get_data(as_text=True))
                 self.assertEqual(
                     client.get(f"/tasks/{task['task_key']}?dimension=data_security").status_code, 200,
                 )
@@ -1618,10 +1672,13 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 )
                 self.assertEqual(task_status.status_code, 302)
                 self.assertEqual(db("inspector", "task-list", "--status", "ON_HOLD")[0]["status"], "ON_HOLD")
-                client.post(
+                closed_task = client.post(
                     f"/tasks/{task['task_key']}/status",
                     data={"status": "CLOSED", "close_reason": "阶段完成"}, follow_redirects=False,
                 )
+                self.assertEqual(closed_task.status_code, 302)
+                self.assertEqual(db("human", "issue-get", "--issue-key", "RI-WEB-DESIGN")["status"], "CANCELLED")
+                self.assertEqual(db("human", "issue-get", "--issue-key", "RI-WEB-HUMAN")["status"], "CANCELLED")
                 reopened = client.post(
                     f"/tasks/{task['task_key']}/status",
                     data={"status": "IN_PROGRESS", "remark": "Human 重新开启"}, follow_redirects=False,

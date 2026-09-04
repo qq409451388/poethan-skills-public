@@ -434,6 +434,45 @@ def task_list(args: argparse.Namespace) -> None:
         audit(conn, actor_id(args), "task.list", "review_task", None, True, f"count={len(rows)}")
     print_json(rows)
 
+def cancel_open_issues_for_closed_task(
+    conn: sqlite3.Connection, args: argparse.Namespace, task_id: int, task_key: str
+) -> int:
+    """任务显式关闭时，同事务取消尚未终结的 Issue；不伪造技术验证结论。"""
+    issues = conn.execute(
+        """SELECT id, issue_key, status, current_attempt_no
+           FROM review_issue
+           WHERE task_id = ? AND status NOT IN ('CONFIRMED', 'CANCELLED')
+           ORDER BY id""",
+        (task_id,),
+    ).fetchall()
+    reason = (args.close_reason or args.remark or "").strip()
+    for issue in issues:
+        content = f"所属任务 {task_key} 已关闭，Issue 同步取消"
+        if reason:
+            content += f"：{reason}"
+        supersede_active_stage_plan(conn, args, issue, content)
+        conn.execute(
+            """UPDATE review_issue
+               SET status = 'CANCELLED', cancelled_at = CURRENT_TIMESTAMP,
+                   updated_at = CURRENT_TIMESTAMP
+               WHERE id = ?""",
+            (issue["id"],),
+        )
+        conn.execute(
+            """INSERT INTO issue_activity(
+                issue_id, attempt_no, activity_type, operator_type, operator_id,
+                content, result_status, metadata_json
+            ) VALUES (?, ?, 'STATUS_CHANGED', ?, ?, ?, 'CANCELLED', ?)""",
+            (
+                issue["id"], issue["current_attempt_no"], operator_type(args.agent), actor_id(args),
+                content, dumps({
+                    "source": "task-update-status", "task_key": task_key,
+                    "previous_status": issue["status"],
+                }),
+            ),
+        )
+    return len(issues)
+
 def task_update_status(args: argparse.Namespace) -> None:
     require_agent(args.agent)
     if args.agent not in {"inspector", "human"}:
@@ -461,8 +500,19 @@ def task_update_status(args: argparse.Namespace) -> None:
                WHERE task_key = ?""",
             (args.status, args.started_at, args.finished_at, args.close_reason, args.remark, args.task_key),
         )
-        audit(conn, actor_id(args), "task.update-status", "review_task", args.task_key, True)
-    print_json({"task_key": args.task_key, "status": args.status})
+        cancelled_issue_count = 0
+        if args.status == "CLOSED":
+            cancelled_issue_count = cancel_open_issues_for_closed_task(
+                conn, args, row["id"], args.task_key,
+            )
+        audit(
+            conn, actor_id(args), "task.update-status", "review_task", args.task_key, True,
+            f"status={args.status};cancelled_issues={cancelled_issue_count}",
+        )
+    print_json({
+        "task_key": args.task_key, "status": args.status,
+        "cancelled_issue_count": cancelled_issue_count,
+    })
 
 def task_update(args: argparse.Namespace) -> None:
     require_agent(args.agent)

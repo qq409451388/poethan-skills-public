@@ -36,7 +36,8 @@ commands:
     roles: [inspector, human]
     required: [--task-key, --status]
     optional: [--started-at, --finished-at, --close-reason, --remark]
-    note: inspector 遵守标准 task_transitions；human 可设置任一合法 Task 状态并可重新打开终态任务，写入仍由领域命令审计。
+    note: inspector 遵守标准 task_transitions；human 可设置任一合法 Task 状态并可重新打开终态任务。仅转为 CLOSED 时，命令在同一事务中把所有非 CONFIRMED/CANCELLED Issue 转为 CANCELLED、废弃 active Stage Plan 并写入 STATUS_CHANGED；其他 Task 状态变更不同步 Issue。
+    returns: [task_key, status, cancelled_issue_count]
   version-create:
     roles: [inspector, human]
     required: [--task-key, --reason]

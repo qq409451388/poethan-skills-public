@@ -28,6 +28,16 @@ task_status_authority:
   human: 可通过 task-update-status 将 Task 调整为任一合法 task_status，包括纠正或重新打开终态任务；所有变更仍保留领域校验与审计。
   rationale: Human 对任务是否继续、暂停、关闭或取消具有最高解释权，但该权限不改变 Issue 的专用原子工作流约束。
 
+task_close_cascade:
+  trigger: task-update-status --status CLOSED
+  atomicity: Task 状态更新、未终结 Issue 取消、Activity 与审计必须在同一事务中完成。
+  issue_behavior:
+    open_statuses: 转为 CANCELLED，并追加 STATUS_CHANGED，metadata 标明由 Task 关闭触发。
+    terminal_statuses: CONFIRMED / CANCELLED 保持不变，不重复追加活动。
+  stage_behavior: active Stage Plan 标记为 SUPERSEDED，保留已批准 Stage 和全部历史。
+  non_triggers: Task 转为 PENDING / IN_PROGRESS / ON_HOLD / BLOCKED / CANCELLED 时不同步 Issue。
+  rationale: 关闭治理范围应停止其未完成 Issue，但不能把未验证问题伪装成 CONFIRMED。
+
 task_identity:
   definition: 一个稳定的代码检查或持续治理目标，不是一轮扫描或单个问题。
   explicit_task_key: 若提供 task_key，优先复用该活动 task；项目路径或 task_type 冲突时拒绝。

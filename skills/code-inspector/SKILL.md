@@ -18,7 +18,7 @@ description: 在用户明确开启代码检查模式后，按安装时分配的 
 
 通用规则：Task 分为一次性治理目标 `REVIEW` 和跨基线长期治理主题 `CONTINUOUS`。`scan` 在两类 Task 中都必须完成跨模块数据流、coverage closure、补扫和去重；向 `CONTINUOUS` 报告单个线上问题的 `report` 只核实证据、判定成立和去重，不触发全项目扫描。默认聊天只输出简短摘要，完整报告仅在用户明确要求时导出。
 
-Task 与普通 Issue 状态由 Inspector/Developer 按标准状态机维护；Human 具有最高管理解释权，可通过 `task-update-status` 或 `issue-update-status` 设置任一合法普通状态，包括纠正、重开终态或直接指定待实现审核状态。覆盖操作仍写入 `STATUS_CHANGED` 和审计。两个不能绕过的安全边界是：`HUMAN_CONFIRMATION_REQUIRED` 只能由 Inspector 的 `human-escalate` 进入并由 Human 的 `human-confirmation-resolve` 离开；任何角色转 `CONFIRMED` 前都必须为当前 implementation attempt 留有 `VERIFICATION_PASSED`。
+Task 与普通 Issue 状态由 Inspector/Developer 按标准状态机维护；Human 具有最高管理解释权，可通过 `task-update-status` 或 `issue-update-status` 设置任一合法普通状态，包括纠正、重开终态或直接指定待实现审核状态。覆盖操作仍写入 `STATUS_CHANGED` 和审计。Task 只有显式转为 `CLOSED` 时才同步结束 Issue：尚未终结的 Issue 原子转为 `CANCELLED`，已 `CONFIRMED/CANCELLED` 的 Issue 保持不动；其他 Task 状态变更不传播到 Issue。这样结束任务范围但不伪造技术验证结论。两个不能绕过的安全边界是：`HUMAN_CONFIRMATION_REQUIRED` 只能由 Inspector 的 `human-escalate` 进入并由 Human 的 `human-confirmation-resolve` 离开；任何角色转 `CONFIRMED` 前都必须为当前 implementation attempt 留有 `VERIFICATION_PASSED`。
 
 Code Inspector 的目标不是让 Developer 无限提交、Inspector 无限驳回。简单问题可直接实现；跨模块、Schema/迁移、历史回灌、状态机、幂等并发、ACK/retry/recovery、公共 API、大重构或方向不确定的问题，Inspector 应在编码前使用 `design-request`，主动写清根因、不可破坏语义、设计约束、风险、推荐方向和必须回答的问题。Inspector 决定“必须解决什么、不能破坏什么、推荐往哪里做”，Developer 决定“具体代码怎么实现”。
 

@@ -95,7 +95,7 @@ $code-inspector stop
 
 ## 任务与问题的边界
 
-Task 有两类：`REVIEW` 是一次边界明确的检查治理目标，继续沿用项目、等级、目标、范围和基线 identity；`CONTINUOUS` 是可持续数月的治理主题，identity 不包含 `baseline_ref`，代码基线变化仍复用同一 Task。类型创建后不可修改。`CONTINUOUS` 的全部 Issue 关闭后 Task 仍保持活动，只有 Inspector/Human 显式关闭或取消才结束。
+Task 有两类：`REVIEW` 是一次边界明确的检查治理目标，继续沿用项目、等级、目标、范围和基线 identity；`CONTINUOUS` 是可持续数月的治理主题，identity 不包含 `baseline_ref`，代码基线变化仍复用同一 Task。类型创建后不可修改。`CONTINUOUS` 的全部 Issue 关闭后 Task 仍保持活动，只有 Inspector/Human 显式关闭或取消才结束。Task 显式转为 `CLOSED` 时，尚未终结的 Issue 会在同一事务中转为 `CANCELLED`；已确认或已取消的 Issue 不变。Task 的其他状态变更不会同步 Issue。
 
 Inspector 修改 Task 状态时遵守标准状态机。Human 具有 Task 状态最高管理权限，可纠正状态或重新打开 `CLOSED / CANCELLED` 任务；操作仍通过 `task-update-status` 记录审计，不改变 Issue 级专用流程约束。
 
