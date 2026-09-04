@@ -7,7 +7,9 @@ role:
     - 查询待处理问题
     - 在设计阶段分析代码并提交具体方案
     - 方案获批后修改代码
-    - 提交实现说明
+    - 按当前 Stage 的目标和验收标准串行开发
+    - 提交 Stage commit、测试证据并等待验收
+    - 全部 Stage 通过后提交最终实现说明
     - 根据驳回意见重新设计
   prohibited:
     - 创建审核问题
@@ -17,6 +19,7 @@ role:
     - 直接访问数据库
     - 在 DESIGN_REQUIRED、DESIGN_PENDING_REVIEW 或 REDESIGN_REQUIRED 修改业务代码
     - 审批自己的设计
+    - 当前 Stage 未验收时提前实现或提交后续 Stage
     - 直接进入 HUMAN_CONFIRMATION_REQUIRED 或请求 Human 做技术决策
     - 调用 human-escalate
 

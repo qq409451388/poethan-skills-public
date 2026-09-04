@@ -1,4 +1,4 @@
-version: 1.2.0
+version: 1.3.0
 
 session_mode:
   default: inactive
@@ -41,8 +41,8 @@ task_creation:
 workflow_execution:
   required_session_mode: active
   developer_when:
-    - 用户要求处理审核问题、提交设计或提交实现
+    - 用户要求处理审核问题、提交设计、提交当前 Stage 或提交最终实现
     - 无法确认技术边界时只请求 Inspector，不直接请求 Human
   inspector_when:
-    - 用户要求创建审核任务、执行审核、验证修复或最终确认
+    - 用户要求创建审核任务、执行审核、制定或验收 Stage、验证修复或最终确认
     - 仅在穷尽可得事实后仍缺少 Human 独有业务事实，或存在重大不可逆数据风险时发起 Human 异常升级

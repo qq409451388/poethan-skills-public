@@ -52,14 +52,20 @@ def connect() -> sqlite3.Connection:
 
 
 def query_all(sql: str, params: Iterable[Any] = ()) -> list[dict[str, Any]]:
-    with connect() as conn:
+    conn = connect()
+    try:
         return [dict(r) for r in conn.execute(sql, tuple(params)).fetchall()]
+    finally:
+        conn.close()
 
 
 def query_one(sql: str, params: Iterable[Any] = ()) -> dict[str, Any] | None:
-    with connect() as conn:
+    conn = connect()
+    try:
         row = conn.execute(sql, tuple(params)).fetchone()
         return dict(row) if row else None
+    finally:
+        conn.close()
 
 
 def parse_json_field(value: str | None, default: Any) -> Any:

@@ -1,4 +1,4 @@
-{% macro task_modal(modal_id, task_key, title, objective, remark, close_reason, status, statuses, return_to) %}
+{% macro task_modal(modal_id, task_key, title, objective, remark, close_reason, status, task_type, statuses, return_to) %}
 <div class="modal-backdrop" id="{{ modal_id }}" role="dialog" aria-modal="true" aria-labelledby="{{ modal_id }}-title">
   <div class="modal-card">
     <div class="modal-head">
@@ -14,6 +14,7 @@
         <form method="post" action="{{ url_for('task_update', task_key=task_key) }}">
           <input type="hidden" name="return_to" value="{{ return_to }}">
           <div class="form-grid">
+            <div class="field"><label>任务类型</label><input type="text" value="{{ task_type|label }}" readonly><span class="form-note">创建后不可修改{% if task_type == 'CONTINUOUS' %}；所有 Issue 完成也不会自动关闭{% endif %}</span></div>
             <div class="field form-full"><label>标题</label><input type="text" name="title" value="{{ title }}" required></div>
             <div class="field form-full"><label>目标</label><textarea name="objective" required>{{ objective }}</textarea></div>
             <div class="field form-full"><label>备注</label><textarea name="remark">{{ remark or '' }}</textarea></div>

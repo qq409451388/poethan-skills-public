@@ -1,4 +1,4 @@
-version: 1.1.0
+version: 1.2.0
 
 database:
   engine: sqlite
@@ -27,4 +27,5 @@ domain_tables:
   review_task: 长期检查目标。
   review_issue: inspector 或 human 创建的正式问题。
   issue_candidate: developer 提交、inspector 审核的新问题候选；不等同于正式 issue。
+  issue_stage: 复杂 Issue 的版本化串行执行计划；按 issue_id、plan_no、stage_no 唯一，plan_status 标识整份计划是否废弃；旧计划只废弃不删除，已验收字段和活动保留。
   issue_activity: 正式问题的活动轨迹。

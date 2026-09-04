@@ -44,6 +44,56 @@
 
     <section class="panel"><h2>问题证据</h2>{{ render_references(issue.evidence, '未提供结构化证据') }}</section>
 
+    <section class="panel stage-plan-panel" id="execution-plan">
+      <div class="section-head">
+        <div><h2>执行计划</h2><p class="section-sub">复杂 Issue 按 Stage 串行开发与验收；简单 Issue 可以没有执行计划。</p></div>
+        {% if active_stage_plan %}<span class="badge badge-blue">执行计划 {{ current_execution_stage.stage_no if current_execution_stage else active_stage_plan|length }} / {{ active_stage_plan|length }}</span>{% endif %}
+      </div>
+      {% if stage_plans %}
+      <div class="stage-plans">
+        {% for plan_no, plan in stage_plans.items() %}
+        {% set is_active_plan = active_stage_plan and plan_no == active_stage_plan[0].plan_no %}
+        <section class="stage-plan {% if is_active_plan %}active{% else %}historical{% endif %}">
+          <div class="stage-plan-head"><strong>Stage Plan #{{ plan_no }}</strong><span class="badge {% if is_active_plan %}badge-blue{% else %}badge-status-SUPERSEDED{% endif %}">{% if is_active_plan %}当前计划{% else %}历史计划{% endif %}</span></div>
+          <div class="stage-list">
+          {% for execution_stage in plan %}
+            <details class="stage-item stage-{{ execution_stage.status }} {% if current_execution_stage and execution_stage.id == current_execution_stage.id %}current{% endif %}" {% if current_execution_stage and execution_stage.id == current_execution_stage.id %}open{% endif %}>
+              <summary>
+                <span class="stage-marker">{% if execution_stage.status == 'APPROVED' %}✓{% elif execution_stage.status in ('IN_PROGRESS', 'PENDING_REVIEW') %}●{% elif execution_stage.status == 'SUPERSEDED' %}×{% else %}○{% endif %}</span>
+                <span class="stage-summary"><strong>Stage {{ execution_stage.stage_no }} · {{ execution_stage.title }}</strong><small>{{ execution_stage.objective }}</small></span>
+                <span class="badge badge-status-{{ execution_stage.status }}">{{ execution_stage.status|label }}</span>
+              </summary>
+              <div class="stage-body">
+                <dl class="keybox compact-keybox">
+                  <dt>目标</dt><dd><div class="markdown-body">{{ execution_stage.objective|markdown }}</div></dd>
+                  <dt>验收标准</dt><dd><div class="markdown-body">{{ execution_stage.acceptance_criteria|markdown }}</div></dd>
+                  <dt>Developer 提交</dt><dd>{% if execution_stage.developer_summary %}<div class="markdown-body">{{ execution_stage.developer_summary|markdown }}</div>{% else %}<span class="muted">尚未提交</span>{% endif %}</dd>
+                  <dt>Commit SHA</dt><dd class="mono">{{ execution_stage.submitted_commit_sha or '—' }}</dd>
+                  <dt>提交时间</dt><dd>{{ execution_stage.submitted_at|localtime }}</dd>
+                  <dt>验收意见</dt><dd>{% if execution_stage.review_comment %}<div class="markdown-body">{{ execution_stage.review_comment|markdown }}</div>{% else %}<span class="muted">尚未验收</span>{% endif %}</dd>
+                  <dt>验收时间</dt><dd>{{ execution_stage.approved_at|localtime }}</dd>
+                </dl>
+                {% if execution_stage.test_evidence %}<details class="collapsible"><summary>测试结果</summary><pre class="raw-json">{{ execution_stage.test_evidence|json_pretty }}</pre></details>{% endif %}
+                {% if execution_stage.code_reference %}<details class="collapsible"><summary>代码引用</summary><div class="details-body">{{ render_references(execution_stage.code_reference) }}</div></details>{% endif %}
+                {% if execution_stage.submission_metadata %}<details class="collapsible"><summary>提交元数据</summary><pre class="raw-json">{{ execution_stage.submission_metadata|json_pretty }}</pre></details>{% endif %}
+                {% if is_active_plan and execution_stage.status == 'PENDING_REVIEW' %}
+                <form class="stage-review-form" method="post" action="{{ url_for('issue_stage_review', issue_key=issue.issue_key, stage_no=execution_stage.stage_no) }}">
+                  <input type="hidden" name="plan_no" value="{{ plan_no }}">
+                  <div class="field"><label>人工验收意见 <span class="required">必填</span></label><textarea name="content" required placeholder="按本阶段验收标准记录通过、驳回或设计失效的依据"></textarea></div>
+                  <div class="stage-review-actions"><button class="btn btn-primary" name="decision" value="approved">阶段验收通过</button><button class="btn" name="decision" value="rejected">驳回当前阶段</button><button class="btn btn-danger-outline" name="decision" value="redesign">发现设计错误，要求重新设计</button></div>
+                  <p class="form-note">这是人工接管入口；正常 Stage 验收应由 Inspector Agent 完成。</p>
+                </form>
+                {% endif %}
+              </div>
+            </details>
+          {% endfor %}
+          </div>
+        </section>
+        {% endfor %}
+      </div>
+      {% else %}<div class="empty-inline">当前 Issue 没有 Stage Plan；简单问题可直接实现。</div>{% endif %}
+    </section>
+
     {% if latest_implementation %}
     <section class="panel implementation-panel">
       <div class="section-head"><div><h2>本次实现</h2><p class="section-sub">当前第 {{ latest_implementation.attempt_no }} 轮 · {{ latest_implementation.created_at|localtime }}</p></div><span class="badge badge-status-IMPLEMENTED_PENDING_REVIEW">Developer 提交</span></div>
@@ -99,6 +149,7 @@
       </form>
       {% elif issue.status == 'DESIGN_PENDING_REVIEW' %}
       <div class="action-head"><div><span>HUMAN · 当前轮到你处理</span><h2>审核设计方案</h2></div><b>需要决策</b></div>
+      {% if not active_stage_plan %}<details class="secondary-actions stage-plan-create"><summary>复杂问题：批准前创建 Stage Plan</summary><form method="post" action="{{ url_for('issue_stage_plan_create', issue_key=issue.issue_key) }}"><div class="field"><label>Stages JSON <span class="required">必填</span></label><textarea class="mono" name="stages" required placeholder='[{"stage_no":1,"title":"模型调整","objective":"建立领域版本模型","acceptance_criteria":["新旧数据兼容","单测通过"]}]'></textarea></div><button class="btn btn-soft btn-block" type="submit">创建执行计划</button></form></details>{% endif %}
       <form method="post" action="{{ url_for('issue_design_review', issue_key=issue.issue_key) }}">
         <div class="field"><label>审核结论 <span class="required">必填</span></label><textarea name="content" required placeholder="批准时记录关键边界；驳回时说明错误、调整点和建议方向"></textarea></div>
         <div class="action-list"><button class="action-btn action-primary" name="decision" value="approved"><span class="action-icon">✓</span><span><strong>批准方案并进入实现</strong><small>DESIGN_APPROVED → IN_PROGRESS</small></span><span>›</span></button><button class="action-btn action-danger" name="decision" value="rejected"><span class="action-icon">↻</span><span><strong>驳回方案继续讨论</strong><small>DESIGN_REJECTED → DESIGN_REQUIRED</small></span><span>›</span></button></div>
@@ -131,6 +182,10 @@
       {% elif issue.status == 'BLOCKED' %}
       <div class="action-head"><div><span>HUMAN · 需要协调</span><h2>处理阻塞</h2></div><b>受阻</b></div>
       <form method="post" action="{{ url_for('issue_human_action', issue_key=issue.issue_key) }}"><div class="field"><label>处理说明</label><textarea name="content" placeholder="记录阻塞解除情况或后续安排"></textarea></div><div class="action-list"><button class="action-btn action-primary" name="action" value="resume"><span class="action-icon">→</span><span><strong>解除阻塞并继续</strong><small>尝试转为 IN_PROGRESS</small></span><span>›</span></button><button class="action-btn action-secondary" name="action" value="hold"><span class="action-icon">Ⅱ</span><span><strong>转为暂时搁置</strong><small>等待合适时机恢复</small></span><span>›</span></button></div></form>
+      {% elif active_stage_plan and issue.status == 'IN_PROGRESS' %}
+      <div class="action-head"><div><span>HUMAN · 查看执行进展</span><h2>{% if current_execution_stage %}Stage {{ current_execution_stage.stage_no }} · {{ current_execution_stage.title }}{% else %}全部 Stage 已验收{% endif %}</h2></div>{% if current_execution_stage %}<b>{{ current_execution_stage.status|label }}</b>{% endif %}</div>
+      <p class="action-hint">{% if current_execution_stage and current_execution_stage.status == 'PENDING_REVIEW' %}默认等待 Inspector Agent 验收；如需人工接管，请在左侧展开当前 Stage。{% elif current_execution_stage %}Developer 正按当前阶段的验收标准实现，Human 无需日常审批。{% else %}Developer 可以提交整个 Issue 的最终实现，之后由 Inspector 做整体验证。{% endif %}</p>
+      <a class="btn btn-soft btn-block" href="#execution-plan">查看执行计划</a>
       {% elif issue.status in ('PROPOSED', 'IN_PROGRESS') %}
       <div class="action-head"><div><span>HUMAN · 可选操作</span><h2>要求先完成设计</h2></div></div><p class="action-hint">复杂、风险高或方向不明确的问题可在编码前进入设计阶段。</p><form method="post" action="{{ url_for('issue_design_request', issue_key=issue.issue_key) }}"><div class="field"><label>设计约束 <span class="required">必填</span></label><textarea name="content" required placeholder="说明根因、必须满足和不可破坏的边界、推荐方向、风险与待回答问题"></textarea></div><button class="btn btn-primary btn-block" type="submit">发起设计讨论</button></form>
       {% else %}
@@ -142,7 +197,7 @@
   </div></aside>
 </div>
 
-{{ task_modal('task-edit-modal', issue.task_key, issue.task_title, issue.task_objective, issue.task_remark, issue.task_close_reason, issue.task_status, task_statuses, request.path) }}
+{{ task_modal('task-edit-modal', issue.task_key, issue.task_title, issue.task_objective, issue.task_remark, issue.task_close_reason, issue.task_status, issue.task_type, task_statuses, request.path) }}
 
 <div class="modal-backdrop" id="issue-edit-modal" role="dialog" aria-modal="true" aria-labelledby="issue-edit-title">
   <div class="modal-card">
@@ -151,7 +206,7 @@
     <div class="modal-body">
       <section class="modal-pane active" data-tab-pane="body"><form method="post" action="{{ url_for('issue_update_body', issue_key=issue.issue_key) }}"><div class="form-grid"><div class="field form-full"><label>标题</label><input type="text" name="title" value="{{ issue.title }}" required></div><div class="field form-full"><label>描述</label><textarea name="description" required>{{ issue.description }}</textarea></div><div class="field form-full"><label>事实</label><textarea name="facts" required>{{ issue.facts }}</textarea></div><div class="field form-full"><label>判断依据</label><textarea name="rationale" required>{{ issue.rationale }}</textarea></div></div><div class="modal-actions"><button type="button" class="btn" data-modal-close>取消</button><button type="submit" class="btn btn-primary">保存正文</button></div></form></section>
       <section class="modal-pane" data-tab-pane="assessment"><form method="post" action="{{ url_for('issue_update_assessment', issue_key=issue.issue_key) }}"><div class="form-grid"><div class="field"><label>维度</label><select name="dimension">{% for value, name in dimensions %}<option value="{{ value }}" {% if issue.dimension == value %}selected{% endif %}>{{ name }}</option>{% endfor %}</select></div><div class="field"><label>严重度</label><select name="severity">{% for value, name in severities %}<option value="{{ value }}" {% if issue.severity == value %}selected{% endif %}>{{ name }}</option>{% endfor %}</select></div><div class="field"><label>改造收益</label><select name="remediation_benefit">{% for value, name in benefits %}<option value="{{ value }}" {% if issue.remediation_benefit == value %}selected{% endif %}>{{ name }}</option>{% endfor %}</select></div><div class="field"><label>改造成本</label><select name="remediation_cost">{% for value, name in costs %}<option value="{{ value }}" {% if issue.remediation_cost == value %}selected{% endif %}>{{ name }}</option>{% endfor %}</select></div><div class="field"><label>建议处置</label><select name="disposition">{% for value, name in dispositions %}<option value="{{ value }}" {% if issue.disposition == value %}selected{% endif %}>{{ name }}</option>{% endfor %}</select></div><div class="field"><label>置信度</label><select name="confidence">{% for value, name in confidence %}<option value="{{ value }}" {% if issue.confidence == value %}selected{% endif %}>{{ name }}</option>{% endfor %}</select></div></div><div class="modal-actions"><button type="button" class="btn" data-modal-close>取消</button><button type="submit" class="btn btn-primary">保存评级</button></div></form></section>
-      <section class="modal-pane" data-tab-pane="status"><form method="post" action="{{ url_for('issue_update_status', issue_key=issue.issue_key) }}"><div class="field"><label>目标状态</label><select name="status">{% for status in issue_statuses %}<option value="{{ status }}" {% if issue.status == status %}selected{% endif %}>{{ status|label }}</option>{% endfor %}</select></div><div class="field"><label>说明</label><textarea name="content" placeholder="建议记录人工覆盖原因，便于后续审计"></textarea></div><p class="form-note">Human 对普通 Issue 状态具有最高管理权限，可跨标准流程纠正状态。HUMAN_CONFIRMATION_REQUIRED 仍必须使用专用发起/解决命令。</p><div class="modal-actions"><button type="button" class="btn" data-modal-close>取消</button><button type="submit" class="btn btn-primary">更新状态</button></div></form></section>
+      <section class="modal-pane" data-tab-pane="status"><form method="post" action="{{ url_for('issue_update_status', issue_key=issue.issue_key) }}"><div class="field"><label>目标状态</label><select name="status">{% for status in issue_statuses %}<option value="{{ status }}" {% if issue.status == status %}selected{% endif %}>{{ status|label }}</option>{% endfor %}</select></div><div class="field"><label>说明</label><textarea name="content" placeholder="建议记录人工覆盖原因，便于后续审计"></textarea></div><p class="form-note">Human 可跨普通状态纠错（包括 REDESIGN_REQUIRED → IMPLEMENTED_PENDING_REVIEW）；HUMAN_CONFIRMATION_REQUIRED 必须走专用命令，CONFIRMED 必须已有 VERIFICATION_PASSED。</p><div class="modal-actions"><button type="button" class="btn" data-modal-close>取消</button><button type="submit" class="btn btn-primary">更新状态</button></div></form></section>
       <section class="modal-pane" data-tab-pane="activity"><form method="post" action="{{ url_for('issue_add_activity', issue_key=issue.issue_key) }}"><div class="field"><label>活动类型</label><select name="activity_type">{% for value, name in activity_types %}<option value="{{ value }}">{{ name }}</option>{% endfor %}</select></div><div class="field"><label>内容</label><textarea name="content" required placeholder="支持换行、列表、inline code 和 fenced code block"></textarea></div><p class="form-note">Markdown 内容会安全渲染；活动由 human 领域命令追加并保留审计。</p><div class="modal-actions"><button type="button" class="btn" data-modal-close>取消</button><button type="submit" class="btn btn-primary">追加活动</button></div></form></section>
     </div>
   </div>

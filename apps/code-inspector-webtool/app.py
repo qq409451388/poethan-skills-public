@@ -75,6 +75,9 @@ LABELS = {
     "ISSUE_CREATED": "创建问题", "COMMENT_ADDED": "补充说明", "EVIDENCE_ADDED": "补充证据",
     "DESIGN_REQUESTED": "要求设计", "DESIGN_GUIDANCE": "设计指导",
     "DESIGN_SUBMITTED": "提交设计", "DESIGN_APPROVED": "设计批准", "DESIGN_REJECTED": "设计驳回",
+    "STAGE_PLAN_CREATED": "创建执行计划", "STAGE_SUBMITTED": "提交阶段实现",
+    "STAGE_APPROVED": "阶段验收通过", "STAGE_REJECTED": "阶段验收驳回",
+    "STAGE_PLAN_SUPERSEDED": "执行计划已废弃",
     "HUMAN_CONFIRMATION_REQUESTED": "请求人工最终确认", "HUMAN_CONFIRMATION_PROVIDED": "人工决定已提供",
     "IMPLEMENTATION_SUBMITTED": "提交实现",
     "REVIEW_APPROVED": "审核通过", "REVIEW_REJECTED": "审核驳回",
@@ -83,6 +86,7 @@ LABELS = {
     "VERIFICATION_EVIDENCE_ADDED": "补充验证证据", "STATUS_CHANGED": "状态变更",
     "INSPECTOR_AGENT": "Inspector", "DEVELOPMENT_AGENT": "Developer", "HUMAN": "Human",
     "SYSTEM": "System", "VERIFIER_AGENT": "Verifier",
+    "PLANNED": "待开始", "PENDING_REVIEW": "待验收", "APPROVED": "已验收", "SUPERSEDED": "已废弃",
 }
 
 STATUS_PRESENTATION = {
@@ -211,6 +215,13 @@ def candidate_with_json(row: dict) -> dict:
     return row
 
 
+def stage_with_json(row: dict) -> dict:
+    row["test_evidence"] = parse_json_field(row.get("test_evidence_json"), [])
+    row["code_reference"] = parse_json_field(row.get("code_reference_json"), [])
+    row["submission_metadata"] = parse_json_field(row.get("submission_metadata_json"), {})
+    return row
+
+
 def feedback_redirect(target: str, *, msg: str | None = None, err: str | None = None):
     separator = "&" if "?" in target else "?"
     return redirect(target + (separator + urlencode({"msg" if msg else "err": msg or err}) if msg or err else ""))
@@ -328,6 +339,27 @@ def task_list():
                                     "include_closed": include_closed})
 
 
+@app.route("/tasks/create", methods=["POST"])
+def task_create():
+    project_path = Path(request.form.get("project_path", "")).expanduser()
+    target = url_for("task_list")
+    try:
+        if not project_path.is_absolute() or not project_path.is_dir():
+            raise ValueError("项目路径必须是已存在的绝对目录")
+        args = [
+            "--title", request.form.get("title", ""),
+            "--objective", request.form.get("objective", ""),
+            "--task-type", request.form.get("task_type", "REVIEW"),
+        ]
+        for field in ("review_level", "review_scope", "baseline_ref", "remark"):
+            if value := request.form.get(field):
+                args.extend([f"--{field.replace('_', '-')}", value])
+        result = run_human_command("task-create", *args, cwd=project_path.resolve())
+        return redirect_back("task_detail", task_key=result["task_key"], msg="检查任务已创建")
+    except Exception as exc:  # noqa: BLE001
+        return feedback_redirect(target, err=str(exc))
+
+
 @app.get("/healthz")
 def healthcheck():
     return {"status": "ok"}
@@ -419,7 +451,7 @@ def issue_detail(issue_key: str):
     issue = query_one(
         """SELECT i.*, t.task_key, t.project_name, t.project_path, t.title AS task_title,
                   t.objective AS task_objective, t.remark AS task_remark, t.close_reason AS task_close_reason,
-                  t.status AS task_status
+                  t.status AS task_status, t.task_type
            FROM review_issue i JOIN review_task t ON t.id = i.task_id WHERE i.issue_key = ?""", (issue_key,)
     )
     if not issue:
@@ -437,11 +469,26 @@ def issue_detail(issue_key: str):
     verification_activities = [a for a in current_activities if a["activity_type"].startswith("VERIFICATION_")]
     human_requests = [a for a in activities if a["activity_type"] == "HUMAN_CONFIRMATION_REQUESTED"]
     latest_human_request = human_requests[-1] if human_requests else None
+    stages = [stage_with_json(row) for row in query_all(
+        "SELECT * FROM issue_stage WHERE issue_id = ? ORDER BY plan_no DESC, stage_no", (issue["id"],)
+    )]
+    stage_plans: OrderedDict[int, list[dict]] = OrderedDict()
+    for execution_stage in stages:
+        stage_plans.setdefault(execution_stage["plan_no"], []).append(execution_stage)
+    active_stage_plan = next((
+        plan for plan in stage_plans.values()
+        if all(item["plan_status"] == "ACTIVE" for item in plan)
+    ), None)
+    current_execution_stage = next((
+        item for item in (active_stage_plan or []) if item["status"] in {"IN_PROGRESS", "PENDING_REVIEW"}
+    ), None)
     stage, status_explanation = STATUS_PRESENTATION.get(issue["status"], (1, issue["status"]))
     return render_template(
         "issue_detail.html", issue=issue, activities=activities, activity_groups=grouped,
         latest_implementation=latest_implementation, verification_activities=verification_activities,
         latest_human_request=latest_human_request,
+        stage_plans=stage_plans, active_stage_plan=active_stage_plan,
+        current_execution_stage=current_execution_stage,
         current_stage=stage, status_explanation=status_explanation, dimensions=DIMENSIONS,
         severities=SEVERITIES, benefits=BENEFITS, costs=COSTS, confidence=CONFIDENCE,
         dispositions=DISPOSITIONS, activity_types=ACTIVITY_TYPES, issue_statuses=ISSUE_STATUSES,
@@ -586,6 +633,33 @@ def issue_design_review(issue_key: str):
             "--content", request.form.get("content", ""),
         )
         return redirect_back("issue_detail", issue_key=issue_key, msg="设计审核结论已记录")
+    except Exception as exc:  # noqa: BLE001
+        return redirect_back("issue_detail", issue_key=issue_key, err=str(exc))
+
+
+@app.route("/issues/<issue_key>/stage-plan", methods=["POST"])
+def issue_stage_plan_create(issue_key: str):
+    try:
+        raw_stages = request.form.get("stages", "")
+        json.loads(raw_stages)
+        run_human_command("stage-plan-create", "--issue-key", issue_key, "--stages", raw_stages)
+        return redirect_back("issue_detail", issue_key=issue_key, msg="Stage 执行计划已创建")
+    except Exception as exc:  # noqa: BLE001
+        return redirect_back("issue_detail", issue_key=issue_key, err=str(exc))
+
+
+@app.route("/issues/<issue_key>/stages/<int:stage_no>/review", methods=["POST"])
+def issue_stage_review(issue_key: str, stage_no: int):
+    args = [
+        "--issue-key", issue_key, "--stage-no", str(stage_no),
+        "--decision", request.form.get("decision", ""),
+        "--content", request.form.get("content", ""),
+    ]
+    if plan_no := request.form.get("plan_no"):
+        args.extend(["--plan-no", plan_no])
+    try:
+        run_human_command("stage-review", *args)
+        return redirect_back("issue_detail", issue_key=issue_key, msg="Stage 验收结论已记录")
     except Exception as exc:  # noqa: BLE001
         return redirect_back("issue_detail", issue_key=issue_key, err=str(exc))
 

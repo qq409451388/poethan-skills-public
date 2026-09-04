@@ -60,6 +60,7 @@ ALLOWED_TRANSITIONS = {
 
 TASK_STATUSES = {"PENDING", "IN_PROGRESS", "ON_HOLD", "BLOCKED", "CLOSED", "CANCELLED"}
 TASK_TYPES = {"REVIEW", "CONTINUOUS"}
+STAGE_STATUSES = {"PLANNED", "IN_PROGRESS", "PENDING_REVIEW", "APPROVED", "SUPERSEDED"}
 TASK_TRANSITIONS = {
     "PENDING": {"IN_PROGRESS", "ON_HOLD", "BLOCKED", "CLOSED", "CANCELLED"},
     "IN_PROGRESS": {"ON_HOLD", "BLOCKED", "CLOSED", "CANCELLED"},
@@ -96,6 +97,8 @@ ALLOWED_ACTIVITY_BY_AGENT = {
 }
 ATOMIC_ACTIVITY_TYPES = {
     "DESIGN_REQUESTED", "DESIGN_SUBMITTED", "DESIGN_APPROVED", "DESIGN_REJECTED",
+    "STAGE_PLAN_CREATED", "STAGE_SUBMITTED", "STAGE_APPROVED", "STAGE_REJECTED",
+    "STAGE_PLAN_SUPERSEDED",
     "HUMAN_CONFIRMATION_REQUESTED", "HUMAN_CONFIRMATION_PROVIDED",
 }
 ALLOWED_ACTIVITY_TYPES = set().union(*ALLOWED_ACTIVITY_BY_AGENT.values(), ATOMIC_ACTIVITY_TYPES)
@@ -183,6 +186,70 @@ def operator_type(agent: str) -> str:
 
 def actor_id(args: argparse.Namespace) -> str:
     return args.operator_id or args.agent
+
+def issue_row(conn: sqlite3.Connection, issue_key: str) -> sqlite3.Row:
+    row = conn.execute(
+        "SELECT id, issue_key, status, current_attempt_no FROM review_issue WHERE issue_key = ?",
+        (issue_key,),
+    ).fetchone()
+    if not row:
+        raise KeyError(f"问题不存在: {issue_key}")
+    return row
+
+def active_stage_plan_no(conn: sqlite3.Connection, issue_id: int) -> int | None:
+    """返回最新未被废弃的计划；全阶段 APPROVED 的计划仍然是 active plan。"""
+    row = conn.execute(
+        """SELECT plan_no
+           FROM issue_stage
+           WHERE issue_id = ?
+             AND plan_status = 'ACTIVE'
+           GROUP BY plan_no
+           ORDER BY plan_no DESC LIMIT 1""",
+        (issue_id,),
+    ).fetchone()
+    return int(row["plan_no"]) if row else None
+
+def supersede_active_stage_plan(
+    conn: sqlite3.Connection,
+    args: argparse.Namespace,
+    row: sqlite3.Row,
+    reason: str,
+) -> int | None:
+    """废弃 active plan；已批准时间、意见和活动仍完整保留。"""
+    plan_no = active_stage_plan_no(conn, row["id"])
+    if plan_no is None:
+        return None
+    affected = conn.execute(
+        """SELECT stage_no FROM issue_stage
+           WHERE issue_id = ? AND plan_no = ?
+             AND plan_status = 'ACTIVE'
+           ORDER BY stage_no""",
+        (row["id"], plan_no),
+    ).fetchall()
+    if not affected:
+        return None
+    stage_nos = [item["stage_no"] for item in affected]
+    conn.execute(
+        """UPDATE issue_stage
+           SET plan_status = 'SUPERSEDED',
+               status = CASE WHEN status = 'APPROVED' THEN status ELSE 'SUPERSEDED' END,
+               review_comment = COALESCE(review_comment, ?),
+               updated_at = CURRENT_TIMESTAMP
+           WHERE issue_id = ? AND plan_no = ?
+             AND plan_status = 'ACTIVE'""",
+        (reason, row["id"], plan_no),
+    )
+    conn.execute(
+        """INSERT INTO issue_activity(
+            issue_id, attempt_no, activity_type, operator_type, operator_id,
+            content, result_status, metadata_json
+        ) VALUES (?, ?, 'STAGE_PLAN_SUPERSEDED', ?, ?, ?, 'SUPERSEDED', ?)""",
+        (
+            row["id"], row["current_attempt_no"], operator_type(args.agent), actor_id(args),
+            reason, dumps({"plan_no": plan_no, "stage_nos": stage_nos}),
+        ),
+    )
+    return plan_no
 
 def task_fingerprint(project_path: str, task_type: str, review_level: str, objective: str,
                      review_scope: str, baseline_ref: str | None) -> str:
@@ -851,17 +918,25 @@ def apply_status_update(
         ).fetchone()
         if not confirmation:
             raise RuntimeError("审核端结束待审核确认前必须追加 INSPECTOR_CONFIRMATION_PROVIDED 活动")
-    if status == "CONFIRMED" and not human_override:
+    # Human 可以纠正普通状态，但最终技术确认仍不能绕过 VERIFICATION_PASSED。
+    if status == "CONFIRMED":
         verified = conn.execute(
-            "SELECT 1 FROM issue_activity WHERE issue_id = ? AND activity_type = 'VERIFICATION_PASSED' LIMIT 1",
-            (row["id"],),
+            """SELECT 1 FROM issue_activity
+               WHERE issue_id = ? AND attempt_no = ? AND activity_type = 'VERIFICATION_PASSED'
+               LIMIT 1""",
+            (row["id"], row["current_attempt_no"]),
         ).fetchone()
         if not verified:
-            raise RuntimeError("问题确认前必须存在 VERIFICATION_PASSED 验证活动")
+            raise RuntimeError("问题确认前必须为当前 implementation attempt 记录 VERIFICATION_PASSED")
 
     attempt_no = row["current_attempt_no"]
     if status == "IMPLEMENTED_PENDING_REVIEW" and row["status"] != status:
         attempt_no += 1
+
+    if status == "REDESIGN_REQUIRED" and row["status"] != status:
+        supersede_active_stage_plan(
+            conn, args, row, content or "Issue 进入 REDESIGN_REQUIRED，旧 Stage Plan 已废弃",
+        )
 
     conn.execute(
         """UPDATE review_issue
@@ -970,11 +1045,13 @@ def apply_design_transition(
 def design_request(args: argparse.Namespace) -> None:
     require_agent(args.agent)
     with connect() as conn:
+        row = issue_row(conn, args.issue_key)
         result = apply_design_transition(
             conn, args, allowed_agents={"inspector", "human"},
             allowed_sources={"PROPOSED", "IN_PROGRESS"}, target_status="DESIGN_REQUIRED",
             activity_type="DESIGN_REQUESTED",
         )
+        supersede_active_stage_plan(conn, args, row, args.content)
     print_json(result)
 
 def design_submit(args: argparse.Namespace) -> None:
@@ -999,12 +1076,281 @@ def design_review(args: argparse.Namespace) -> None:
     target_status = "IN_PROGRESS" if args.decision == "approved" else "DESIGN_REQUIRED"
     activity_type = "DESIGN_APPROVED" if args.decision == "approved" else "DESIGN_REJECTED"
     with connect() as conn:
+        row = issue_row(conn, args.issue_key)
         result = apply_design_transition(
             conn, args, allowed_agents={"inspector", "human"},
             allowed_sources={"DESIGN_PENDING_REVIEW"}, target_status=target_status,
             activity_type=activity_type,
         )
+        plan_no = active_stage_plan_no(conn, row["id"])
+        if args.decision == "approved" and plan_no is not None:
+            first = conn.execute(
+                """SELECT id FROM issue_stage
+                   WHERE issue_id = ? AND plan_no = ? AND status = 'PLANNED'
+                   ORDER BY stage_no LIMIT 1""",
+                (row["id"], plan_no),
+            ).fetchone()
+            if first:
+                conn.execute(
+                    "UPDATE issue_stage SET status = 'IN_PROGRESS', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (first["id"],),
+                )
+        elif args.decision == "rejected":
+            supersede_active_stage_plan(conn, args, row, args.content)
     print_json({**result, "decision": args.decision})
+
+def normalized_acceptance_criteria(value: Any) -> str:
+    if isinstance(value, list):
+        items = [str(item).strip() for item in value if str(item).strip()]
+        return "\n".join(f"- {item}" for item in items)
+    return str(value or "").strip()
+
+def stage_row_json(row: sqlite3.Row) -> dict[str, Any]:
+    result = dict(row)
+    result["test_evidence"] = loads(result.pop("test_evidence_json", None), [])
+    result["code_reference"] = loads(result.pop("code_reference_json", None), [])
+    result["submission_metadata"] = loads(result.pop("submission_metadata_json", None), {})
+    return result
+
+def stage_plan_create(args: argparse.Namespace) -> None:
+    require_agent(args.agent)
+    if args.agent not in {"inspector", "human"}:
+        raise PermissionError("只有 inspector 或 human 可以创建 Stage Plan")
+    stages = json.loads(args.stages)
+    if not isinstance(stages, list) or not stages:
+        raise ValueError("stages 必须是非空 JSON 数组")
+    prepared: list[dict[str, Any]] = []
+    for item in stages:
+        if not isinstance(item, dict):
+            raise ValueError("每个 Stage 必须是 JSON 对象")
+        unknown = sorted(set(item) - {"stage_no", "title", "objective", "acceptance_criteria"})
+        if unknown:
+            raise ValueError(f"未知 Stage 字段: {', '.join(unknown)}")
+        try:
+            stage_no = int(item.get("stage_no"))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("stage_no 必须是正整数") from exc
+        title = str(item.get("title") or "").strip()
+        objective = str(item.get("objective") or "").strip()
+        acceptance = normalized_acceptance_criteria(item.get("acceptance_criteria"))
+        if stage_no < 1 or not title or not objective or not acceptance:
+            raise ValueError("每个 Stage 都必须包含正整数 stage_no、title、objective、acceptance_criteria")
+        prepared.append({
+            "stage_no": stage_no, "title": title, "objective": objective,
+            "acceptance_criteria": acceptance,
+        })
+    prepared.sort(key=lambda item: item["stage_no"])
+    if [item["stage_no"] for item in prepared] != list(range(1, len(prepared) + 1)):
+        raise ValueError("stage_no 必须从 1 开始连续递增且不能重复")
+
+    with connect() as conn:
+        issue = issue_row(conn, args.issue_key)
+        if issue["status"] != "DESIGN_PENDING_REVIEW":
+            raise RuntimeError("只有 DESIGN_PENDING_REVIEW 可以创建 Stage Plan")
+        if active_stage_plan_no(conn, issue["id"]) is not None:
+            raise RuntimeError("当前已有未废弃的 Stage Plan")
+        latest = conn.execute(
+            "SELECT COALESCE(MAX(plan_no), 0) AS plan_no FROM issue_stage WHERE issue_id = ?",
+            (issue["id"],),
+        ).fetchone()
+        plan_no = int(latest["plan_no"]) + 1
+        for item in prepared:
+            conn.execute(
+                """INSERT INTO issue_stage(
+                    issue_id, plan_no, stage_no, title, objective, acceptance_criteria, status
+                ) VALUES (?, ?, ?, ?, ?, ?, 'PLANNED')""",
+                (
+                    issue["id"], plan_no, item["stage_no"], item["title"],
+                    item["objective"], item["acceptance_criteria"],
+                ),
+            )
+        conn.execute(
+            """INSERT INTO issue_activity(
+                issue_id, attempt_no, activity_type, operator_type, operator_id,
+                content, result_status, metadata_json
+            ) VALUES (?, ?, 'STAGE_PLAN_CREATED', ?, ?, ?, 'PLANNED', ?)""",
+            (
+                issue["id"], issue["current_attempt_no"], operator_type(args.agent), actor_id(args),
+                f"创建 Stage Plan #{plan_no}，共 {len(prepared)} 个阶段",
+                dumps({"plan_no": plan_no, "stages": prepared}),
+            ),
+        )
+        audit(conn, actor_id(args), "stage.plan-create", "review_issue", args.issue_key, True)
+    print_json({"issue_key": args.issue_key, "plan_no": plan_no, "stages": prepared})
+
+def stage_list(args: argparse.Namespace) -> None:
+    require_agent(args.agent)
+    with connect() as conn:
+        issue = issue_row(conn, args.issue_key)
+        params: list[Any] = [issue["id"]]
+        where = "WHERE issue_id = ?"
+        if args.plan_no is not None:
+            where += " AND plan_no = ?"
+            params.append(args.plan_no)
+        rows = conn.execute(
+            f"SELECT * FROM issue_stage {where} ORDER BY plan_no DESC, stage_no", params,
+        ).fetchall()
+    print_json([stage_row_json(row) for row in rows])
+
+def stage_get(args: argparse.Namespace) -> None:
+    require_agent(args.agent)
+    with connect() as conn:
+        issue = issue_row(conn, args.issue_key)
+        plan_no = args.plan_no
+        if plan_no is None:
+            latest = conn.execute(
+                "SELECT MAX(plan_no) AS plan_no FROM issue_stage WHERE issue_id = ?",
+                (issue["id"],),
+            ).fetchone()
+            plan_no = latest["plan_no"]
+        if plan_no is None:
+            raise KeyError(f"问题没有 Stage Plan: {args.issue_key}")
+        row = conn.execute(
+            "SELECT * FROM issue_stage WHERE issue_id = ? AND plan_no = ? AND stage_no = ?",
+            (issue["id"], plan_no, args.stage_no),
+        ).fetchone()
+        if not row:
+            raise KeyError(f"Stage 不存在: plan={plan_no}, stage={args.stage_no}")
+    print_json(stage_row_json(row))
+
+def stage_submit(args: argparse.Namespace) -> None:
+    require_agent(args.agent)
+    if args.agent not in {"developer", "human"}:
+        raise PermissionError("只有 developer 或 human 可以提交 Stage")
+    content = (args.content or "").strip()
+    commit_sha = (args.commit_sha or "").strip()
+    if not content or not commit_sha:
+        raise ValueError("stage-submit 的 --content 和 --commit-sha 均不能为空")
+    code_reference = json.loads(args.code_reference)
+    test_evidence = json.loads(args.test_evidence)
+    metadata = json.loads(args.metadata)
+    if not isinstance(code_reference, list):
+        raise ValueError("code-reference 必须是 JSON 数组")
+    if not isinstance(test_evidence, (list, dict)):
+        raise ValueError("test-evidence 必须是 JSON 数组或对象")
+    if not isinstance(metadata, dict):
+        raise ValueError("metadata 必须是 JSON 对象")
+    with connect() as conn:
+        issue = issue_row(conn, args.issue_key)
+        if issue["status"] != "IN_PROGRESS":
+            raise RuntimeError(f"Issue 状态 {issue['status']} 不允许提交 Stage")
+        plan_no = active_stage_plan_no(conn, issue["id"])
+        if plan_no is None:
+            raise RuntimeError("当前没有可执行的 Stage Plan")
+        stage = conn.execute(
+            "SELECT * FROM issue_stage WHERE issue_id = ? AND plan_no = ? AND stage_no = ?",
+            (issue["id"], plan_no, args.stage_no),
+        ).fetchone()
+        if not stage:
+            raise KeyError(f"Stage 不存在: plan={plan_no}, stage={args.stage_no}")
+        if stage["status"] != "IN_PROGRESS":
+            raise RuntimeError(f"Stage {args.stage_no} 当前为 {stage['status']}，不能提交")
+        conn.execute(
+            """UPDATE issue_stage
+               SET status = 'PENDING_REVIEW', submitted_commit_sha = ?, developer_summary = ?,
+                   test_evidence_json = ?, code_reference_json = ?, submission_metadata_json = ?,
+                   submitted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+               WHERE id = ?""",
+            (commit_sha, content, dumps(test_evidence), dumps(code_reference), dumps(metadata), stage["id"]),
+        )
+        activity_metadata = {**metadata, "plan_no": plan_no, "stage_no": args.stage_no,
+                             "commit_sha": commit_sha, "test_evidence": test_evidence}
+        conn.execute(
+            """INSERT INTO issue_activity(
+                issue_id, attempt_no, activity_type, operator_type, operator_id,
+                content, result_status, code_reference_json, metadata_json
+            ) VALUES (?, ?, 'STAGE_SUBMITTED', ?, ?, ?, 'PENDING_REVIEW', ?, ?)""",
+            (
+                issue["id"], issue["current_attempt_no"], operator_type(args.agent), actor_id(args),
+                content, dumps(code_reference), dumps(activity_metadata),
+            ),
+        )
+        audit(conn, actor_id(args), "stage.submit", "review_issue", args.issue_key, True)
+    print_json({"issue_key": args.issue_key, "plan_no": plan_no, "stage_no": args.stage_no,
+                "status": "PENDING_REVIEW"})
+
+def stage_review(args: argparse.Namespace) -> None:
+    require_agent(args.agent)
+    if args.agent not in {"inspector", "human"}:
+        raise PermissionError("只有 inspector 或 human 可以验收 Stage")
+    content = (args.content or "").strip()
+    if not content:
+        raise ValueError("stage-review 必须通过 --content 记录验收结论")
+    with connect() as conn:
+        issue = issue_row(conn, args.issue_key)
+        if issue["status"] != "IN_PROGRESS":
+            raise RuntimeError(f"Issue 状态 {issue['status']} 不允许验收 Stage")
+        plan_no = active_stage_plan_no(conn, issue["id"])
+        if plan_no is None:
+            raise RuntimeError("当前没有可验收的 Stage Plan")
+        if args.plan_no is not None and args.plan_no != plan_no:
+            raise RuntimeError(f"只能验收当前 Stage Plan #{plan_no}")
+        stage = conn.execute(
+            "SELECT * FROM issue_stage WHERE issue_id = ? AND plan_no = ? AND stage_no = ?",
+            (issue["id"], plan_no, args.stage_no),
+        ).fetchone()
+        if not stage:
+            raise KeyError(f"Stage 不存在: plan={plan_no}, stage={args.stage_no}")
+        if stage["status"] != "PENDING_REVIEW":
+            raise RuntimeError(f"Stage {args.stage_no} 当前为 {stage['status']}，不能验收")
+
+        activity_type = "STAGE_APPROVED" if args.decision == "approved" else "STAGE_REJECTED"
+        if args.decision == "approved":
+            conn.execute(
+                """UPDATE issue_stage
+                   SET status = 'APPROVED', review_comment = ?, approved_at = CURRENT_TIMESTAMP,
+                       updated_at = CURRENT_TIMESTAMP WHERE id = ?""",
+                (content, stage["id"]),
+            )
+            next_stage = conn.execute(
+                """SELECT id, stage_no FROM issue_stage
+                   WHERE issue_id = ? AND plan_no = ? AND status = 'PLANNED'
+                   ORDER BY stage_no LIMIT 1""",
+                (issue["id"], plan_no),
+            ).fetchone()
+            if next_stage:
+                conn.execute(
+                    "UPDATE issue_stage SET status = 'IN_PROGRESS', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (next_stage["id"],),
+                )
+            result_status = "APPROVED"
+        elif args.decision == "rejected":
+            conn.execute(
+                """UPDATE issue_stage
+                   SET status = 'IN_PROGRESS', review_comment = ?, approved_at = NULL,
+                       updated_at = CURRENT_TIMESTAMP WHERE id = ?""",
+                (content, stage["id"]),
+            )
+            next_stage = None
+            result_status = "IN_PROGRESS"
+        else:
+            # 阶段验收发现整个设计不成立：同一事务中驳回、废弃计划并回到重设计。
+            next_stage = None
+            result_status = "REDESIGN_REQUIRED"
+
+        conn.execute(
+            """INSERT INTO issue_activity(
+                issue_id, attempt_no, activity_type, operator_type, operator_id,
+                content, result_status, metadata_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                issue["id"], issue["current_attempt_no"], activity_type,
+                operator_type(args.agent), actor_id(args), content, result_status,
+                dumps({"plan_no": plan_no, "stage_no": args.stage_no, "decision": args.decision}),
+            ),
+        )
+        if args.decision == "redesign":
+            supersede_active_stage_plan(conn, args, issue, content)
+            conn.execute(
+                "UPDATE review_issue SET status = 'REDESIGN_REQUIRED', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (issue["id"],),
+            )
+        audit(conn, actor_id(args), "stage.review", "review_issue", args.issue_key, True)
+    print_json({
+        "issue_key": args.issue_key, "plan_no": plan_no, "stage_no": args.stage_no,
+        "decision": args.decision, "status": result_status,
+        "next_stage_no": next_stage["stage_no"] if next_stage else None,
+    })
 
 def human_escalate(args: argparse.Namespace) -> None:
     require_agent(args.agent)
@@ -1102,6 +1448,8 @@ def human_confirmation_resolve(args: argparse.Namespace) -> None:
             "UPDATE review_issue SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
             (next_status, row["id"]),
         )
+        if next_status == "DESIGN_REQUIRED":
+            supersede_active_stage_plan(conn, args, row, content)
         audit(conn, actor_id(args), "human.confirmation-resolve", "review_issue", args.issue_key, True)
     print_json({
         "issue_key": args.issue_key, "status": next_status, "decision": decision,
@@ -1129,6 +1477,17 @@ def implementation_submit(args: argparse.Namespace) -> None:
             raise RuntimeError(
                 f"状态 {row['status']} 禁止提交实现；设计阶段必须先完成 design-review approved"
             )
+        plan_no = active_stage_plan_no(conn, row["id"])
+        if plan_no is not None:
+            incomplete = conn.execute(
+                """SELECT stage_no, status FROM issue_stage
+                   WHERE issue_id = ? AND plan_no = ? AND status != 'APPROVED'
+                   ORDER BY stage_no""",
+                (row["id"], plan_no),
+            ).fetchall()
+            if incomplete:
+                summary = ", ".join(f"Stage {item['stage_no']}={item['status']}" for item in incomplete)
+                raise RuntimeError(f"Stage Plan #{plan_no} 尚未全部验收通过: {summary}")
         next_attempt = row["current_attempt_no"] + 1
         conn.execute(
             """INSERT INTO issue_activity(
@@ -1484,6 +1843,40 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--decision", required=True, choices=["approved", "rejected"])
     p.add_argument("--content", required=True)
     p.set_defaults(func=design_review)
+
+    p = sub.add_parser("stage-plan-create")
+    p.add_argument("--issue-key", required=True)
+    p.add_argument("--stages", required=True, help="JSON array of ordered Stage definitions")
+    p.set_defaults(func=stage_plan_create)
+
+    p = sub.add_parser("stage-list")
+    p.add_argument("--issue-key", required=True)
+    p.add_argument("--plan-no", type=int)
+    p.set_defaults(func=stage_list)
+
+    p = sub.add_parser("stage-get")
+    p.add_argument("--issue-key", required=True)
+    p.add_argument("--stage-no", required=True, type=int)
+    p.add_argument("--plan-no", type=int)
+    p.set_defaults(func=stage_get)
+
+    p = sub.add_parser("stage-submit")
+    p.add_argument("--issue-key", required=True)
+    p.add_argument("--stage-no", required=True, type=int)
+    p.add_argument("--content", required=True)
+    p.add_argument("--commit-sha", required=True)
+    p.add_argument("--code-reference", default="[]")
+    p.add_argument("--test-evidence", default="[]")
+    p.add_argument("--metadata", default="{}")
+    p.set_defaults(func=stage_submit)
+
+    p = sub.add_parser("stage-review")
+    p.add_argument("--issue-key", required=True)
+    p.add_argument("--stage-no", required=True, type=int)
+    p.add_argument("--plan-no", type=int)
+    p.add_argument("--decision", required=True, choices=["approved", "rejected", "redesign"])
+    p.add_argument("--content", required=True)
+    p.set_defaults(func=stage_review)
 
     p = sub.add_parser("human-escalate")
     p.add_argument("--issue-key", required=True)

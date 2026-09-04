@@ -18,7 +18,7 @@ def review_home() -> Path:
     )))
 
 
-def run_human_command(command: str, *args: str) -> dict:
+def run_human_command(command: str, *args: str, cwd: Path | None = None) -> dict:
     tool = review_home() / "bin" / "review-db.py"
     if not tool.exists():
         raise RuntimeError(f"未找到数据库工具：{tool}。请先安装 Code Inspector。")
@@ -27,6 +27,7 @@ def run_human_command(command: str, *args: str) -> dict:
         text=True,
         capture_output=True,
         env={**os.environ, "AGENT_REVIEW_HOME": str(review_home())},
+        cwd=cwd,
     )
     if result.returncode != 0:
         try:

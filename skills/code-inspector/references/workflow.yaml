@@ -1,4 +1,4 @@
-version: 2.1.0
+version: 3.0.0
 
 task_types:
   REVIEW:
@@ -90,8 +90,8 @@ issue_statuses:
   - CONFIRMED
   - CANCELLED
 
-# Human 可人工覆盖到任一普通合法状态；唯一例外是 HUMAN_CONFIRMATION_REQUIRED，
-# 它仍只能由 Inspector 原子发起、由 Human 原子解决。
+# Human 可人工覆盖到任一普通合法状态；HUMAN_CONFIRMATION_REQUIRED 使用专用入口，
+# CONFIRMED 对所有角色仍要求当前 implementation attempt 已有 VERIFICATION_PASSED。
 human_issue_override_statuses: &human_issue_override_statuses
   [PROPOSED, DESIGN_REQUIRED, DESIGN_PENDING_REVIEW, IN_PROGRESS, ON_HOLD, BLOCKED,
    INSPECTOR_CONFIRMATION_REQUIRED, IMPLEMENTED_PENDING_REVIEW, REDESIGN_REQUIRED, CONFIRMED, CANCELLED]
@@ -143,8 +143,9 @@ transitions:
 
 issue_status_authority:
   inspector_and_developer: 必须遵守 transitions、设计原子命令、实现提交与验证前置条件。
-  human: 可通过 issue-update-status 覆盖到任一普通合法状态，包括 REDESIGN_REQUIRED -> IMPLEMENTED_PENDING_REVIEW、重开终态或人工 CONFIRMED；变更会记录 STATUS_CHANGED 与审计。
+  human: 可通过 issue-update-status 覆盖到任一普通合法状态，包括 REDESIGN_REQUIRED -> IMPLEMENTED_PENDING_REVIEW 或重开终态；变更会记录 STATUS_CHANGED 与审计。
   reserved_exception: HUMAN_CONFIRMATION_REQUIRED 仍禁止通用状态修改；只有 Inspector human-escalate 可进入，只有 Human human-confirmation-resolve 可离开。
+  final_confirmation_exception: 任一角色转 CONFIRMED 前必须为当前 implementation attempt 留有 VERIFICATION_PASSED，Human 也不能跳过最终技术验证证据。
 
 design_workflow:
   principle: Inspector 定义必须解决什么、不能破坏什么和推荐方向；Developer 决定具体代码如何实现。
@@ -186,11 +187,66 @@ design_trigger_guidance:
   prefer_design_for: [跨模块, Schema或数据迁移, 历史修复或回灌, 状态机变化, 幂等并发变化, ACK重试恢复变化, 多数据源融合, 公共API或第三方兼容, 大范围重构, 边界不确定, 方向曾被推翻, 连续实现失败, 高验证成本]
   simple_issue: 可直接 PROPOSED -> IN_PROGRESS -> implementation-submit，不机械增加设计流程。
 
+stage_workflow:
+  principle: Stage 是复杂 Issue 内的串行执行与验收单元，不属于 Issue.status；执行期间 Issue 保持 IN_PROGRESS。
+  use_for: [改动范围大, 多模块或多数据流, 一次性实施容易逐渐偏离已批准设计, 阶段边界可独立验收]
+  simple_issue: 不创建 Stage Plan，保持原有直接实现路径。
+  statuses: [PLANNED, IN_PROGRESS, PENDING_REVIEW, APPROVED, SUPERSEDED]
+  identity: [issue_id, plan_no, stage_no]
+  plan_create:
+    atomic_command: stage-plan-create
+    roles: [inspector, human]
+    normal_role: inspector
+    allowed_from_issue_status: DESIGN_PENDING_REVIEW
+    required_stage_fields: [stage_no, title, objective, acceptance_criteria]
+    activity: STAGE_PLAN_CREATED
+    initial_stage_status: PLANNED
+    numbering: stage_no 必须从 1 连续递增；新计划 plan_no 使用历史最大值加一。
+  design_approval_effect:
+    issue: IN_PROGRESS
+    first_stage: PLANNED -> IN_PROGRESS
+    remaining_stages: PLANNED
+  serial_rule:
+    - 同一 active plan 同时至多一个 Stage 为 IN_PROGRESS 或 PENDING_REVIEW
+    - Developer 只能提交当前 IN_PROGRESS Stage，不能提前实施或提交后续 Stage
+    - Stage 提交后停止后续业务代码修改，等待 Inspector 验收
+  submit:
+    atomic_command: stage-submit
+    roles: [developer, human]
+    required: [issue_key, stage_no, content, commit_sha]
+    optional: [code_reference, test_evidence, metadata]
+    allowed_stage_status: IN_PROGRESS
+    activity: STAGE_SUBMITTED
+    transition: IN_PROGRESS -> PENDING_REVIEW
+    attempt_effect: none
+  review_approved:
+    atomic_command: stage-review --decision approved
+    roles: [inspector, human]
+    activity: STAGE_APPROVED
+    transition: PENDING_REVIEW -> APPROVED
+    next_effect: 自动把下一个 PLANNED Stage 转为 IN_PROGRESS；全部通过时 Issue 仍保持 IN_PROGRESS。
+  review_rejected:
+    atomic_command: stage-review --decision rejected
+    roles: [inspector, human]
+    activity: STAGE_REJECTED
+    transition: PENDING_REVIEW -> IN_PROGRESS
+    rule: 只修正当前阶段，不得偷偷更换整体设计。
+  design_failure:
+    atomic_command: stage-review --decision redesign
+    roles: [inspector, human]
+    activities: [STAGE_REJECTED, STAGE_PLAN_SUPERSEDED]
+    issue_transition: IN_PROGRESS -> REDESIGN_REQUIRED
+    plan_effect: 当前计划 plan_status -> SUPERSEDED；未完成 Stage -> SUPERSEDED，已 APPROVED Stage 保留原状态、时间和验收记录。
+    recovery: design-submit -> DESIGN_PENDING_REVIEW -> 新 Stage Plan -> design-review approved。
+  final_submission_gate: 有 active Stage Plan 时，全部 Stage APPROVED 后才允许 implementation-submit；最终整体验证不可被阶段验收替代。
+  history: 旧 plan、Stage 主键、提交证据、验收意见和 Activity 均不得删除或覆盖。
+
 implementation_review:
   submission:
     preferred_command: implementation-submit
     atomic_effects: [追加 IMPLEMENTATION_SUBMITTED, current_attempt_no 加一, 转为 IMPLEMENTED_PENDING_REVIEW]
     forbidden_from: [DESIGN_REQUIRED, DESIGN_PENDING_REVIEW, REDESIGN_REQUIRED]
+    stage_precondition: 若存在 active Stage Plan，所有 Stage 必须为 APPROVED。
   implementation_failure:
     condition: 已批准方向成立，仅有遗漏分支、判断错误、测试不足或未完整执行方案。
     activity: VERIFICATION_FAILED
@@ -236,7 +292,7 @@ human_escalation:
     - Human 是否掌握 Agent 无法获得的业务事实
   request_summary_must_include: [为什么必须人工决定, 关键事实, 已验证内容, 无法确认内容, 方案及主要影响, Inspector 推荐, Human 只需回答的问题]
   request_summary_must_not_include: [未经整理的长日志, 完整代码, Agent 对话记录]
-  resolver_behavior: 任一 issue 进入 HUMAN_CONFIRMATION_REQUIRED，next_actor=HUMAN、needs_human=true，并暂停整个 Task 的 Agent 调度；Orchestrator 仅监听状态，Human resolve 后重新计算 next_actor 并自动恢复。
+  future_orchestrator_contract: 若未来启用 Orchestrator，任一 issue 进入 HUMAN_CONFIRMATION_REQUIRED 时 Resolver 应返回 next_actor=HUMAN、needs_human=true 并暂停 Task；Human resolve 后再重新计算并恢复。本次 runtime 不依赖或修改 Orchestrator。
   resolution:
     atomic_command: human-confirmation-resolve
     role: human
@@ -252,11 +308,12 @@ confirmation_protocol:
     required_activity: INSPECTOR_CONFIRMATION_PROVIDED
     next_status: [IN_PROGRESS, ON_HOLD, BLOCKED, CANCELLED]
   final_confirmation:
-    inspector_precondition: VERIFICATION_PASSED
-    human_override: Human 可基于最高解释权直接指定 CONFIRMED，并记录 STATUS_CHANGED 与审计。
+    all_roles_precondition: 当前 implementation attempt 的 VERIFICATION_PASSED
+    human_override_limit: Human 可纠正状态，但不能绕过最终验证活动直接 CONFIRMED。
 
 activity_types:
   design: [DESIGN_REQUESTED, DESIGN_GUIDANCE, DESIGN_SUBMITTED, DESIGN_APPROVED, DESIGN_REJECTED]
+  stage: [STAGE_PLAN_CREATED, STAGE_SUBMITTED, STAGE_APPROVED, STAGE_REJECTED, STAGE_PLAN_SUPERSEDED]
   human_confirmation: [HUMAN_CONFIRMATION_REQUESTED, HUMAN_CONFIRMATION_PROVIDED]
   legacy_read_compatible: [REVIEW_APPROVED, REVIEW_REJECTED, REDESIGN_SUBMITTED]
 
@@ -273,4 +330,4 @@ candidate_review:
 version_rules:
   create_only_for_new_independent_issues: true
   evidence_design_or_redesign_does_not_create_version: true
-  implementation_attempt_only: current_attempt_no 只随实现提交递增；设计提交与设计审核不递增。
+  implementation_attempt_only: current_attempt_no 只随最终 implementation-submit 递增；设计与 Stage 创建、提交、审核均不递增。

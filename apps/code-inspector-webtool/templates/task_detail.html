@@ -72,5 +72,5 @@
   {% else %}<div class="empty">没有符合当前筛选的问题。</div>{% endif %}
 </section>
 
-{{ task_modal('task-edit-modal', task.task_key, task.title, task.objective, task.remark, task.close_reason, task.status, statuses, request.path) }}
+{{ task_modal('task-edit-modal', task.task_key, task.title, task.objective, task.remark, task.close_reason, task.status, task.task_type, statuses, request.path) }}
 {% endblock %}

@@ -227,6 +227,30 @@ tbody tr:last-child td { border-bottom: 0; }
 .raw-details { margin: 0; padding: 10px 12px; }
 .raw-json { max-width: 100%; margin: 8px 0 0; padding: 11px 13px; overflow: auto; border: 1px solid var(--border); border-radius: 7px; background: #f4f6f8; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; }
 .empty-inline { padding: 14px; border: 1px dashed var(--border-strong); border-radius: 8px; color: var(--muted); text-align: center; }
+.stage-plan-panel { overflow: hidden; }
+.stage-plans { display: grid; gap: 14px; margin-top: 13px; }
+.stage-plan { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+.stage-plan.active { border-color: #b8cdf8; box-shadow: 0 0 0 2px rgba(37, 99, 235, .05); }
+.stage-plan.historical { background: #fafbfc; }
+.stage-plan-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 13px; border-bottom: 1px solid var(--border); background: #f8fafc; }
+.stage-list { padding: 4px 13px; }
+.stage-item { border-bottom: 1px solid var(--border); }
+.stage-item:last-child { border-bottom: 0; }
+.stage-item > summary { display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; align-items: center; gap: 9px; padding: 12px 2px; cursor: pointer; list-style: none; }
+.stage-item > summary::-webkit-details-marker { display: none; }
+.stage-item.current > summary { margin: 4px -7px; padding: 11px 9px; border-radius: 8px; background: var(--blue-soft); }
+.stage-marker { display: grid; width: 22px; height: 22px; place-items: center; border: 1px solid var(--border-strong); border-radius: 50%; color: var(--muted); font-size: 11px; font-weight: 800; }
+.stage-APPROVED .stage-marker { border-color: #a7d8b8; background: var(--green-soft); color: var(--green); }
+.stage-IN_PROGRESS .stage-marker, .stage-PENDING_REVIEW .stage-marker { border-color: #a9c2f5; background: #fff; color: var(--blue); }
+.stage-SUPERSEDED { opacity: .68; }
+.stage-summary { min-width: 0; }
+.stage-summary strong, .stage-summary small { display: block; }
+.stage-summary small { margin-top: 2px; overflow: hidden; color: var(--muted); font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
+.stage-body { margin: 0 0 12px 33px; padding: 12px 13px; border-left: 3px solid #d6e2fb; border-radius: 0 8px 8px 0; background: #f8fafc; }
+.stage-review-form { margin-top: 13px; padding-top: 13px; border-top: 1px solid var(--border); }
+.stage-review-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.stage-plan-create { margin: 0 0 13px; padding: 10px 0; border-top: 0; border-bottom: 1px solid var(--border); }
+.stage-plan-create form { margin-top: 10px; }
 .verification-item { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 9px; padding: 10px; border-radius: 8px; background: #f8fafc; }
 .markdown-body { overflow-wrap: anywhere; }
 .markdown-body p { margin: 0 0 7px; }.markdown-body p:last-child { margin-bottom: 0; }

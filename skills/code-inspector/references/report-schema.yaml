@@ -1,4 +1,4 @@
-version: 1.2.0
+version: 1.3.0
 
 enums:
   task_type:
@@ -64,6 +64,13 @@ enums:
     - REDESIGN_REQUIRED
     - CONFIRMED
     - CANCELLED
+
+  stage_status:
+    - PLANNED
+    - IN_PROGRESS
+    - PENDING_REVIEW
+    - APPROVED
+    - SUPERSEDED
 
 report:
   report_id:
@@ -258,6 +265,21 @@ report:
             type: array
             item_type: string
             required: false
+
+      stages:
+        type: array
+        required: false
+        item:
+          plan_no: {type: integer, required: true}
+          stage_no: {type: integer, required: true}
+          title: {type: string, required: true}
+          objective: {type: string, required: true}
+          acceptance_criteria: {type: string, required: true}
+          status: {type: enum, ref: stage_status, required: true}
+          submitted_commit_sha: {type: string, required: false}
+          developer_summary: {type: string, required: false}
+          test_evidence: {type: object_or_array, required: false}
+          review_comment: {type: string, required: false}
 
 sorting:
   group_by:

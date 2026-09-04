@@ -4,6 +4,7 @@
 {% block content %}
 <div class="page-head">
   <div class="page-title"><h1>检查任务</h1><p>一个任务代表一个长期稳定的代码检查目标。</p></div>
+  <button type="button" class="btn btn-primary" data-modal-open="task-create-modal">＋ 创建任务</button>
 </div>
 
 <section class="panel">
@@ -40,4 +41,26 @@
   </div>
   {% else %}<div class="empty">没有符合筛选条件的检查任务。</div>{% endif %}
 </section>
+
+<div class="modal-backdrop" id="task-create-modal" role="dialog" aria-modal="true" aria-labelledby="task-create-title">
+  <div class="modal-card">
+    <div class="modal-head"><div><h2 class="modal-title" id="task-create-title">创建检查任务</h2><div class="modal-sub">任务类型创建后不可修改</div></div><button type="button" class="modal-close" data-modal-close aria-label="关闭">×</button></div>
+    <div class="modal-body">
+      <form method="post" action="{{ url_for('task_create') }}">
+        <div class="form-grid">
+          <div class="field"><label>任务类型</label><select name="task_type">{% for value in task_types %}<option value="{{ value }}">{{ value|label }}</option>{% endfor %}</select></div>
+          <div class="field"><label>审核等级</label><select name="review_level"><option value="">未设置</option><option value="L1">L1</option><option value="L2">L2</option><option value="L3">L3</option></select></div>
+          <div class="field form-full"><label>项目绝对路径 <span class="required">必填</span></label><input type="text" name="project_path" required placeholder="/absolute/path/to/project"></div>
+          <div class="field form-full"><label>标题 <span class="required">必填</span></label><input type="text" name="title" required></div>
+          <div class="field form-full"><label>目标 <span class="required">必填</span></label><textarea name="objective" required></textarea></div>
+          <div class="field form-full"><label>审核 / 治理范围</label><textarea name="review_scope"></textarea></div>
+          <div class="field"><label>Baseline</label><input type="text" name="baseline_ref"></div>
+          <div class="field"><label>备注</label><input type="text" name="remark"></div>
+        </div>
+        <p class="form-note">CONTINUOUS 跨 baseline 复用，且不会因所有 Issue 完成而自动关闭。创建仍通过 human task-create 领域命令。</p>
+        <div class="modal-actions"><button type="button" class="btn" data-modal-close>取消</button><button type="submit" class="btn btn-primary">创建任务</button></div>
+      </form>
+    </div>
+  </div>
+</div>
 {% endblock %}
