@@ -159,6 +159,17 @@ RUNTIME_LABELS = {
 RUNTIME_THREAD_STATUSES = ["INITIALIZING", "ACTIVE", "WAITING", "PAUSED", "COMPLETED", "FAILED", "ARCHIVED"]
 RUNTIME_EVENT_STATUSES = ["PENDING", "PROCESSING", "DONE", "FAILED"]
 
+# 浏览器只关心会改变任务、问题或 Stage 展示结果的写操作。
+# 查询、列表等只读审计不进入变化流，避免页面收到无意义通知。
+BROWSER_CHANGE_ACTIONS = (
+    "task.create", "task.update", "task.update-status", "version.create",
+    "issue.create", "issue.create-batch", "issue.update-assessment",
+    "issue.update-assessment-batch", "issue.update-body", "issue.update-status",
+    "issue.update-status-batch", "design.request", "design.submit", "design.review",
+    "stage.plan-create", "stage.prepare", "stage.submit", "stage.review",
+    "implementation.submit", "human.escalate", "human.confirmation-resolve",
+)
+
 STATUS_PRESENTATION = {
     "PROPOSED": (1, "问题已经记录，等待 Developer 开始处理。"),
     "DESIGN_REQUIRED": (2, "Inspector / Human 已要求先完成方案讨论，Developer 当前不得编码。"),
@@ -502,6 +513,101 @@ def task_create():
 @app.get("/healthz")
 def healthcheck():
     return {"status": "ok"}
+
+
+def browser_change_payload(row: dict) -> dict:
+    """把内部审计转换为浏览器能稳定消费的小事件。"""
+    action = row["action"]
+    resource_id = row.get("resource_id")
+    event = {
+        "eventId": row["id"],
+        "action": action,
+        "createdAt": row["created_at"],
+        "resourceId": resource_id,
+    }
+    if action.startswith("stage."):
+        event.update({"kind": "stage", "changeType": "stage", "issueKey": resource_id})
+        stage = query_one(
+            """SELECT s.plan_no,s.stage_no,s.title,s.status
+               FROM issue_stage s JOIN review_issue i ON i.id=s.issue_id
+               WHERE i.issue_key=? AND s.plan_status='ACTIVE'
+               ORDER BY s.plan_no DESC,
+                        CASE s.status WHEN 'IN_PROGRESS' THEN 0 WHEN 'PENDING_REVIEW' THEN 1 ELSE 2 END,
+                        s.stage_no DESC LIMIT 1""",
+            (resource_id,),
+        ) if resource_id else None
+        if stage:
+            event["stage"] = {
+                "planNo": stage["plan_no"], "stageNo": stage["stage_no"],
+                "title": stage["title"], "status": stage["status"],
+                "statusLabel": label(stage["status"]),
+            }
+            event["title"] = f"{resource_id} · Stage {stage['stage_no']} 已更新"
+            event["message"] = f"{stage['title']}：{label(stage['status'])}"
+        else:
+            event["title"] = f"{resource_id or 'Issue'} 的 Stage 已更新"
+            event["message"] = "执行阶段发生变化"
+        return event
+
+    if action.startswith("task.") or action == "version.create" or action == "issue.create-batch":
+        event.update({
+            "kind": "task", "taskKey": resource_id,
+            "changeType": "status" if action == "task.update-status" else "content",
+        })
+        task = query_one("SELECT status,title FROM review_task WHERE task_key=?", (resource_id,)) if resource_id else None
+        if task:
+            event.update({"status": task["status"], "statusLabel": label(task["status"])})
+            event["title"] = f"任务 {resource_id} 已更新"
+            event["message"] = f"{task['title']}：{label(task['status'])}"
+        else:
+            event["title"] = "检查任务已更新"
+            event["message"] = "任务内容或问题列表发生变化"
+        return event
+
+    issue_status_actions = {
+        "issue.update-status", "issue.update-status-batch", "design.request", "design.submit",
+        "design.review", "implementation.submit", "human.escalate", "human.confirmation-resolve",
+    }
+    event.update({
+        "kind": "issue", "issueKey": resource_id,
+        "changeType": "status" if action in issue_status_actions else "content",
+    })
+    issue = query_one("SELECT status,title FROM review_issue WHERE issue_key=?", (resource_id,)) if resource_id else None
+    if issue:
+        event.update({"status": issue["status"], "statusLabel": label(issue["status"])})
+        event["title"] = f"问题 {resource_id} 已更新"
+        event["message"] = f"{issue['title']}：{label(issue['status'])}"
+    else:
+        event["title"] = "问题列表已更新"
+        event["message"] = "问题内容或状态发生变化"
+    return event
+
+
+@app.get("/api/browser-events")
+def browser_events():
+    """返回上次游标之后的轻量变化；首次调用只建立游标。"""
+    after_text = request.args.get("after", "").strip()
+    latest = query_one("SELECT COALESCE(MAX(id), 0) AS id FROM agent_audit_log") or {"id": 0}
+    if not after_text:
+        return {"cursor": int(latest["id"]), "events": []}
+    try:
+        after = int(after_text)
+        if after < 0:
+            raise ValueError
+    except ValueError:
+        abort(400, "after 必须是非负整数")
+
+    placeholders = ",".join("?" for _ in BROWSER_CHANGE_ACTIONS)
+    rows = query_all(
+        f"""SELECT id,action,resource_type,resource_id,created_at
+            FROM agent_audit_log
+            WHERE id>? AND success=1 AND action IN ({placeholders})
+            ORDER BY id ASC LIMIT 100""",
+        (after, *BROWSER_CHANGE_ACTIONS),
+    )
+    events = [browser_change_payload(row) for row in rows]
+    cursor = rows[-1]["id"] if rows else int(latest["id"])
+    return {"cursor": cursor, "events": events}
 
 
 @app.route("/tasks/<task_key>")

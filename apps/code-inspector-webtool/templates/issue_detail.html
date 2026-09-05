@@ -16,9 +16,9 @@
 {% endmacro %}
 {% block title %}{{ issue.issue_key }} · Issue 详情{% endblock %}
 {% block content %}
-<nav class="breadcrumb" aria-label="面包屑"><a href="{{ url_for('task_list') }}">检查任务</a><span>/</span><a href="{{ url_for('task_detail', task_key=issue.task_key) }}">{{ issue.task_key }}</a><span>/</span><span>{{ issue.issue_key }}</span></nav>
+<nav class="breadcrumb" aria-label="面包屑" data-issue-auto-refresh data-refresh-interval="1000"><a href="{{ url_for('task_list') }}">检查任务</a><span>/</span><a href="{{ url_for('task_detail', task_key=issue.task_key) }}">{{ issue.task_key }}</a><span>/</span><span>{{ issue.issue_key }}</span></nav>
 
-<header class="issue-head">
+<header class="issue-head" data-live-region="issue-head">
   <div class="issue-title">
     <div class="issue-badges"><span class="badge sev-chip-{{ issue.severity }}">{{ issue.severity|label }}</span><span class="badge badge-blue">{{ issue.dimension|label }}</span></div>
     <h1>{{ issue.title }}</h1>
@@ -27,7 +27,7 @@
   <div class="head-actions"><button type="button" class="btn" data-modal-open="task-edit-modal">✎ 编辑当前任务</button><button type="button" class="btn btn-soft" data-modal-open="issue-edit-modal">✎ 编辑当前 Issue</button></div>
 </header>
 
-<section class="status-strip">
+<section class="status-strip" data-live-region="status-strip">
   <div class="status-main"><span>当前工作状态</span><strong><span class="badge badge-status-{{ issue.status }}">{{ issue.status|label }}</span> {{ status_explanation }}</strong></div>
   <div class="steps" aria-label="问题处理流程">
     {% for name in ['发现问题', '方案对齐', '开发修复', 'Inspector 审核', '确认关闭'] %}
@@ -39,7 +39,7 @@
 
 <div class="issue-layout">
   <div class="maincol">
-    <section class="panel">
+    <section class="panel" data-live-region="issue-summary">
       <h2>问题摘要</h2>
       <div class="markdown-body issue-summary">{{ issue.summary|markdown }}</div>
       {% if issue.expected_outcome %}<div class="outcome-box"><strong>处理到什么程度算完成</strong><div class="markdown-body">{{ issue.expected_outcome|markdown }}</div></div>{% endif %}
@@ -47,8 +47,9 @@
       {% if issue.technical_note %}<details class="collapsible"><summary>技术补充（需要时再看）</summary><div class="details-body markdown-body">{{ issue.technical_note|markdown }}</div></details>{% endif %}
     </section>
 
-    {% if issue.evidence %}<section class="panel"><h2>关键证据</h2>{{ render_references(issue.evidence) }}</section>{% endif %}
+    <div data-live-region="evidence">{% if issue.evidence %}<section class="panel"><h2>关键证据</h2>{{ render_references(issue.evidence) }}</section>{% endif %}</div>
 
+    <div data-live-region="decisions">
     {% if decisions %}
     <section class="panel decision-panel">
       <div class="section-head"><div><h2>当前有效结论</h2><p class="section-sub">这里只保留后续处理仍应遵守的结论。</p></div><span class="badge badge-blue">{{ decisions|length }} 条</span></div>
@@ -62,8 +63,9 @@
       </div>
     </section>
     {% endif %}
+    </div>
 
-    <section class="panel stage-plan-panel" id="execution-plan">
+    <section class="panel stage-plan-panel" id="execution-plan" data-live-region="execution-plan">
       <div class="section-head">
         <div><h2>执行计划</h2><p class="section-sub">复杂 Issue 按 Stage 串行开发与验收；简单 Issue 可以没有执行计划。</p></div>
         {% if active_stage_plan %}<span class="badge badge-blue">执行计划 {{ current_execution_stage.stage_no if current_execution_stage else active_stage_plan|length }} / {{ active_stage_plan|length }}</span>{% endif %}
@@ -127,6 +129,7 @@
       {% else %}<div class="empty-inline">当前 Issue 没有 Stage Plan；简单问题可直接实现。</div>{% endif %}
     </section>
 
+    <div data-live-region="implementation">
     {% if latest_implementation %}
     <section class="panel implementation-panel">
       <div class="section-head"><div><h2>本次实现</h2><p class="section-sub">当前第 {{ latest_implementation.attempt_no }} 轮 · {{ latest_implementation.created_at|localtime }}</p></div><span class="badge badge-status-IMPLEMENTED_PENDING_REVIEW">Developer 提交</span></div>
@@ -139,8 +142,9 @@
       <div class="tab-pane" data-tab-pane="references">{{ render_references(latest_implementation.code_reference) }}</div>
     </section>
     {% endif %}
+    </div>
 
-    <section class="panel record-panel">
+    <section class="panel record-panel" data-live-region="collaboration-records">
       <div class="section-head"><div><h2>协作记录</h2><p class="section-sub">全部记录按最新优先汇总；协作提交也会进入讨论视图。</p></div></div>
       <div class="tabs" role="tablist"><button type="button" class="tab active" data-tab-target="all">全部 {{ all_records|length }}</button><button type="button" class="tab" data-tab-target="discussion">讨论 {{ discussion_records|length }}</button><button type="button" class="tab" data-tab-target="history">处理历史 {{ activities|length }}</button></div>
       <div class="tab-pane active" data-tab-pane="all">
@@ -163,7 +167,7 @@
       </div>
     </section>
 
-    <section class="panel runtime-panel" id="agent-runtime">
+    <section class="panel runtime-panel" id="agent-runtime" data-live-region="agent-runtime">
       <div class="section-head"><div><h2>Agent 运行状态</h2><p class="section-sub">仅展示调度状态，不加载线程历史。</p></div><a class="btn btn-small" href="{{ url_for('runtime_overview', issue=issue.issue_key) }}">查看运行总览</a></div>
       {% for runtime in runtime_threads %}
       <div class="runtime-card">
@@ -176,7 +180,7 @@
   </div>
 
   <aside class="sidecol"><div class="sticky">
-    <section class="panel action-panel" id="human-actions">
+    <section class="panel action-panel" id="human-actions" data-live-region="human-actions">
       {% if issue.status == 'HUMAN_CONFIRMATION_REQUIRED' %}
       {% set human_request = latest_human_request.metadata if latest_human_request else {} %}
       <div class="action-head"><div><span>HUMAN · 当前只等待你的决定</span><h2>最终边界 / 安全确认</h2></div><b>自动工作流已暂停</b></div>
@@ -241,7 +245,7 @@
       {% endif %}
     </section>
 
-    <section class="panel score-panel"><h2>问题评级</h2><div class="score-grid"><div><span>严重度</span><strong class="sev-{{ issue.severity }}">{{ issue.severity|label }}</strong></div><div><span>维度</span><strong>{{ issue.dimension|label }}</strong></div></div></section>
+    <section class="panel score-panel" data-live-region="issue-score"><h2>问题评级</h2><div class="score-grid"><div><span>严重度</span><strong class="sev-{{ issue.severity }}">{{ issue.severity|label }}</strong></div><div><span>维度</span><strong>{{ issue.dimension|label }}</strong></div></div></section>
   </div></aside>
 </div>
 

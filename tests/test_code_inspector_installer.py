@@ -197,6 +197,12 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             self.assertIn("$code-inspector start insp", codex_skill_text)
             self.assertIn("references/core-workflow.md", codex_skill_text)
             self.assertIn("references/role-workflows.md", codex_skill_text)
+            self.assertIn("Issue、讨论、阶段提交、审核、验证和报告默认使用简明中文", codex_skill_text)
+            self.assertIn("让测试人员和项目负责人", codex_skill_text)
+            self.assertIn("新写代码注释默认用中文", codex_skill_text)
+            self.assertIn("Git 提交标题和正文也默认使用中文", codex_skill_text)
+            self.assertIn("refactor(analytics): 统一淘宝数据源边界", codex_skill_text)
+            self.assertIn("不代表获得执行 `git add`、`git commit` 或 `git push` 的额外授权", codex_skill_text)
             self.assertIn("references/watch-mode.md", codex_skill_text)
             self.assertIn(str(codex_skill / "scripts" / "watch.py"), codex_skill_text)
             self.assertIn("缺少参数", codex_skill_text)
@@ -216,6 +222,11 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             watch_text = (trae_skill / "references" / "watch-mode.md").read_text(encoding="utf-8")
             self.assertIn("Issue 默认正文只写", core_text)
             self.assertIn("讨论达成一致后", core_text)
+            self.assertIn("所有写入 Review DB", core_text)
+            self.assertIn("先说明“发生了什么、影响谁、当前结论、验证结果、下一步或是否可发布”", core_text)
+            self.assertIn("新写的代码注释默认使用中文", core_text)
+            self.assertIn("Git 提交标题和正文也属于人类可读交付物", core_text)
+            self.assertIn("refactor(analytics): 统一淘宝数据源边界", core_text)
             self.assertIn("Human 只作为极低频最终兜底", core_text)
             self.assertIn("主审核者必须额外串联跨模块数据流", role_text)
             self.assertIn("先做覆盖面回查和补充扫描", role_text)
@@ -2360,6 +2371,55 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 self.assertIn("Agent 运行状态", issue_html)
                 self.assertIn("检查者", issue_html)
                 self.assertIn("codex-insp", issue_html)
+                self.assertIn('data-issue-auto-refresh data-refresh-interval="1000"', issue_html)
+                self.assertIn('data-live-region="collaboration-records"', issue_html)
+                self.assertIn('data-live-region="human-actions"', issue_html)
+                self.assertIn('data-browser-events-url="/api/browser-events"', issue_html)
+                self.assertIn("开启桌面提醒", issue_html)
+
+                # 首次读取只建立游标，之后只返回真正发生的新变化。
+                initial_feed = client.get("/api/browser-events")
+                self.assertEqual(initial_feed.status_code, 200)
+                initial_data = initial_feed.get_json()
+                self.assertEqual(initial_data["events"], [])
+                with closing(sqlite3.connect(database)) as conn, conn:
+                    conn.execute("UPDATE review_task SET status='ON_HOLD' WHERE task_key='RT-RUNTIME'")
+                    conn.execute("UPDATE review_issue SET status='IMPLEMENTED_PENDING_REVIEW' WHERE issue_key='RI-RUNTIME'")
+                    conn.execute(
+                        """INSERT INTO issue_stage(issue_id,plan_no,stage_no,title,objective,acceptance_criteria,status)
+                           VALUES(1,1,1,'完成核心修复','完成修复','测试通过','PENDING_REVIEW')"""
+                    )
+                    conn.executemany(
+                        """INSERT INTO agent_audit_log(agent_id,action,resource_type,resource_id,success)
+                           VALUES('human',?,?,?,1)""",
+                        [
+                            ("task.update-status", "review_task", "RT-RUNTIME"),
+                            ("issue.update-status", "review_issue", "RI-RUNTIME"),
+                            ("stage.submit", "review_issue", "RI-RUNTIME"),
+                            ("issue.get", "review_issue", "RI-RUNTIME"),
+                        ],
+                    )
+                change_feed = client.get(f"/api/browser-events?after={initial_data['cursor']}")
+                self.assertEqual(change_feed.status_code, 200)
+                changes = change_feed.get_json()["events"]
+                self.assertEqual([item["kind"] for item in changes], ["task", "issue", "stage"])
+                self.assertEqual(changes[0]["status"], "ON_HOLD")
+                self.assertEqual(changes[0]["changeType"], "status")
+                self.assertEqual(changes[1]["issueKey"], "RI-RUNTIME")
+                self.assertEqual(changes[1]["changeType"], "status")
+                self.assertEqual(changes[2]["stage"]["stageNo"], 1)
+                self.assertEqual(changes[2]["stage"]["status"], "PENDING_REVIEW")
+                self.assertEqual(client.get("/api/browser-events?after=oops").status_code, 400)
+
+                refresh_script = (webtool_dir / "static" / "app.js").read_text(encoding="utf-8")
+                self.assertIn("window.setInterval(refreshIssue, interval)", refresh_script)
+                self.assertIn("window.scrollBy", refresh_script)
+                self.assertIn("userIsEditing()", refresh_script)
+                self.assertIn("comparableHtml(current) === comparableHtml(incoming)", refresh_script)
+                self.assertNotIn("location.reload", refresh_script)
+                self.assertIn("new CustomEvent('code-inspector:changed'", refresh_script)
+                self.assertIn("Notification.requestPermission()", refresh_script)
+                self.assertIn("window.setInterval(readChanges, 1000)", refresh_script)
 
                 denied = client.post("/runtime/events/evt-visible/retry", follow_redirects=False)
                 self.assertEqual(denied.status_code, 403)

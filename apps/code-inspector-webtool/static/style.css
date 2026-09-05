@@ -47,6 +47,10 @@ h3 { margin-bottom: 8px; font-size: 14px; }
 .nav a:hover { background: #f8fafc; color: var(--text); text-decoration: none; }
 .nav a.active { background: var(--blue-soft); color: var(--blue); font-weight: 700; }
 .workqueue { margin-left: auto; display: flex; gap: 8px; }
+.notification-toggle { margin-left: auto; padding: 5px 9px; border: 1px solid var(--border); border-radius: 999px; background: #fff; color: var(--muted); cursor: pointer; font-size: 12px; white-space: nowrap; }
+.notification-toggle:hover { border-color: #93b4ff; color: var(--blue); }
+.notification-toggle.enabled { border-color: #b7e1c5; background: var(--green-soft); color: var(--green); }
+.notification-toggle + .workqueue { margin-left: 0; }
 .queue-pill { padding: 6px 10px; border: 1px solid var(--border); border-radius: 999px; background: #fff; color: #4b5563; font-size: 12px; }
 .queue-pill:hover { border-color: #b8c6dd; text-decoration: none; }
 .queue-pill strong { margin-right: 3px; color: var(--text); }

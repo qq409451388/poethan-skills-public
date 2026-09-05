@@ -8,7 +8,7 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
   <script src="{{ url_for('static', filename='app.js') }}" defer></script>
 </head>
-<body>
+<body data-browser-events-url="{{ url_for('browser_events') }}">
   <header class="topbar">
     <div class="topbar-inner">
       <a class="brand" href="{{ url_for('inbox') }}">代码检查工作台</a>
@@ -18,6 +18,7 @@
         <a href="{{ url_for('candidate_list') }}" class="{% if request.endpoint in ['candidate_list', 'candidate_update_status'] %}active{% endif %}">候选问题</a>
         <a href="{{ url_for('runtime_overview') }}" class="{% if request.endpoint and request.endpoint.startswith('runtime_') %}active{% endif %}">运行状态</a>
       </nav>
+      <button type="button" class="notification-toggle" data-browser-notifications hidden>开启桌面提醒</button>
       <div class="workqueue" aria-label="Human 当前待办">
         <a class="queue-pill" href="{{ url_for('inbox') }}#pending-review"><strong>{{ queue_counts.pending_review }}</strong>待审核</a>
         <a class="queue-pill" href="{{ url_for('inbox') }}#confirmation"><strong>{{ queue_counts.confirmation }}</strong>待确认</a>
