@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import closing
 from datetime import datetime
 import filecmp
 import json
@@ -90,7 +91,7 @@ def migrate(db_path: Path, backup_dir: Path | None = None) -> dict[str, Any]:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     applied: list[str] = []
     backup_path: Path | None = None
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn, conn:
         conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("PRAGMA journal_mode = WAL")
         conn.execute("PRAGMA busy_timeout = 5000")
@@ -113,7 +114,7 @@ def migrate(db_path: Path, backup_dir: Path | None = None) -> dict[str, Any]:
         if pending and rows and backup_dir is not None:
             backup_dir.mkdir(parents=True, exist_ok=True)
             backup_path = backup_dir / f"review-before-{datetime.now().strftime('%Y%m%d-%H%M%S')}.db"
-            with sqlite3.connect(backup_path) as backup_conn:
+            with closing(sqlite3.connect(backup_path)) as backup_conn:
                 conn.backup(backup_conn)
         for path in migrations:
             version = migration_version(path)
