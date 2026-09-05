@@ -4,7 +4,13 @@
 
 ## 启用与降级
 
-先读取 `config/runtime.json`。`thread_runtime.enabled=false` 或 `isolation.enabled=false` 时沿用既有单会话流程；不得伪造 thread id。Watch、Isolation、Managed Compact 是三个独立开关。App Server 能力以 `scripts/capability_probe.py` 对本机当前版本的实际结果为准，禁止自动升级 Codex。
+先读取 `config/runtime.json`。Multi-Thread 默认不激活，且使用双重授权：`thread_runtime.multi_thread.enabled=true` 只表示能力允许；用户还必须在当前 Session 明确要求开启。任一条件不满足时沿用既有单会话流程，不得 claim Event 或 start/resume Child Thread。配置关闭但用户要求开启时返回 `MULTI_THREAD_DISABLED_BY_CONFIG`；配置允许但当前 Session 未显式开启时保持 inactive。关闭只停止自动 Dispatch，保留 Mapping。
+
+Session 激活时由安装绑定固化 `session_operator_id`、`session_role`、`session_agent_platform`。Supervisor claim 必须同时过滤 operator 与 role；Child Thread 的 operator/role 必须与 Session 完全相同，否则返回 `SESSION_SCOPE_VIOLATION`。Inspector Session 不得调度 Developer，Developer Session 也不得调度 Inspector；领域事务可以为另一身份产生 Event，但当前 Session 到此停止。Watch、Multi-Thread、Managed Compact 是独立授权；它们以及“持续到结束”都不允许创建或恢复 Codex Goal。
+
+成功开启时只报告当前 Session 的 role、operator，以及“本 Session 只会调度该 operator 的 Issue Thread”。不得把激活状态写成全局开关；不同窗口可以分别 active/inactive。
+
+`thread_runtime.enabled=false` 或 `isolation.enabled=false` 时同样沿用单会话流程；不得伪造 thread id。App Server 能力以 `scripts/capability_probe.py` 对本机当前版本的实际结果为准，禁止自动升级 Codex。
 
 ## Thread 与事务
 
@@ -16,7 +22,7 @@
 
 ## Supervisor 与事件
 
-Review Domain 原子命令在更新 Issue/Stage/Activity 的同一个 SQLite Transaction 中写入 Runtime Event（Transactional Outbox）。该自动队列与 Manual Watch 完全独立：队列由 `supervisor.py run` 的长生命周期轻量进程消费，空闲轮询只查询 SQLite、不调用 LLM；Manual Watch 仍只由用户显式开启。
+Review Domain 原子命令在更新 Issue/Stage/Activity 的同一个 SQLite Transaction 中写入 Runtime Event（Transactional Outbox）。该自动队列与 Manual Watch 完全独立：只有显式启用 Multi-Thread 的 Session 才可用 `supervisor.py run --session-identity <当前身份> --multi-thread` 消费当前 operator+role 的事件；空闲轮询只查询 SQLite、不调用 LLM。Manual Watch 仍只由用户显式开启，且不会隐式开启 Multi-Thread。
 
 `scripts/supervisor.py` 维护轻量 Registry、幂等事件队列和 Lease。事件格式为：
 
@@ -44,8 +50,8 @@ Dispatch Lock 串行化同一 `(issue_key, operator_id)`，并完整覆盖 looku
 
 ## CLI 路由
 
-- `scripts/issue-thread.py dispatch|start|resume|status|compact|archive`
-- `scripts/code-inspector-supervisor.py run|enqueue|dispatch-pending|status|reconcile|retry-event|pause-thread`
+- `scripts/issue-thread.py dispatch|start|resume|compact|archive --session-identity <当前身份> --multi-thread`；`status` 为只读查询
+- `scripts/code-inspector-supervisor.py run|dispatch-pending --session-identity <当前身份> --multi-thread`；其余为入队、只读或人工恢复命令
 - `scripts/capability-probe.py`：本机协议与跨进程/compact 探测
 - `scripts/task-watcher.py`：一个静默 Shell watcher 观察多个显式 WAITING Issue
 

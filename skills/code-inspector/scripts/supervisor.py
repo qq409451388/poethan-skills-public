@@ -15,6 +15,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import issue_thread
 from review_repository import ReviewRepository
 from runtime_identity import resolve_identity
+from session_scope import SessionScope, assert_session_target, create_session_scope, require_config_allowed
 
 
 def worker_id() -> str:
@@ -124,8 +125,9 @@ def event_lease_heartbeat(event: dict):
         worker.join(timeout=max(1, interval_seconds + 1))
 
 
-def claim(limit: int, worker: str | None = None) -> list[dict]:
+def claim(scope: SessionScope, limit: int, worker: str | None = None) -> list[dict]:
     config = issue_thread.load_config(issue_thread.config_path())
+    require_config_allowed(scope, config)
     lease = int(config["thread_runtime"]["leases"]["event_seconds"])
     worker = worker or worker_id()
     with issue_thread.connect() as conn:
@@ -133,6 +135,7 @@ def claim(limit: int, worker: str | None = None) -> list[dict]:
         rows = conn.execute(
             """SELECT e.* FROM code_inspector_event e
                WHERE e.status='PENDING' AND (e.next_attempt_at IS NULL OR e.next_attempt_at <= CURRENT_TIMESTAMP)
+                 AND e.operator_id=? AND e.role=?
                  AND NOT EXISTS(
                    SELECT 1 FROM code_inspector_event active
                    WHERE active.issue_key=e.issue_key AND active.operator_id=e.operator_id
@@ -142,7 +145,7 @@ def claim(limit: int, worker: str | None = None) -> list[dict]:
                            WHERE x.status='PENDING' AND x.issue_key=e.issue_key
                              AND x.operator_id=e.operator_id
                              AND (x.next_attempt_at IS NULL OR x.next_attempt_at <= CURRENT_TIMESTAMP))
-               ORDER BY e.created_at,e.id LIMIT ?""", (limit,),
+               ORDER BY e.created_at,e.id LIMIT ?""", (scope.operator_id, scope.role, limit),
         ).fetchall()
         ids = [row["id"] for row in rows]
         if ids:
@@ -166,12 +169,16 @@ def classify_error(exc: Exception) -> str:
     return "NON_RETRYABLE"
 
 
-def process_event(event: dict) -> dict:
+def process_event(event: dict, scope: SessionScope) -> dict:
+    assert_session_target(
+        scope, event["operator_id"], event["role"],
+        event.get("agent_platform"), event.get("runtime_backend"),
+    )
     try:
         with event_lease_heartbeat(event):
             result = issue_thread.dispatch(
                 event["issue_key"], event["operator_id"], event["event_type"],
-                event["role"], event["event_id"],
+                event["role"], event["event_id"], session_scope=scope,
             )
         if not result.get("action_turn_completed"):
             raise RuntimeError("ACTION_TURN_NOT_COMPLETED")
@@ -241,20 +248,21 @@ def reconcile(issue: str | None = None, operator: str | None = None) -> dict:
     return {"threads": threads, "events": events}
 
 
-def dispatch_pending(*, recover: bool = True) -> list[dict]:
+def dispatch_pending(scope: SessionScope, *, recover: bool = True) -> list[dict]:
     config = issue_thread.load_config(issue_thread.config_path())
+    require_config_allowed(scope, config)
     if recover:
-        reconcile()
+        reconcile(operator=scope.operator_id)
     limit = int(config["thread_runtime"]["concurrency"]["max_active_issue_threads"])
-    events = claim(limit)
+    events = claim(scope, limit)
     if not events:
         return []
     with ThreadPoolExecutor(max_workers=limit) as pool:
-        futures = [pool.submit(process_event, event) for event in events]
+        futures = [pool.submit(process_event, event, scope) for event in events]
         return [future.result() for future in as_completed(futures)]
 
 
-def run_forever(interval: float | None = None) -> None:
+def run_forever(scope: SessionScope, interval: float | None = None) -> None:
     """Long-lived internal queue consumer; idle cycles never invoke an LLM."""
     config = issue_thread.load_config(issue_thread.config_path())
     interval = interval if interval is not None else float(
@@ -272,7 +280,7 @@ def run_forever(interval: float | None = None) -> None:
         try:
             now = time.monotonic()
             should_recover = now - last_recovery >= recovery_interval
-            results = dispatch_pending(recover=should_recover)
+            results = dispatch_pending(scope, recover=should_recover)
             if should_recover:
                 last_recovery = now
             consecutive_errors = 0
@@ -340,18 +348,24 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command", required=True)
     p = sub.add_parser("enqueue"); p.add_argument("--issue", required=True); p.add_argument("--operator", required=True); p.add_argument("--role", choices=["inspector", "developer"]); p.add_argument("--event", required=True); p.add_argument("--event-id"); p.add_argument("--activity-id", type=int); p.add_argument("--stage", type=int)
-    sub.add_parser("dispatch-pending")
-    p = sub.add_parser("run"); p.add_argument("--interval", type=float)
+    p = sub.add_parser("dispatch-pending"); p.add_argument("--session-identity", required=True); p.add_argument("--multi-thread", action="store_true", required=True)
+    p = sub.add_parser("run"); p.add_argument("--session-identity", required=True); p.add_argument("--multi-thread", action="store_true", required=True); p.add_argument("--interval", type=float)
     p = sub.add_parser("status"); p.add_argument("--issue"); p.add_argument("--operator"); p.add_argument("--status")
     p = sub.add_parser("reconcile"); p.add_argument("--issue"); p.add_argument("--operator")
     p = sub.add_parser("retry-event"); p.add_argument("--event-id", required=True); p.add_argument("--confirm", action="store_true")
     p = sub.add_parser("pause-thread"); p.add_argument("--issue", required=True); p.add_argument("--operator", required=True); p.add_argument("--confirm", action="store_true")
     args = parser.parse_args()
     try:
+        if args.command in {"dispatch-pending", "run"}:
+            config = issue_thread.load_config(issue_thread.config_path())
+            scope = create_session_scope(
+                issue_thread.review_home(), args.session_identity, config,
+                explicit_multi_thread=args.multi_thread,
+            )
         if args.command == "enqueue": result = enqueue(args.issue, args.operator, args.event, args.activity_id, args.stage, args.event_id, args.role)
-        elif args.command == "dispatch-pending": result = dispatch_pending()
+        elif args.command == "dispatch-pending": result = dispatch_pending(scope)
         elif args.command == "run":
-            run_forever(args.interval)
+            run_forever(scope, args.interval)
             return 0
         elif args.command == "reconcile": result = reconcile(args.issue, args.operator)
         elif args.command == "retry-event": result = retry_event(args.event_id, args.confirm)

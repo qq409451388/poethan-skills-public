@@ -1,6 +1,10 @@
 {
   "thread_runtime": {
     "enabled": true,
+    "multi_thread": {
+      "enabled": false,
+      "require_explicit_session_activation": true
+    },
     "isolation": {
       "enabled": true,
       "granularity": "issue_operator",

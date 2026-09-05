@@ -19,6 +19,7 @@ from codex_thread_runtime import CodexRuntimeError, CodexThreadRuntime, load_con
 from review_repository import ReviewRepository
 from runtime_identity import resolve_identity
 from runtime_capabilities import capability, require_capability
+from session_scope import SessionScope, assert_session_target, create_session_scope, require_config_allowed
 
 
 TERMINAL_ISSUES = {"CONFIRMED", "CANCELLED"}
@@ -180,14 +181,22 @@ def runtime_call(config: dict[str, Any], function, *, retry_safe: bool = False):
 
 def start(
     issue_key: str, operator_id: str, expected_role: str | None = None,
-    model: str | None = None, *, acquire_dispatch_lock: bool = True,
+    model: str | None = None, *, session_scope: SessionScope | None = None,
+    acquire_dispatch_lock: bool = True,
 ) -> dict[str, Any]:
     config = load_config(config_path())
+    if session_scope is None:
+        raise PermissionError("SESSION_SCOPE_REQUIRED")
+    require_config_allowed(session_scope, config)
     flags = config["thread_runtime"]
     if not flags["enabled"] or not flags["isolation"]["enabled"]:
         raise RuntimeError("THREAD_ISOLATION_DISABLED")
     require_capability(review_home(), flags["isolation"]["required_capability"])
     identity = resolve_identity(review_home(), operator_id, expected_role)
+    assert_session_target(
+        session_scope, identity.operator_id, identity.role,
+        identity.agent_platform, identity.runtime_backend,
+    )
     if identity.runtime_backend != "codex-app-server":
         raise RuntimeError(f"RUNTIME_BACKEND_UNSUPPORTED:{identity.runtime_backend}")
     role = identity.role
@@ -238,10 +247,18 @@ def start(
 
 def resume(
     issue_key: str, operator_id: str, reason: str, expected_role: str | None = None,
-    event_id: str | None = None, *, acquire_dispatch_lock: bool = True,
+    event_id: str | None = None, *, session_scope: SessionScope | None = None,
+    acquire_dispatch_lock: bool = True,
 ) -> dict[str, Any]:
     config = load_config(config_path())
+    if session_scope is None:
+        raise PermissionError("SESSION_SCOPE_REQUIRED")
+    require_config_allowed(session_scope, config)
     identity = resolve_identity(review_home(), operator_id, expected_role)
+    assert_session_target(
+        session_scope, identity.operator_id, identity.role,
+        identity.agent_platform, identity.runtime_backend,
+    )
     if identity.runtime_backend != "codex-app-server":
         raise RuntimeError(f"RUNTIME_BACKEND_UNSUPPORTED:{identity.runtime_backend}")
     role = identity.role
@@ -358,8 +375,19 @@ def resume(
             raise RuntimeError(f"PRE_ACTION_RETRYABLE:{exc}") from exc
 
 
-def dispatch(issue_key: str, operator_id: str, reason: str, expected_role: str | None = None, event_id: str | None = None) -> dict[str, Any]:
+def dispatch(
+    issue_key: str, operator_id: str, reason: str, expected_role: str | None = None,
+    event_id: str | None = None, *, session_scope: SessionScope | None = None,
+) -> dict[str, Any]:
+    config = load_config(config_path())
     identity = resolve_identity(review_home(), operator_id, expected_role)
+    if session_scope is None:
+        raise PermissionError("SESSION_SCOPE_REQUIRED")
+    require_config_allowed(session_scope, config)
+    assert_session_target(
+        session_scope, identity.operator_id, identity.role,
+        identity.agent_platform, identity.runtime_backend,
+    )
     # One lock covers lookup, optional initialization and the original Action Turn.
     # This prevents a second direct dispatch from overtaking the first event between
     # mapping persistence and its action.
@@ -372,19 +400,31 @@ def dispatch(issue_key: str, operator_id: str, reason: str, expected_role: str |
         initialized = None
         if not item:
             initialized = start(
-                issue_key, operator_id, expected_role, acquire_dispatch_lock=False,
+                issue_key, operator_id, expected_role, session_scope=session_scope,
+                acquire_dispatch_lock=False,
             )
         result = resume(
             issue_key, operator_id, reason, expected_role, event_id,
+            session_scope=session_scope,
             acquire_dispatch_lock=False,
         )
         result["initialized"] = bool(initialized)
         return result
 
 
-def compact(issue_key: str, operator_id: str, stage_no: int, force: bool = False, expected_role: str | None = None) -> dict[str, Any]:
+def compact(
+    issue_key: str, operator_id: str, stage_no: int, force: bool = False,
+    expected_role: str | None = None, *, session_scope: SessionScope | None = None,
+) -> dict[str, Any]:
     config = load_config(config_path())
+    if session_scope is None:
+        raise PermissionError("SESSION_SCOPE_REQUIRED")
+    require_config_allowed(session_scope, config)
     identity = resolve_identity(review_home(), operator_id, expected_role)
+    assert_session_target(
+        session_scope, identity.operator_id, identity.role,
+        identity.agent_platform, identity.runtime_backend,
+    )
     role = identity.role
     flags = config["thread_runtime"]["compact"]
     if not flags["enabled"] or not capability(review_home(), flags["required_capability"]):
@@ -421,9 +461,19 @@ def compact(issue_key: str, operator_id: str, stage_no: int, force: bool = False
             raise
 
 
-def archive(issue_key: str, operator_id: str, expected_role: str | None = None) -> dict[str, Any]:
+def archive(
+    issue_key: str, operator_id: str, expected_role: str | None = None, *,
+    session_scope: SessionScope | None = None,
+) -> dict[str, Any]:
     config = load_config(config_path())
+    if session_scope is None:
+        raise PermissionError("SESSION_SCOPE_REQUIRED")
+    require_config_allowed(session_scope, config)
     identity = resolve_identity(review_home(), operator_id, expected_role)
+    assert_session_target(
+        session_scope, identity.operator_id, identity.role,
+        identity.agent_platform, identity.runtime_backend,
+    )
     role = identity.role
     with execution_lock(f"dispatch-{issue_key}-{operator_id}"):
         with connect() as conn:
@@ -460,19 +510,23 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command", required=True)
     for name in ("dispatch", "start", "resume", "archive"):
-        p = sub.add_parser(name); p.add_argument("--issue", required=True); p.add_argument("--operator", required=True); p.add_argument("--role", choices=["inspector", "developer"])
+        p = sub.add_parser(name); p.add_argument("--issue", required=True); p.add_argument("--session-identity", required=True); p.add_argument("--multi-thread", action="store_true", required=True)
         if name in {"dispatch", "resume"}: p.add_argument("--reason", default="ACTION_REQUIRED")
         if name in {"dispatch", "resume"}: p.add_argument("--event-id")
         if name == "start": p.add_argument("--model")
     p = sub.add_parser("status"); p.add_argument("--issue"); p.add_argument("--operator")
-    p = sub.add_parser("compact"); p.add_argument("--issue", required=True); p.add_argument("--operator", required=True); p.add_argument("--role", choices=["inspector", "developer"]); p.add_argument("--stage", required=True, type=int); p.add_argument("--force", action="store_true")
+    p = sub.add_parser("compact"); p.add_argument("--issue", required=True); p.add_argument("--session-identity", required=True); p.add_argument("--multi-thread", action="store_true", required=True); p.add_argument("--stage", required=True, type=int); p.add_argument("--force", action="store_true")
     args = parser.parse_args()
     try:
-        if args.command == "dispatch": result = dispatch(args.issue, args.operator, args.reason, args.role, args.event_id)
-        elif args.command == "start": result = start(args.issue, args.operator, args.role, args.model)
-        elif args.command == "resume": result = resume(args.issue, args.operator, args.reason, args.role, args.event_id)
-        elif args.command == "archive": result = archive(args.issue, args.operator, args.role)
-        elif args.command == "compact": result = compact(args.issue, args.operator, args.stage, args.force, args.role)
+        if args.command != "status":
+            config = load_config(config_path())
+            scope = create_session_scope(review_home(), args.session_identity, config, explicit_multi_thread=args.multi_thread)
+            operator, role = scope.operator_id, scope.role
+        if args.command == "dispatch": result = dispatch(args.issue, operator, args.reason, role, args.event_id, session_scope=scope)
+        elif args.command == "start": result = start(args.issue, operator, role, args.model, session_scope=scope)
+        elif args.command == "resume": result = resume(args.issue, operator, args.reason, role, args.event_id, session_scope=scope)
+        elif args.command == "archive": result = archive(args.issue, operator, role, session_scope=scope)
+        elif args.command == "compact": result = compact(args.issue, operator, args.stage, args.force, role, session_scope=scope)
         else: result = status(args.issue, args.operator)
         print(json.dumps(result, ensure_ascii=False))
         return 0

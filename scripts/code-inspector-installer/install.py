@@ -159,7 +159,7 @@ def link_runtime(home: Path, skill_config: dict[str, Any], force: bool, skill_so
         for name in (
             "code-inspector-supervisor.py", "supervisor.py", "issue_thread.py",
             "codex_thread_runtime.py", "runtime_identity.py", "runtime_capabilities.py",
-            "review_repository.py",
+            "review_repository.py", "session_scope.py",
         ):
             create_skill_link(skill_source / "scripts" / name, home / "bin" / name, force)
     for role, assignments in skill_config["bindings"].items():
@@ -251,6 +251,12 @@ def generated_skill_text(platform: str, identities: list[dict[str, Any]], target
         "`references/role-workflows.md` 中当前锁定角色的章节。状态机与工具调用分别以 "
         "`references/workflow.yaml`、`references/tool-contracts.yaml` 为准；不得直接操作 SQLite。\n\n"
         "多 Issue 调度或 Issue Thread 操作必须读取 `references/thread-runtime.md`，配置来自 `config/runtime.json`。\n\n"
+        "## Session Scope 与 Multi-Thread\n\n"
+        "Session 启动时选定的 role、operator_id、agent_platform 固定到退出。Multi-Thread 默认关闭；"
+        "只有配置 `thread_runtime.multi_thread.enabled=true` 且用户在当前 Session 明确要求开启，才可激活。"
+        "Supervisor 只能 claim 当前 operator+role 的 Event，Child Thread 必须继承相同身份；跨 Role/Operator Dispatch "
+        "必须以 `SESSION_SCOPE_VIOLATION` 失败。Watch 不授权 Multi-Thread，Multi-Thread 也不授权 Watch；"
+        "任何模式都禁止创建或恢复 Codex Goal。关闭 Multi-Thread 时保留已有 Mapping，但停止自动 Dispatch。\n\n"
         "只有用户明确要求持续观察或停止观察时才读取 `references/watch-mode.md`；"
         f"Watcher 入口为 `python \"{watch_path}\"`。审核等级和报告导出分别按需读取 "
         "`references/review-levels.yaml`、`references/report-schema.yaml`。"

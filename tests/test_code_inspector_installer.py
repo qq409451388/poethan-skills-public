@@ -166,11 +166,13 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             self.assertTrue((home / ".agent-review" / "bin" / "review-db.py").is_file())
             self.assertTrue((home / ".agent-review" / "bin" / "code-inspector-supervisor.py").is_file())
             self.assertTrue((home / ".agent-review" / "bin" / "runtime_identity.py").is_file())
+            self.assertTrue((home / ".agent-review" / "bin" / "session_scope.py").is_file())
             if os.name != "nt":
                 self.assertTrue(os.access(home / ".agent-review" / "bin" / "code-inspector-supervisor.py", os.X_OK))
             bindings = json.loads((home / ".agent-review" / "config" / "agent-bindings.json").read_text())
             installed_runtime = json.loads((home / ".agent-review" / "config" / "runtime.json").read_text())
             self.assertEqual(installed_runtime["thread_runtime"]["isolation"]["granularity"], "issue_operator")
+            self.assertFalse(installed_runtime["thread_runtime"]["multi_thread"]["enabled"])
             self.assertEqual(
                 Path(installed_runtime["database"]).resolve(),
                 (home / ".agent-review" / "data" / "review.db").resolve(),
@@ -198,6 +200,10 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             self.assertIn("references/watch-mode.md", codex_skill_text)
             self.assertIn(str(codex_skill / "scripts" / "watch.py"), codex_skill_text)
             self.assertIn("缺少参数", codex_skill_text)
+            self.assertIn("Multi-Thread 默认关闭", codex_skill_text)
+            self.assertIn("SESSION_SCOPE_VIOLATION", codex_skill_text)
+            self.assertIn("Watch 不授权 Multi-Thread", codex_skill_text)
+            self.assertIn("禁止创建或恢复 Codex Goal", codex_skill_text)
             self.assertIn("当前平台仅配置 `inspector` 角色", trae_skill_text)
             self.assertIn("$code-inspector start` 即可启动", trae_skill_text)
             self.assertIn('固定工具：`python "', codex_skill_text)

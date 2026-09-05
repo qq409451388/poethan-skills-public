@@ -9,6 +9,8 @@ description: 在用户明确开启代码检查模式后，按安装时分配的 
 
 安装后的 Skill 会生成当前平台可用的逻辑身份、角色能力、会话选择器和固定工具入口。会话角色在启动时确定并保持到退出，不得自动切换身份；只使用当前身份的固定工具，不直接访问 SQLite 或执行 SQL。
 
+Multi-Thread 默认关闭。只有 `config/runtime.json` 允许且用户在当前 Session 明确要求开启时，才可启动按当前 `session_operator_id + session_role` 限定的 Supervisor。它只能 claim、start、resume 当前身份的 Event/Thread；跨 Role 或跨 Operator 一律以 `SESSION_SCOPE_VIOLATION` 失败。Watch 与 Multi-Thread 分别授权，任何模式都禁止创建或恢复 Codex Goal。
+
 激活后必须读取：
 
 - 所有角色：`references/core-workflow.md`
