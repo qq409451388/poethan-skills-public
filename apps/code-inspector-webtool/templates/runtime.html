@@ -1,18 +1,49 @@
 {% extends "base.html" %}
-{% block title %}Agent Runtime · 代码检查工作台{% endblock %}
+{% block title %}Agent 运行状态 · 代码检查工作台{% endblock %}
 {% block content %}
-<div class="page-head"><div class="page-title"><h1>Agent Runtime</h1><p>Human 可观测与安全恢复控制台；不会自动调度或调用 LLM。</p></div></div>
+<div class="page-head"><div class="page-title"><h1>Agent 运行状态</h1><p>查看 Issue 工作线程和调度事件，并安全处理异常；本页面不会自动调度或调用大模型。</p></div></div>
 
 <section class="metrics runtime-metrics">
-  {% for item in counts.threads %}<div class="metric"><span>{{ item.status }} Threads</span><strong>{{ item.total }}</strong></div>{% endfor %}
-  {% for item in counts.events %}<div class="metric"><span>{{ item.status }} Events</span><strong>{{ item.total }}</strong></div>{% endfor %}
+  {% for item in counts.threads %}<div class="metric"><span>{{ item.status|runtime_label }}线程</span><strong>{{ item.total }}</strong></div>{% endfor %}
+  {% for item in counts.events %}<div class="metric"><span>{{ item.status|runtime_label }}事件</span><strong>{{ item.total }}</strong></div>{% endfor %}
 </section>
 
 <section class="panel">
-  <form method="get" class="toolbar"><label>Issue</label><input name="issue" value="{{ filters.issue }}"><label>Role</label><select name="role"><option value="">全部</option>{% for value in ['inspector','developer'] %}<option value="{{ value }}" {% if filters.role == value %}selected{% endif %}>{{ value }}</option>{% endfor %}</select><label>Operator</label><input name="operator" value="{{ filters.operator }}"><label>Status</label><input name="status" value="{{ filters.status }}" placeholder="WAITING / FAILED"><button class="btn btn-primary">筛选</button><a class="btn" href="{{ url_for('runtime_overview') }}">清除</a></form>
+  <form method="get" class="toolbar">
+    <label>问题编号</label><input name="issue" value="{{ filters.issue }}" placeholder="例如 RI-00497003">
+    <label>角色</label><select name="role"><option value="">全部角色</option>{% for value in ['inspector','developer'] %}<option value="{{ value }}" {% if filters.role == value %}selected{% endif %}>{{ value|runtime_label }}</option>{% endfor %}</select>
+    <label>执行身份</label><input name="operator" value="{{ filters.operator }}" placeholder="例如 codex-insp">
+    <label>运行状态</label><select name="status"><option value="">全部状态</option><optgroup label="线程状态">{% for value in thread_statuses %}<option value="{{ value }}" {% if filters.status == value %}selected{% endif %}>{{ value|runtime_label }}</option>{% endfor %}</optgroup><optgroup label="事件状态">{% for value in event_statuses %}<option value="{{ value }}" {% if filters.status == value %}selected{% endif %}>{{ value|runtime_label }}</option>{% endfor %}</optgroup></select>
+    <button class="btn btn-primary">筛选</button><a class="btn" href="{{ url_for('runtime_overview') }}">重置</a>
+  </form>
 </section>
 
-<section class="panel"><div class="section-head"><div><h2>Threads</h2><p class="section-sub">运行状态缓存；业务状态仍以 Review DB 为准。</p></div></div><div class="table-wrap"><table class="task-table"><thead><tr><th>Issue / Identity</th><th>Thread</th><th>Status</th><th>Context</th><th>Event / Lease</th><th>Error</th><th>管理</th></tr></thead><tbody>{% for row in threads %}<tr><td><a href="{{ url_for('issue_detail', issue_key=row.issue_key) }}">{{ row.issue_key }}</a><br><span class="mono">{{ row.operator_id }}</span> · {{ row.role }}<br><small>{{ row.agent_platform }} / {{ row.runtime_backend }}</small></td><td class="mono">{{ row.thread_id }}</td><td><span class="badge badge-status-{{ row.thread_status }}">{{ row.thread_status }}</span></td><td>{% if row.context_usage is not none %}{{ row.context_usage }}%{% else %}—{% endif %}</td><td><span class="mono">{{ row.last_event or '—' }}</span><br><small>{{ row.lease_until|localtime }}</small></td><td>{{ row.error_code or '—' }}{% if row.error_message %}<br><small>{{ row.error_message }}</small>{% endif %}</td><td><div class="runtime-actions"><form method="post" action="{{ url_for('runtime_reconcile_thread', issue_key=row.issue_key, operator_id=row.operator_id) }}" onsubmit="return confirm('Reconcile 只会暂停不确定 Thread，不会重放业务动作。继续？')"><button class="btn btn-small">Reconcile</button></form><form method="post" action="{{ url_for('runtime_pause_thread', issue_key=row.issue_key, operator_id=row.operator_id) }}" onsubmit="return confirm('确认暂停这个非 ACTIVE Thread？')"><button class="btn btn-small">Pause</button></form></div></td></tr>{% else %}<tr><td colspan="7" class="empty">没有 Thread。</td></tr>{% endfor %}</tbody></table></div></section>
+<section class="panel">
+  <div class="section-head"><div><h2>Issue 工作线程</h2><p class="section-sub">这里是 Agent 的执行状态；Issue 业务状态仍以 Review DB 为准。</p></div></div>
+  <div class="table-wrap"><table class="task-table"><thead><tr><th>问题 / 执行身份</th><th>线程 ID</th><th>运行状态</th><th>上下文占用</th><th>最近事件 / 租约截止</th><th>异常</th><th>管理操作</th></tr></thead><tbody>
+  {% for row in threads %}<tr>
+    <td><a href="{{ url_for('issue_detail', issue_key=row.issue_key) }}">{{ row.issue_key }}</a><br><span class="mono">{{ row.operator_id }}</span> · {{ row.role|runtime_label }}<br><small>{{ row.agent_platform }} / {{ row.runtime_backend }}</small></td>
+    <td class="mono">{{ row.thread_id }}</td>
+    <td><span class="badge badge-status-{{ row.thread_status }}">{{ row.thread_status|runtime_label }}</span><br><small class="mono">{{ row.thread_status }}</small></td>
+    <td>{% if row.context_usage is not none %}{{ row.context_usage }}%{% else %}—{% endif %}</td>
+    <td><span>{{ row.last_event|runtime_label if row.last_event else '—' }}</span>{% if row.last_event %}<br><small class="mono">{{ row.last_event }}</small>{% endif %}<br><small>{{ row.lease_until|localtime }}</small></td>
+    <td>{% if row.error_code %}{{ row.error_code|runtime_label }}<br><small class="mono">{{ row.error_code }}</small>{% else %}—{% endif %}{% if row.error_message %}<br><small>{{ row.error_message }}</small>{% endif %}</td>
+    <td><div class="runtime-actions"><form method="post" action="{{ url_for('runtime_reconcile_thread', issue_key=row.issue_key, operator_id=row.operator_id) }}" onsubmit="return confirm('将核对线程实际状态，并把结果不确定的线程安全暂停；不会重放业务动作。确认继续？')"><button class="btn btn-small">核对异常</button></form><form method="post" action="{{ url_for('runtime_pause_thread', issue_key=row.issue_key, operator_id=row.operator_id) }}" onsubmit="return confirm('确认暂停这个当前未执行的线程？暂停后需要人工恢复。')"><button class="btn btn-small">暂停线程</button></form></div></td>
+  </tr>{% else %}<tr><td colspan="7" class="empty">没有符合条件的工作线程。</td></tr>{% endfor %}
+  </tbody></table></div>
+</section>
 
-<section class="panel"><div class="section-head"><div><h2>Event Queue</h2><p class="section-sub">同一 Issue + Operator 顺序消费；仅 RETRYABLE 失败允许人工重试。</p></div></div><div class="table-wrap"><table class="task-table"><thead><tr><th>Issue / Operator</th><th>Event</th><th>Status</th><th>Attempt / Lease</th><th>Error</th><th>管理</th></tr></thead><tbody>{% for row in events %}<tr><td><a href="{{ url_for('issue_detail', issue_key=row.issue_key) }}">{{ row.issue_key }}</a><br><span class="mono">{{ row.operator_id }}</span></td><td><span class="mono">{{ row.event_type }}</span><br><small>{{ row.event_id }}</small></td><td><span class="badge badge-status-{{ row.status }}">{{ row.status }}</span>{% if row.failure_kind %}<br><small>{{ row.failure_kind }}</small>{% endif %}</td><td>{{ row.attempt_count }}<br><small>{{ row.lease_until|localtime }}</small></td><td>{{ row.last_error or '—' }}</td><td>{% if row.status == 'FAILED' and row.failure_kind == 'RETRYABLE' %}<form method="post" action="{{ url_for('runtime_retry_event', event_id=row.event_id) }}" onsubmit="return confirm('确认重新入队？该操作不会直接执行 LLM。')"><button class="btn btn-small">Retry</button></form>{% else %}—{% endif %}</td></tr>{% else %}<tr><td colspan="6" class="empty">没有 Event。</td></tr>{% endfor %}</tbody></table></div></section>
+<section class="panel">
+  <div class="section-head"><div><h2>调度事件队列</h2><p class="section-sub">同一问题和执行身份按顺序处理；只有标记为“可安全重试”的失败事件才能人工重试。</p></div></div>
+  <div class="table-wrap"><table class="task-table"><thead><tr><th>问题 / 执行身份</th><th>事件</th><th>处理状态</th><th>尝试次数 / 租约截止</th><th>失败原因</th><th>管理操作</th></tr></thead><tbody>
+  {% for row in events %}<tr>
+    <td><a href="{{ url_for('issue_detail', issue_key=row.issue_key) }}">{{ row.issue_key }}</a><br><span class="mono">{{ row.operator_id }}</span></td>
+    <td>{{ row.event_type|runtime_label }}<br><small class="mono">{{ row.event_type }} · {{ row.event_id }}</small></td>
+    <td><span class="badge badge-status-{{ row.status }}">{{ row.status|runtime_label }}</span>{% if row.failure_kind %}<br>{{ row.failure_kind|runtime_label }}<br><small class="mono">{{ row.failure_kind }}</small>{% endif %}</td>
+    <td>{{ row.attempt_count }} 次<br><small>{{ row.lease_until|localtime }}</small></td>
+    <td>{{ row.last_error or '—' }}</td>
+    <td>{% if row.status == 'FAILED' and row.failure_kind == 'RETRYABLE' %}<form method="post" action="{{ url_for('runtime_retry_event', event_id=row.event_id) }}" onsubmit="return confirm('确认把这个事件重新放回待处理队列？此操作不会直接调用大模型。')"><button class="btn btn-small">重新入队</button></form>{% else %}—{% endif %}</td>
+  </tr>{% else %}<tr><td colspan="6" class="empty">没有符合条件的调度事件。</td></tr>{% endfor %}
+  </tbody></table></div>
+</section>
 {% endblock %}

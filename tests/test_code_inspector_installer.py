@@ -2330,9 +2330,9 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 )
                 conn.execute(
                     """INSERT INTO code_inspector_event(
-                       event_id,idempotency_key,issue_key,role,operator_id,agent_platform,runtime_backend,event_type,status)
+                       event_id,idempotency_key,issue_key,role,operator_id,agent_platform,runtime_backend,event_type,status,failure_kind)
                        VALUES('evt-visible','idem-visible','RI-RUNTIME','inspector','codex-insp','codex',
-                              'codex-app-server','STAGE_SUBMITTED','FAILED')"""
+                              'codex-app-server','STAGE_SUBMITTED','FAILED','RETRYABLE')"""
                 )
             old_home, old_db = os.environ.get("AGENT_REVIEW_HOME"), os.environ.get("AGENT_REVIEW_DB")
             os.environ["AGENT_REVIEW_HOME"] = str(review_home)
@@ -2350,8 +2350,15 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 self.assertIn("thr-visible", runtime_html)
                 self.assertIn("evt-visible", runtime_html)
                 self.assertIn("63.0%", runtime_html)
+                self.assertIn("Agent 运行状态", runtime_html)
+                self.assertIn("等待事件", runtime_html)
+                self.assertIn("调度事件队列", runtime_html)
+                self.assertIn("重新入队", runtime_html)
+                self.assertNotIn(">Reconcile<", runtime_html)
+                self.assertNotIn(">Retry<", runtime_html)
                 issue_html = client.get("/issues/RI-RUNTIME").get_data(as_text=True)
-                self.assertIn("Agent Runtime", issue_html)
+                self.assertIn("Agent 运行状态", issue_html)
+                self.assertIn("检查者", issue_html)
                 self.assertIn("codex-insp", issue_html)
 
                 denied = client.post("/runtime/events/evt-visible/retry", follow_redirects=False)

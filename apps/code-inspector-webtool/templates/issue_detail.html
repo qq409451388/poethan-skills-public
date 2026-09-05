@@ -164,14 +164,14 @@
     </section>
 
     <section class="panel runtime-panel" id="agent-runtime">
-      <div class="section-head"><div><h2>Agent Runtime</h2><p class="section-sub">仅展示调度状态，不加载 Thread 历史。</p></div><a class="btn btn-small" href="{{ url_for('runtime_overview', issue=issue.issue_key) }}">Runtime 总览</a></div>
+      <div class="section-head"><div><h2>Agent 运行状态</h2><p class="section-sub">仅展示调度状态，不加载线程历史。</p></div><a class="btn btn-small" href="{{ url_for('runtime_overview', issue=issue.issue_key) }}">查看运行总览</a></div>
       {% for runtime in runtime_threads %}
       <div class="runtime-card">
-        <div><strong>{{ runtime.role|capitalize }}</strong> <span class="badge badge-status-{{ runtime.thread_status }}">{{ runtime.thread_status }}</span></div>
-        <dl class="runtime-kv"><dt>operator</dt><dd class="mono">{{ runtime.operator_id }}</dd><dt>platform / backend</dt><dd>{{ runtime.agent_platform }} / {{ runtime.runtime_backend }}</dd><dt>thread</dt><dd class="mono">{{ runtime.thread_id }}</dd><dt>context</dt><dd>{% if runtime.context_usage is not none %}{{ runtime.context_usage }}%{% else %}—{% endif %}</dd><dt>last event</dt><dd class="mono">{{ runtime.last_event or '—' }}</dd><dt>last active</dt><dd>{{ runtime.last_active_at|localtime }}</dd><dt>error</dt><dd>{{ runtime.error_code or '—' }}{% if runtime.error_message %} · {{ runtime.error_message }}{% endif %}</dd></dl>
+        <div><strong>{{ runtime.role|runtime_label }}</strong> <span class="badge badge-status-{{ runtime.thread_status }}">{{ runtime.thread_status|runtime_label }}</span></div>
+        <dl class="runtime-kv"><dt>执行身份</dt><dd class="mono">{{ runtime.operator_id }}</dd><dt>平台 / 后端</dt><dd>{{ runtime.agent_platform }} / {{ runtime.runtime_backend }}</dd><dt>线程 ID</dt><dd class="mono">{{ runtime.thread_id }}</dd><dt>上下文占用</dt><dd>{% if runtime.context_usage is not none %}{{ runtime.context_usage }}%{% else %}—{% endif %}</dd><dt>最近事件</dt><dd>{{ runtime.last_event|runtime_label if runtime.last_event else '—' }}{% if runtime.last_event %} <small class="mono">{{ runtime.last_event }}</small>{% endif %}</dd><dt>最近执行</dt><dd>{{ runtime.last_active_at|localtime }}</dd><dt>异常</dt><dd>{{ runtime.error_code|runtime_label if runtime.error_code else '—' }}{% if runtime.error_message %} · {{ runtime.error_message }}{% endif %}</dd></dl>
       </div>
-      {% else %}<div class="empty-inline">当前 Issue 尚无 Runtime Thread。</div>{% endfor %}
-      {% if runtime_events %}<details class="collapsible"><summary>最近 Runtime Events（{{ runtime_events|length }}）</summary><div class="runtime-events">{% for event in runtime_events %}<div><span class="badge badge-status-{{ event.status }}">{{ event.status }}</span> <span class="mono">{{ event.event_type }}</span> → {{ event.operator_id }}{% if event.last_error %}<small>{{ event.failure_kind }} · {{ event.last_error }}</small>{% endif %}</div>{% endfor %}</div></details>{% endif %}
+      {% else %}<div class="empty-inline">当前问题尚无 Agent 工作线程。</div>{% endfor %}
+      {% if runtime_events %}<details class="collapsible"><summary>最近调度事件（{{ runtime_events|length }}）</summary><div class="runtime-events">{% for event in runtime_events %}<div><span class="badge badge-status-{{ event.status }}">{{ event.status|runtime_label }}</span> {{ event.event_type|runtime_label }} <small class="mono">{{ event.event_type }}</small> → {{ event.operator_id }}{% if event.last_error %}<small>{{ event.failure_kind|runtime_label }} · {{ event.last_error }}</small>{% endif %}</div>{% endfor %}</div></details>{% endif %}
     </section>
   </div>
 

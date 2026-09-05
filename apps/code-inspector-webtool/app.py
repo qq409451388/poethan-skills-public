@@ -143,6 +143,22 @@ LABELS = {
     "APPROVED": "通过", "REJECTED": "未通过", "PROVIDED": "已确认",
 }
 
+RUNTIME_LABELS = {
+    "inspector": "检查者", "developer": "开发者",
+    "INITIALIZING": "初始化中", "ACTIVE": "执行中", "WAITING": "等待事件",
+    "PAUSED": "已暂停", "COMPLETED": "已完成", "FAILED": "失败", "ARCHIVED": "已归档",
+    "PENDING": "待处理", "PROCESSING": "处理中", "DONE": "已处理",
+    "RETRYABLE": "可安全重试", "NON_RETRYABLE": "不可自动重试",
+    "AMBIGUOUS": "结果不确定，需人工核对",
+    "SESSION_SCOPE_VIOLATION": "会话身份范围不匹配",
+    "AMBIGUOUS_DISPATCH": "执行结果不确定",
+    "PRE_ACTION_RETRYABLE": "尚未执行，可重试",
+    "STALE_ACTIVE_AMBIGUOUS": "执行租约过期，结果待核对",
+    "COMPACT_FAILED": "上下文整理失败", "ARCHIVE_FAILED": "线程归档失败",
+}
+RUNTIME_THREAD_STATUSES = ["INITIALIZING", "ACTIVE", "WAITING", "PAUSED", "COMPLETED", "FAILED", "ARCHIVED"]
+RUNTIME_EVENT_STATUSES = ["PENDING", "PROCESSING", "DONE", "FAILED"]
+
 STATUS_PRESENTATION = {
     "PROPOSED": (1, "问题已经记录，等待 Developer 开始处理。"),
     "DESIGN_REQUIRED": (2, "Inspector / Human 已要求先完成方案讨论，Developer 当前不得编码。"),
@@ -162,6 +178,11 @@ STATUS_PRESENTATION = {
 @app.template_filter("label")
 def label(value: str | None) -> str:
     return LABELS.get(value or "", value or "—")
+
+
+@app.template_filter("runtime_label")
+def runtime_label(value: str | None) -> str:
+    return RUNTIME_LABELS.get(value or "", LABELS.get(value or "", value or "—"))
 
 
 @app.template_filter("topic_label")
@@ -665,8 +686,8 @@ def runtime_overview():
     for column, value in (("issue_key", issue), ("role", role), ("operator_id", operator)):
         if value:
             filters.append(f"{column}=?"); params.append(value)
-    thread_statuses = {"INITIALIZING", "ACTIVE", "WAITING", "PAUSED", "COMPLETED", "FAILED", "ARCHIVED"}
-    event_statuses = {"PENDING", "PROCESSING", "DONE", "FAILED"}
+    thread_statuses = set(RUNTIME_THREAD_STATUSES)
+    event_statuses = set(RUNTIME_EVENT_STATUSES)
     if status_filter:
         if status_filter in thread_statuses:
             filters.append("thread_status=?"); params.append(status_filter)
@@ -697,14 +718,18 @@ def runtime_overview():
         "threads": query_all("SELECT thread_status AS status,COUNT(*) AS total FROM code_inspector_thread GROUP BY thread_status"),
         "events": query_all("SELECT status,COUNT(*) AS total FROM code_inspector_event GROUP BY status"),
     }
-    return render_template("runtime.html", threads=threads, events=events, counts=counts, filters={"issue": issue, "role": role, "operator": operator, "status": status_filter})
+    return render_template(
+        "runtime.html", threads=threads, events=events, counts=counts,
+        filters={"issue": issue, "role": role, "operator": operator, "status": status_filter},
+        thread_statuses=RUNTIME_THREAD_STATUSES, event_statuses=RUNTIME_EVENT_STATUSES,
+    )
 
 
 @app.post("/runtime/events/<event_id>/retry")
 def runtime_retry_event(event_id: str):
     try:
         run_runtime_command("retry-event", "--event-id", event_id, "--confirm")
-        return redirect_back("runtime_overview", msg="Event 已重新进入待处理队列")
+        return redirect_back("runtime_overview", msg="调度事件已重新放回待处理队列")
     except Exception as exc:
         return redirect_back("runtime_overview", err=str(exc))
 
@@ -713,7 +738,7 @@ def runtime_retry_event(event_id: str):
 def runtime_reconcile_thread(issue_key: str, operator_id: str):
     try:
         run_runtime_command("reconcile", "--issue", issue_key, "--operator", operator_id)
-        return redirect_back("runtime_overview", msg="Thread reconcile 已完成；不确定动作未自动重放")
+        return redirect_back("runtime_overview", msg="线程核对已完成；不确定的业务动作没有自动重放")
     except Exception as exc:
         return redirect_back("runtime_overview", err=str(exc))
 
@@ -722,7 +747,7 @@ def runtime_reconcile_thread(issue_key: str, operator_id: str):
 def runtime_pause_thread(issue_key: str, operator_id: str):
     try:
         run_runtime_command("pause-thread", "--issue", issue_key, "--operator", operator_id, "--confirm")
-        return redirect_back("runtime_overview", msg="Thread 已暂停")
+        return redirect_back("runtime_overview", msg="线程已暂停")
     except Exception as exc:
         return redirect_back("runtime_overview", err=str(exc))
 
