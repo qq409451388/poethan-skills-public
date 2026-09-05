@@ -328,6 +328,11 @@ tbody tr:last-child td { border-bottom: 0; }
 .event-operator b { color: var(--text); font-weight: 700; }
 .record-stream { display: grid; gap: 8px; }
 .record-stream .event { margin-bottom: 0; }
+.runtime-card { margin-top: 10px; padding: 12px; border: 1px solid var(--border); border-radius: 9px; background: #f8fafc; }
+.runtime-kv { display: grid; grid-template-columns: 130px 1fr; gap: 5px 12px; margin: 10px 0 0; font-size: 13px; }
+.runtime-kv dt { color: var(--muted); }.runtime-kv dd { margin: 0; overflow-wrap: anywhere; }
+.runtime-events { display: grid; gap: 7px; margin-top: 9px; }.runtime-events small { display: block; color: var(--muted); }
+.runtime-actions { display: flex; flex-wrap: wrap; gap: 5px; }.runtime-metrics { margin-bottom: 15px; }
 .activity-enum { padding: 1px 5px; border-radius: 4px; background: #e8edf3; color: #586477; font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; }
 .event-details { margin-top: 8px; }
 

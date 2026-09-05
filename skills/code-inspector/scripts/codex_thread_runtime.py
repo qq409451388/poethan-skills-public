@@ -123,13 +123,19 @@ class CodexThreadRuntime:
             elif "id" in message and "method" in message:
                 self._send({"id": message["id"], "error": {"code": -32000, "message": "unattended request denied"}})
 
-    def start(self, cwd: str, role: str, issue_key: str, model: str | None = None) -> dict[str, Any]:
+    def start(
+        self, cwd: str, role: str, issue_key: str, operator_id: str,
+        agent_platform: str, fixed_tool_path: str, model: str | None = None,
+    ) -> dict[str, Any]:
         prompt = (
             "加载 code-inspector Skill。\n\n"
-            f"当前角色：{role}\n当前 Issue：{issue_key}\n\n"
+            f"当前逻辑身份：{operator_id}\n当前 Agent 平台：{agent_platform}\n"
+            f"当前角色：{role}\n当前 Issue：{issue_key}\n"
+            f"固定 Review 工具：{fixed_tool_path}\n\n"
             "这是该 Issue + Role 的独立执行 Thread。只处理当前 Issue；Review DB 是业务状态真相。"
             "从 Review DB 获取最新 Issue、Plan、Current Stage、必要 Activity、Evidence 与 Review Result，"
-            "初始化当前角色状态。不要继承或寻找 Supervisor 会话历史。最后只确认初始化完成，不执行跨 Issue 工作。"
+            "初始化当前角色状态。只能使用上述固定工具，不得直接调用底层 review-db.py 伪造身份，"
+            "不得切换角色。不要继承或寻找 Supervisor 会话历史。最后只确认初始化完成，不执行跨 Issue 工作。"
         )
         params: dict[str, Any] = {
             "cwd": str(Path(cwd).resolve()),

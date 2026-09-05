@@ -11,19 +11,47 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
 import traceback
 from urllib.parse import urlencode
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from flask import Flask, abort, redirect, render_template, request, url_for
+from flask import Flask, abort, redirect, render_template, request, session, url_for
 from markupsafe import Markup
 
-from commands import run_human_command
+from commands import run_human_command, run_runtime_command
 from db import parse_json_field, query_all, query_one
 
 BASE_DIR = Path(__file__).resolve().parent
 app = Flask(__name__, template_folder=str(BASE_DIR / "templates"), static_folder=str(BASE_DIR / "static"))
 app.config["JSON_SORT_KEYS"] = False
+app.secret_key = os.environ.get("WEBTOOL_SECRET_KEY") or secrets.token_hex(32)
+app.config["CSRF_ENABLED"] = True
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Strict"
+
+
+def env_bool(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def csrf_token() -> str:
+    token = session.get("csrf_token")
+    if not token:
+        token = secrets.token_urlsafe(32)
+        session["csrf_token"] = token
+    return token
+
+
+@app.before_request
+def verify_csrf():
+    if request.method in {"POST", "PUT", "PATCH", "DELETE"} and app.config.get("CSRF_ENABLED", True):
+        supplied = request.form.get("csrf_token") or request.headers.get("X-CSRF-Token", "")
+        if not supplied or not secrets.compare_digest(supplied, csrf_token()):
+            abort(403, "CSRF token invalid")
 
 DISPLAY_TIMEZONE_NAME = os.environ.get("CODE_INSPECTOR_TIMEZONE", "Asia/Shanghai")
 try:
@@ -594,6 +622,21 @@ def issue_detail(issue_key: str):
     current_execution_stage = next((
         item for item in (active_stage_plan or []) if item["status"] in {"IN_PROGRESS", "PENDING_REVIEW"}
     ), None)
+    runtime_threads = query_all(
+        """SELECT issue_key,role,operator_id,agent_platform,runtime_backend,thread_id,
+                  thread_status,context_tokens,context_window,last_event,last_active_at,
+                  lease_until,error_code,error_message
+           FROM code_inspector_thread WHERE issue_key=? ORDER BY role,operator_id""", (issue_key,)
+    )
+    for runtime_thread in runtime_threads:
+        runtime_thread["context_usage"] = round(
+            100 * runtime_thread["context_tokens"] / runtime_thread["context_window"], 1
+        ) if runtime_thread.get("context_tokens") is not None and runtime_thread.get("context_window") else None
+    runtime_events = query_all(
+        """SELECT event_id,operator_id,role,event_type,status,attempt_count,failure_kind,
+                  lease_until,last_error,created_at
+           FROM code_inspector_event WHERE issue_key=? ORDER BY id DESC LIMIT 20""", (issue_key,)
+    )
     stage, status_explanation = STATUS_PRESENTATION.get(issue["status"], (1, issue["status"]))
     return render_template(
         "issue_detail.html", issue=issue, activities=history_activities, activity_groups=grouped,
@@ -608,7 +651,80 @@ def issue_detail(issue_key: str):
         dispositions=DISPOSITIONS, activity_types=ACTIVITY_TYPES, discussion_topics=DISCUSSION_TOPICS,
         issue_statuses=ISSUE_STATUSES,
         task_statuses=TASK_STATUSES,
+        runtime_threads=runtime_threads, runtime_events=runtime_events,
     )
+
+
+@app.get("/runtime")
+def runtime_overview():
+    issue = request.args.get("issue", "").strip()
+    role = request.args.get("role", "").strip()
+    operator = request.args.get("operator", "").strip()
+    status_filter = request.args.get("status", "").strip()
+    filters, params = [], []
+    for column, value in (("issue_key", issue), ("role", role), ("operator_id", operator)):
+        if value:
+            filters.append(f"{column}=?"); params.append(value)
+    thread_statuses = {"INITIALIZING", "ACTIVE", "WAITING", "PAUSED", "COMPLETED", "FAILED", "ARCHIVED"}
+    event_statuses = {"PENDING", "PROCESSING", "DONE", "FAILED"}
+    if status_filter:
+        if status_filter in thread_statuses:
+            filters.append("thread_status=?"); params.append(status_filter)
+        else:
+            filters.append("0=1")
+    where = " WHERE " + " AND ".join(filters) if filters else ""
+    threads = query_all(
+        """SELECT issue_key,role,operator_id,agent_platform,runtime_backend,thread_id,
+                  thread_status,last_event,last_active_at,lease_until,error_code,error_message,
+                  context_tokens,context_window FROM code_inspector_thread""" + where + " ORDER BY updated_at DESC", params,
+    )
+    for row in threads:
+        row["context_usage"] = round(100 * row["context_tokens"] / row["context_window"], 1) if row.get("context_tokens") is not None and row.get("context_window") else None
+    event_filters, event_params = [], []
+    for column, value in (("issue_key", issue), ("role", role), ("operator_id", operator)):
+        if value:
+            event_filters.append(f"{column}=?"); event_params.append(value)
+    if status_filter in event_statuses:
+        event_filters.append("status=?"); event_params.append(status_filter)
+    elif status_filter:
+        event_filters.append("0=1")
+    event_where = " WHERE " + " AND ".join(event_filters) if event_filters else ""
+    events = query_all(
+        """SELECT event_id,issue_key,role,operator_id,event_type,status,attempt_count,
+                  failure_kind,lease_until,last_error,created_at FROM code_inspector_event""" + event_where + " ORDER BY id DESC LIMIT 200", event_params,
+    )
+    counts = {
+        "threads": query_all("SELECT thread_status AS status,COUNT(*) AS total FROM code_inspector_thread GROUP BY thread_status"),
+        "events": query_all("SELECT status,COUNT(*) AS total FROM code_inspector_event GROUP BY status"),
+    }
+    return render_template("runtime.html", threads=threads, events=events, counts=counts, filters={"issue": issue, "role": role, "operator": operator, "status": status_filter})
+
+
+@app.post("/runtime/events/<event_id>/retry")
+def runtime_retry_event(event_id: str):
+    try:
+        run_runtime_command("retry-event", "--event-id", event_id, "--confirm")
+        return redirect_back("runtime_overview", msg="Event 已重新进入待处理队列")
+    except Exception as exc:
+        return redirect_back("runtime_overview", err=str(exc))
+
+
+@app.post("/runtime/threads/<issue_key>/<operator_id>/reconcile")
+def runtime_reconcile_thread(issue_key: str, operator_id: str):
+    try:
+        run_runtime_command("reconcile", "--issue", issue_key, "--operator", operator_id)
+        return redirect_back("runtime_overview", msg="Thread reconcile 已完成；不确定动作未自动重放")
+    except Exception as exc:
+        return redirect_back("runtime_overview", err=str(exc))
+
+
+@app.post("/runtime/threads/<issue_key>/<operator_id>/pause")
+def runtime_pause_thread(issue_key: str, operator_id: str):
+    try:
+        run_runtime_command("pause-thread", "--issue", issue_key, "--operator", operator_id, "--confirm")
+        return redirect_back("runtime_overview", msg="Thread 已暂停")
+    except Exception as exc:
+        return redirect_back("runtime_overview", err=str(exc))
 
 
 @app.route("/issues/<issue_key>/assessment", methods=["POST"])
@@ -872,9 +988,10 @@ def inject_globals():
         "flash_msg": request.args.get("msg", "") or request.args.get("err", ""),
         "flash_kind": "err" if request.args.get("err") else ("ok" if request.args.get("msg") else ""),
         "queue_counts": queue_counts,
+        "csrf_token": csrf_token(),
     }
 
 
 if __name__ == "__main__":
     app.run(host="127.0.0.1", port=int(os.environ.get("WEBTOOL_PORT", "5050")),
-            debug=bool(os.environ.get("WEBTOOL_DEBUG")))
+            debug=env_bool("WEBTOOL_DEBUG"))

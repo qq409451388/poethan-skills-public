@@ -154,11 +154,18 @@ def validate_actor_binding(args: argparse.Namespace) -> None:
             f"逻辑身份 {args.operator_id} 绑定角色为 {binding.get('role')}，不能作为 {args.agent} 使用"
         )
 
+
+class ClosingConnection(sqlite3.Connection):
+    def __exit__(self, exc_type, exc, traceback):
+        result = super().__exit__(exc_type, exc, traceback)
+        self.close()
+        return result
+
 def connect() -> sqlite3.Connection:
     db_path = configured_db_path()
     if not db_path.exists():
         raise RuntimeError(f"数据库不存在: {db_path}")
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, factory=ClosingConnection)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA busy_timeout = 5000")
@@ -181,6 +188,49 @@ def audit(conn: sqlite3.Connection, agent: str, action: str, resource_type: str,
         """INSERT INTO agent_audit_log(agent_id, action, resource_type, resource_id, success, detail)
            VALUES (?, ?, ?, ?, ?, ?)""",
         (agent, action, resource_type, resource_id, 1 if success else 0, detail),
+    )
+
+
+def runtime_event_binding(target_role: str) -> tuple[str, dict[str, Any]] | None:
+    """Resolve the configured automatic Runtime operator; absence means Runtime is not installed."""
+    config_dir = configured_home() / "config"
+    skill_path = config_dir / "code-inspector.json"
+    bindings_path = config_dir / "agent-bindings.json"
+    if not skill_path.exists() and not bindings_path.exists():
+        return None
+    if not skill_path.exists() or not bindings_path.exists():
+        raise RuntimeError("Runtime 配置不完整，请重新执行 Code Inspector 安装")
+    skill = json.loads(skill_path.read_text(encoding="utf-8"))
+    bindings = json.loads(bindings_path.read_text(encoding="utf-8"))
+    operator_id = skill.get("runtime", {}).get("dispatch_operators", {}).get(target_role)
+    binding = bindings.get(operator_id) if operator_id else None
+    if not operator_id or not binding or binding.get("role") != target_role:
+        raise RuntimeError(f"Runtime 默认 {target_role} operator binding 无效")
+    return operator_id, binding
+
+
+def enqueue_runtime_event(
+    conn: sqlite3.Connection, issue_key: str, event_type: str, activity_id: int,
+    target_role: str, stage_no: int | None = None,
+) -> None:
+    """Transactional outbox insert in the same transaction as the domain activity."""
+    resolved = runtime_event_binding(target_role)
+    if resolved is None:
+        return
+    operator_id, binding = resolved
+    event_id = str(uuid.uuid4())
+    idempotency_key = f"{issue_key}:{operator_id}:{activity_id}:{event_type}"
+    conn.execute(
+        """INSERT OR IGNORE INTO code_inspector_event(
+             event_id,idempotency_key,issue_key,role,operator_id,agent_platform,
+             runtime_backend,event_type,activity_id,stage_no)
+           VALUES(?,?,?,?,?,?,?,?,?,?)""",
+        (
+            event_id, idempotency_key, issue_key, target_role, operator_id,
+            binding.get("agent_platform") or binding.get("agent") or "unknown",
+            binding.get("runtime_backend") or ("codex-app-server" if binding.get("agent") == "codex" else "external"),
+            event_type, activity_id, stage_no,
+        ),
     )
 
 def require_agent(agent: str) -> None:
@@ -661,12 +711,13 @@ def issue_create(args: argparse.Namespace) -> None:
             ),
         )
         issue_id = conn.execute("SELECT id FROM review_issue WHERE issue_key = ?", (issue_key,)).fetchone()["id"]
-        conn.execute(
+        activity_cursor = conn.execute(
             """INSERT INTO issue_activity(
                 issue_id, attempt_no, activity_type, operator_type, operator_id, content
             ) VALUES (?, 0, 'ISSUE_CREATED', ?, ?, ?)""",
             (issue_id, {"inspector": "INSPECTOR_AGENT", "human": "HUMAN"}[args.agent], actor_id(args), payload["summary"]),
         )
+        enqueue_runtime_event(conn, issue_key, "ISSUE_CREATED", activity_cursor.lastrowid, "developer")
         audit(conn, actor_id(args), "issue.create", "review_issue", issue_key, True)
     print_json({"issue_key": issue_key, "version": task["current_version"]})
 
@@ -752,11 +803,12 @@ def issue_create_batch(args: argparse.Namespace) -> None:
                 ),
             )
             issue_id = conn.execute("SELECT id FROM review_issue WHERE issue_key = ?", (issue_key,)).fetchone()["id"]
-            conn.execute(
+            activity_cursor = conn.execute(
                 """INSERT INTO issue_activity(issue_id, attempt_no, activity_type, operator_type, operator_id, content)
                    VALUES (?, 0, 'ISSUE_CREATED', ?, ?, ?)""",
                 (issue_id, operator_type(args.agent), actor_id(args), payload["summary"]),
             )
+            enqueue_runtime_event(conn, issue_key, "ISSUE_CREATED", activity_cursor.lastrowid, "developer")
             created.append(issue_key)
         audit(conn, actor_id(args), "issue.create-batch", "review_task", args.task_key, True, f"created={len(created)}")
     print_json({"task_key": args.task_key, "created": created, "skipped": skipped, "version": version})
@@ -1011,7 +1063,8 @@ def issue_update_body(args: argparse.Namespace) -> None:
     print_json({"issue_key": args.issue_key, "updated": updates})
 
 def apply_status_update(
-    conn: sqlite3.Connection, args: argparse.Namespace, issue_key: str, status: str, content: str | None
+    conn: sqlite3.Connection, args: argparse.Namespace, issue_key: str, status: str,
+    content: str | None, *, emit_runtime_event: bool = True,
 ) -> dict[str, Any]:
     if status not in ALLOWED_STATUS_BY_AGENT[args.agent]:
         raise PermissionError(f"agent {args.agent} 无权设置状态 {status}")
@@ -1084,7 +1137,7 @@ def apply_status_update(
            WHERE issue_key = ?""",
         (status, attempt_no, status, status, issue_key),
     )
-    conn.execute(
+    activity_cursor = conn.execute(
         """INSERT INTO issue_activity(
             issue_id, attempt_no, activity_type, operator_type, operator_id, content, result_status
         ) VALUES (?, ?, 'STATUS_CHANGED', ?, ?, ?, ?)""",
@@ -1093,6 +1146,25 @@ def apply_status_update(
             content or f"状态变更为 {status}", status,
         ),
     )
+    if not emit_runtime_event:
+        pass
+    elif status == "INSPECTOR_CONFIRMATION_REQUIRED":
+        enqueue_runtime_event(conn, issue_key, status, activity_cursor.lastrowid, "inspector")
+    elif args.agent in {"inspector", "human"} and status in {"DESIGN_REQUIRED", "DESIGN_PENDING_REVIEW"}:
+        enqueue_runtime_event(
+            conn, issue_key, f"STATUS_CHANGED_{status}", activity_cursor.lastrowid,
+            "developer" if status == "DESIGN_REQUIRED" else "inspector",
+        )
+    elif (
+        args.agent in {"inspector", "human"} and status == "IN_PROGRESS"
+        and row["status"] not in {"IMPLEMENTED_PENDING_REVIEW", "INSPECTOR_CONFIRMATION_REQUIRED"}
+    ):
+        enqueue_runtime_event(conn, issue_key, "STATUS_CHANGED_IN_PROGRESS", activity_cursor.lastrowid, "developer")
+    elif args.agent == "human" and status == "IMPLEMENTED_PENDING_REVIEW":
+        enqueue_runtime_event(
+            conn, issue_key, "STATUS_CHANGED_IMPLEMENTED_PENDING_REVIEW",
+            activity_cursor.lastrowid, "inspector",
+        )
     audit(conn, actor_id(args), "issue.update-status", "review_issue", issue_key, True)
     return {"issue_key": issue_key, "status": status, "attempt_no": attempt_no}
 
@@ -1167,6 +1239,14 @@ def apply_design_transition(
             dumps(code_reference or []), dumps(metadata or {}),
         ),
     )
+    target_role = {
+        "DESIGN_REQUESTED": "developer",
+        "DESIGN_SUBMITTED": "inspector",
+        "DESIGN_APPROVED": "developer",
+        "DESIGN_REJECTED": "developer",
+    }.get(activity_type)
+    if target_role:
+        enqueue_runtime_event(conn, args.issue_key, activity_type, activity_cursor.lastrowid, target_role)
     conn.execute(
         "UPDATE review_issue SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
         (target_status, row["id"]),
@@ -1661,7 +1741,7 @@ def stage_submit(args: argparse.Namespace) -> None:
         activity_metadata = {**metadata, "plan_no": plan_no, "stage_no": args.stage_no,
                              "commit_sha": commit_sha, "diff_summary": diff_summary,
                              "test_evidence": test_evidence, "resolved_findings": resolved_findings}
-        conn.execute(
+        activity_cursor = conn.execute(
             """INSERT INTO issue_activity(
                 issue_id, attempt_no, activity_type, operator_type, operator_id,
                 content, result_status, code_reference_json, metadata_json
@@ -1670,6 +1750,10 @@ def stage_submit(args: argparse.Namespace) -> None:
                 issue["id"], issue["current_attempt_no"], operator_type(args.agent), actor_id(args),
                 content, dumps(code_reference), dumps(activity_metadata),
             ),
+        )
+        enqueue_runtime_event(
+            conn, args.issue_key, "STAGE_SUBMITTED", activity_cursor.lastrowid,
+            "inspector", args.stage_no,
         )
         audit(conn, actor_id(args), "stage.submit", "review_issue", args.issue_key, True)
     print_json({"issue_key": args.issue_key, "plan_no": plan_no, "stage_no": args.stage_no,
@@ -1812,6 +1896,10 @@ def stage_review(args: argparse.Namespace) -> None:
                 dumps(activity_metadata),
             ),
         )
+        enqueue_runtime_event(
+            conn, args.issue_key, activity_type, activity_cursor.lastrowid,
+            "developer", args.stage_no,
+        )
         record_issue_decision(
             conn, args, issue, "STAGE_REVIEW",
             "APPROVED" if decision == "approved" else "REJECTED", content,
@@ -1927,6 +2015,11 @@ def human_confirmation_resolve(args: argparse.Namespace) -> None:
                 content, next_status, dumps(metadata),
             ),
         )
+        if next_status in {"DESIGN_REQUIRED", "IN_PROGRESS"}:
+            enqueue_runtime_event(
+                conn, args.issue_key, "HUMAN_CONFIRMATION_PROVIDED",
+                activity_cursor.lastrowid, "developer",
+            )
         record_issue_decision(
             conn, args, row, "HUMAN_CONFIRMATION", next_status, content,
             source_activity_id=activity_cursor.lastrowid, metadata=metadata,
@@ -1976,7 +2069,7 @@ def implementation_submit(args: argparse.Namespace) -> None:
                 summary = ", ".join(f"Stage {item['stage_no']}={item['status']}" for item in incomplete)
                 raise RuntimeError(f"Stage Plan #{plan_no} 尚未全部验收通过: {summary}")
         next_attempt = row["current_attempt_no"] + 1
-        conn.execute(
+        activity_cursor = conn.execute(
             """INSERT INTO issue_activity(
                 issue_id, attempt_no, activity_type, operator_type, operator_id,
                 content, code_reference_json, metadata_json
@@ -1986,8 +2079,13 @@ def implementation_submit(args: argparse.Namespace) -> None:
                 dumps(code_reference), dumps(metadata),
             ),
         )
+        enqueue_runtime_event(
+            conn, args.issue_key, "IMPLEMENTATION_SUBMITTED",
+            activity_cursor.lastrowid, "inspector",
+        )
         result = apply_status_update(
-            conn, args, args.issue_key, "IMPLEMENTED_PENDING_REVIEW", args.status_content
+            conn, args, args.issue_key, "IMPLEMENTED_PENDING_REVIEW", args.status_content,
+            emit_runtime_event=False,
         )
         audit(conn, actor_id(args), "implementation.submit", "review_issue", args.issue_key, True)
     print_json({**result, "activity_type": "IMPLEMENTATION_SUBMITTED"})
@@ -2237,6 +2335,11 @@ def activity_append(args: argparse.Namespace) -> None:
                 conn, args, row, decision_type, outcome, args.content,
                 scope_key=scope_key, source_activity_id=activity_cursor.lastrowid,
                 metadata=json.loads(args.metadata),
+            )
+        if args.activity_type in {"REVIEW_REJECTED", "VERIFICATION_FAILED"}:
+            enqueue_runtime_event(
+                conn, args.issue_key, args.activity_type,
+                activity_cursor.lastrowid, "developer",
             )
         audit(conn, actor_id(args), "activity.append", "issue_activity", args.issue_key, True)
     print_json({"issue_key": args.issue_key, "activity_type": args.activity_type})

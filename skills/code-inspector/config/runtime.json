@@ -3,18 +3,30 @@
     "enabled": true,
     "isolation": {
       "enabled": true,
-      "granularity": "issue_role"
+      "granularity": "issue_operator",
+      "required_capability": "thread_isolation_supported"
     },
     "concurrency": {
       "max_active_issue_threads": 3,
       "single_writer_per_thread": true,
       "single_dispatcher_per_issue_role": true
     },
+    "leases": {
+      "event_seconds": 900,
+      "thread_seconds": 1800,
+      "heartbeat_seconds": 60,
+      "max_event_attempts": 3
+    },
+    "supervisor": {
+      "poll_interval_seconds": 1,
+      "recovery_interval_seconds": 60,
+      "max_consecutive_errors": 3
+    },
     "compact": {
       "enabled": true,
       "threshold": 0.8,
       "trigger": "stage_transition",
-      "capability_verified": true
+      "required_capability": "managed_compact_supported"
     },
     "watch": {
       "enabled": true,

@@ -86,3 +86,13 @@
     if (event.key === 'Escape') closeModal(document.querySelector('.modal-backdrop.open'));
   });
 })();
+document.querySelectorAll('form[method="post" i]').forEach((form) => {
+  if (form.querySelector('input[name="csrf_token"]')) return;
+  const token = document.querySelector('meta[name="csrf-token"]')?.content;
+  if (!token) return;
+  const input = document.createElement('input');
+  input.type = 'hidden';
+  input.name = 'csrf_token';
+  input.value = token;
+  form.prepend(input);
+});

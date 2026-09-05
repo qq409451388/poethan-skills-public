@@ -1,12 +1,13 @@
 # Code Inspector Webtool
 
-本机 Human 工作台，使用“待我处理 / 检查任务 / 候选问题”三个工作入口，并保持“检查任务 → 任务详情 → Issue 详情”的领域层级。它不负责创建扫描结果；任务、正式 Issue 与候选仍由已开启代码检查模式的 Agent 通过领域命令创建。
+本机 Human 工作台，使用“待我处理 / 检查任务 / 候选问题 / Runtime”四个入口，并保持“检查任务 → 任务详情 → Issue 详情”的领域层级。它不负责创建扫描结果；任务、正式 Issue 与候选仍由已开启代码检查模式的 Agent 通过领域命令创建。
 
 ## 数据边界
 
 - 页面可以直接读取 SQLite，作为稳定的只读展示层。
 - 页面不会直接写 SQLite，也不保留一份状态机或权限规则。
-- 每一项写操作都调用 `~/.agent-review/bin/review-db.py --agent human ...`；状态校验、追加活动与审计日志完全由同一领域工具处理。
+- 业务写操作调用 `~/.agent-review/bin/review-db.py --agent human ...`；状态校验、追加活动与审计日志由同一领域工具处理。
+- Runtime 的 Retry/Reconcile/Pause 调用 `~/.agent-review/bin/code-inspector-supervisor.py`，不允许页面直接 UPDATE Runtime 表。
 
 因此，数据库结构和规则只收敛在 Code Inspector 的迁移与运行工具中，Webtool 不会因为规则调整而复制出第二套实现。
 
@@ -56,6 +57,7 @@ python3 apps/code-inspector-webtool/app.py
 - 检查任务：默认显示活动任务，可按项目、状态和 `REVIEW` / `CONTINUOUS` 类型筛选并选择显示已关闭任务；整行进入任务详情。
 - 任务详情：展示任务信息、版本历史、统计指标和可组合筛选的问题列表；任务编辑集中在弹窗中。
 - Issue 详情：展示设计、实现与审核阶段、结构化证据、当前轮实现和协作记录；协作记录默认按最新优先汇总全部内容，同时保留讨论与处理历史筛选，设计、Stage、实现等正式协作提交会同时投影到讨论和历史但只落库一次。Human 可处理最终边界/安全确认，用专用 `human-confirmation-resolve` 恢复设计或实现流程，但不能借此直接 `CONFIRMED`。所有写操作仍走 human 领域命令。
+- Agent Runtime：`/runtime` 展示 Thread、Event、Lease、Context Usage 与错误，可按 Issue、Role、Operator、Status 过滤。Retry、Reconcile、Pause 只经过 Runtime CLI 并写审计；页面不直接更新 Runtime 表、不执行具体业务 Turn，也不成为第二个 Supervisor。
 - 候选问题：默认显示 `SUBMITTED` / `UNDER_REVIEW`，支持任务和状态筛选；接受与拒绝都要求填写审核结论，且接受不会自动创建正式 Issue。
 
 弹窗支持遮罩、关闭按钮和 ESC 关闭，Tab 切换时不会丢失当前页面上下文。活动内容继续支持换行、列表、行内代码和 fenced Markdown 代码块。
@@ -69,7 +71,8 @@ python3 apps/code-inspector-webtool/app.py
 | 变量 | 作用 | 默认值 |
 | --- | --- | --- |
 | `WEBTOOL_PORT` | 监听端口 | `5050` |
-| `WEBTOOL_DEBUG` | 打开 Flask 调试模式 | 未设置 |
+| `WEBTOOL_DEBUG` | 仅 `1/true/yes/on` 打开 Flask 调试模式 | 未设置 |
+| `WEBTOOL_SECRET_KEY` | session/CSRF 签名密钥；生产长期运行建议设置稳定随机值 | 每次进程启动随机生成 |
 | `AGENT_REVIEW_HOME` | Code Inspector 本地目录 | `~/.agent-review` |
 | `AGENT_REVIEW_DB` | 只读数据库路径覆盖 | 从 `runtime.json` 读取 |
 
@@ -78,10 +81,12 @@ python3 apps/code-inspector-webtool/app.py
 ```text
 apps/code-inspector-webtool/
 ├── app.py        # 路由、任务/问题只读查询
-├── commands.py   # human 领域命令调用适配
+├── commands.py   # human 领域命令与 Runtime 管理 CLI 调用适配
 ├── db.py         # SQLite 只读连接与 JSON 解析
 ├── static/       # 工作台样式和无业务规则的原生交互
 └── templates/    # 页面模板及少量复用组件
 ```
 
 `review-web`（Windows 为 `review-web.cmd`）是安装时生成的本地启动器；应用源代码仍在本仓库。拉取本仓库的新版本后，下一次启动会直接使用新代码，无需重复安装。
+
+所有 POST/PUT/PATCH/DELETE 请求都验证 session CSRF token；即使服务只监听 `127.0.0.1`，来自恶意网页的 localhost 表单请求也会被拒绝。

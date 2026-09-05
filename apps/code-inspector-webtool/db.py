@@ -25,7 +25,7 @@ def configured_db_path() -> Path:
     优先级：环境变量 AGENT_REVIEW_DB > runtime.json > 默认路径。
     """
     if os.environ.get("AGENT_REVIEW_DB"):
-        return DEFAULT_DB_PATH
+        return Path(os.path.expandvars(os.path.expanduser(os.environ["AGENT_REVIEW_DB"]))).resolve()
     config_dir = Path(os.path.expandvars(os.path.expanduser(
         os.environ.get("AGENT_REVIEW_HOME", "~/.agent-review")
     ))) / "config"

@@ -8,15 +8,17 @@
 
 ## Thread 与事务
 
-默认键为 `(issue_key, role)`，同一键只能有一个有效 Thread。首次 Dispatch 必须通过 `scripts/issue_thread.py start` 完成 `thread/start → Initialization Turn completed → persist mapping` 整体事务；初始化失败不得保存 Mapping，也不得自动创建第二个 Thread。
+默认业务键为 `(issue_key, operator_id)`；Mapping 同时固化 role、agent_platform、runtime_backend 与 thread_id。同一键只能有一个有效 Thread，CLI 的 `--role` 只做期望值校验，权限来源始终是安装器生成的 operator binding。首次 Dispatch 必须完成 `thread/start → Initialization Turn completed → persist mapping → 原始 Event Action Turn completed`；只有 Action Turn 成功后 Event 才能进入 DONE。初始化失败不得保存 Mapping，也不得自动创建第二个 Thread。
 
 已有 Mapping 时必须 Resume 原 Thread并发送最小事件；Resume 使用 `excludeTurns=true`，然后让子 Thread重新读取 Review DB 的 Issue、Plan、Current Stage、最新必要 Activity、Evidence 和 Review Result。不得复制 Supervisor 会话历史。Issue reopen 优先 unarchive/resume 原 Thread。
 
-子 Thread 只处理绑定的 Issue 与角色，不得发现或调度其他 Issue。角色不明、Issue 不存在、Mapping 冲突、无法 Resume、锁失败、协议异常时 fail closed；不得退回 Supervisor 执行业务工作。
+初始化 Prompt 必须包含 operator_id、agent_platform、role、fixed_tool_path 和 issue_key。子 Thread 只使用固定工具，只处理绑定的 Issue 与角色，不得调用底层工具伪造身份，不得发现或调度其他 Issue。角色不明、Issue 不存在、Mapping 冲突、无法 Resume、锁失败、协议异常时 fail closed；非 Codex 平台当前记录为 `runtime_backend=external`，不得伪装成 Codex App Server Thread，也不得退回 Supervisor 执行业务工作。
 
 ## Supervisor 与事件
 
-`scripts/supervisor.py` 维护轻量 Registry 和幂等事件队列。事件格式为：
+Review Domain 原子命令在更新 Issue/Stage/Activity 的同一个 SQLite Transaction 中写入 Runtime Event（Transactional Outbox）。该自动队列与 Manual Watch 完全独立：队列由 `supervisor.py run` 的长生命周期轻量进程消费，空闲轮询只查询 SQLite、不调用 LLM；Manual Watch 仍只由用户显式开启。
+
+`scripts/supervisor.py` 维护轻量 Registry、幂等事件队列和 Lease。事件格式为：
 
 ```text
 ACTION_REQUIRED
@@ -26,11 +28,11 @@ reason=STAGE_SUBMITTED
 stage=3
 ```
 
-同一 Issue+Role 的事件按序消费；不同 Issue 可在 `max_active_issue_threads` 限额内并行。Issue 可在 ACTIVE/WAITING 间反复切换，不要求前一个 Issue 完成。Supervisor 输出仅含 issue、role、thread、status、next_action、last_event 等调度字段。
+同一 Issue+Operator 的事件按序 claim/消费；有 PROCESSING 前序事件时不得 claim 后续事件。不同 Issue 可在 `max_active_issue_threads` 限额内并行。Event 和 ACTIVE Thread 都有 worker、lease 与 heartbeat。stale Event 在确认尚未开始 Action 时才可有限重试；已经关联到 Thread 的不确定 Event 标为 AMBIGUOUS。stale ACTIVE Thread 会读取 App Server 状态与 Review DB 后转 PAUSED，绝不自动重放未知副作用 Turn。Issue 可在 ACTIVE/WAITING 间反复切换，不要求前一个 Issue 完成。Supervisor 输出仅含调度字段。
 
 ## 锁与 Workspace
 
-Dispatch Lock 串行化同一 `(issue_key, role)`；Thread Execution Lock 覆盖 resume、turn、compact、archive；获取失败返回 BUSY/RETRYABLE，不继续也不创建新 Thread。Inspector Thread 使用只读 sandbox。Developer Thread 使用 workspace-write，但同一项目路径必须持有 Workspace Lock；需要真正并行写入同一仓库时，先由人或外层系统分配独立 branch/worktree。Thread 隔离不等于文件系统隔离。
+Dispatch Lock 串行化同一 `(issue_key, operator_id)`，并完整覆盖 lookup、可选初始化和原始 Action Turn；Thread Execution Lock 覆盖 resume、turn、compact、archive；获取失败返回 BUSY/RETRYABLE，不继续也不创建新 Thread。Inspector Thread 使用只读 sandbox。Developer Thread 使用 workspace-write，但同一项目路径必须持有 Workspace Lock；需要真正并行写入同一仓库时，先由人或外层系统分配独立 branch/worktree。Thread 隔离不等于文件系统隔离。
 
 所有有副作用的 App Server 操作遇到不确定结果不得自动重放，以免重复 Thread 或重复动作。失败应将对应 Mapping 置为 PAUSED/FAILED 并记录错误；恢复前先核实 Thread 与 Review DB。
 
@@ -43,7 +45,7 @@ Dispatch Lock 串行化同一 `(issue_key, role)`；Thread Execution Lock 覆盖
 ## CLI 路由
 
 - `scripts/issue-thread.py dispatch|start|resume|status|compact|archive`
-- `scripts/code-inspector-supervisor.py enqueue|dispatch-pending|status`
+- `scripts/code-inspector-supervisor.py run|enqueue|dispatch-pending|status|reconcile|retry-event|pause-thread`
 - `scripts/capability-probe.py`：本机协议与跨进程/compact 探测
 - `scripts/task-watcher.py`：一个静默 Shell watcher 观察多个显式 WAITING Issue
 

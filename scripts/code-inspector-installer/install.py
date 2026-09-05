@@ -151,10 +151,17 @@ def migrate(db_path: Path, backup_dir: Path | None = None) -> dict[str, Any]:
             applied.append(path.name)
     return {"applied": applied, "backup": str(backup_path) if backup_path else None}
 
-def link_runtime(home: Path, skill_config: dict[str, Any], force: bool) -> None:
+def link_runtime(home: Path, skill_config: dict[str, Any], force: bool, skill_source: Path | None = None) -> None:
     src = SCRIPT_DIR / "runtime" / "review_db.py"
     dst = home / "bin" / "review-db.py"
     create_skill_link(src, dst, force)
+    if skill_source:
+        for name in (
+            "code-inspector-supervisor.py", "supervisor.py", "issue_thread.py",
+            "codex_thread_runtime.py", "runtime_identity.py", "runtime_capabilities.py",
+            "review_repository.py",
+        ):
+            create_skill_link(skill_source / "scripts" / name, home / "bin" / name, force)
     for role, assignments in skill_config["bindings"].items():
         for assignment in assignments:
             alias = assignment["alias"]
@@ -308,8 +315,11 @@ def install_role_skills(
         for item in identities:
             bindings[item["alias"]] = {
                 "alias": item["alias"], "agent": platform, "role": item["role"],
+                "agent_platform": platform,
+                "runtime_backend": "codex-app-server" if platform == "codex" else "external",
                 "default": item["default"], "role_policy": item["role_policy"],
                 "skill_path": str(target),
+                "fixed_tool_path": str(target / "tools" / f"review-db-{item['alias']}.py"),
             }
         print(f"[skills] {target} ({platform}: {', '.join(i['alias'] for i in identities)})", file=sys.stderr)
     (home / "config" / "agent-bindings.json").write_text(
@@ -415,11 +425,13 @@ def main() -> int:
             (home / "config" / "code-inspector.json").write_text(
                 json.dumps(skill_config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
             )
+            runtime_config = json.loads((source / "config" / "runtime.json").read_text(encoding="utf-8"))
+            runtime_config["database"] = str(db)
             (home / "config" / "runtime.json").write_text(
-                json.dumps({"database": str(db)}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+                json.dumps(runtime_config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
             )
             migration_result = migrate(db, home / "backups")
-            link_runtime(home, skill_config, args.force)
+            link_runtime(home, skill_config, args.force, source)
             install_role_skills(config, skill_config, source, home, args.force)
             print_result({
                 "command": "install", "status": "ok", "home": str(home), "database": str(db),
@@ -442,10 +454,11 @@ def main() -> int:
         elif args.command == "verify":
             schema_ok = False
             migration_ok = False
+            runtime_config_ok = False
             if db.exists():
                 try:
-                    with sqlite3.connect(db) as conn:
-                        required = {"schema_version", "review_task", "review_task_version", "review_issue", "issue_stage", "issue_activity", "agent_audit_log"}
+                    with closing(sqlite3.connect(db)) as conn:
+                        required = {"schema_version", "review_task", "review_task_version", "review_issue", "issue_stage", "issue_activity", "agent_audit_log", "code_inspector_thread", "code_inspector_event"}
                         tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
                         schema_ok = required.issubset(tables)
                         installed_version = conn.execute(
@@ -457,11 +470,24 @@ def main() -> int:
                         migration_ok = bool(available_versions) and installed_version == max(available_versions)
                 except sqlite3.Error:
                     schema_ok = False
+            runtime_config_path = home / "config" / "runtime.json"
+            if runtime_config_path.exists():
+                try:
+                    installed_runtime = json.loads(runtime_config_path.read_text(encoding="utf-8"))
+                    runtime_config_ok = bool(
+                        installed_runtime.get("database")
+                        and installed_runtime.get("thread_runtime", {}).get("isolation", {}).get("granularity") == "issue_operator"
+                    )
+                except (OSError, ValueError):
+                    runtime_config_ok = False
             checks = {
                 "database": db.exists(),
                 "schema": schema_ok,
                 "migrations_current": migration_ok,
-                "runtime": (home / "bin" / "review-db.py").exists(),
+                "runtime_review_db": (home / "bin" / "review-db.py").exists(),
+                "runtime_supervisor": (home / "bin" / "code-inspector-supervisor.py").exists(),
+                "runtime_issue_thread": (home / "bin" / "issue_thread.py").exists(),
+                "runtime_config": runtime_config_ok,
                 "skill_config": (home / "config" / "code-inspector.json").exists(),
                 "agent_bindings": (home / "config" / "agent-bindings.json").exists(),
             }

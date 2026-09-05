@@ -36,3 +36,20 @@ def run_human_command(command: str, *args: str, cwd: Path | None = None) -> dict
             message = result.stderr.strip()
         raise RuntimeError(message or "领域命令执行失败")
     return json.loads(result.stdout)
+
+
+def run_runtime_command(command: str, *args: str) -> dict:
+    tool = review_home() / "bin" / "code-inspector-supervisor.py"
+    if not tool.exists():
+        raise RuntimeError(f"未找到 Runtime Service：{tool}。请重新安装 Code Inspector。")
+    result = subprocess.run(
+        [sys.executable, str(tool), command, *args], text=True, capture_output=True,
+        env={**os.environ, "AGENT_REVIEW_HOME": str(review_home())},
+    )
+    if result.returncode != 0:
+        try:
+            message = json.loads(result.stderr).get("error", result.stderr)
+        except json.JSONDecodeError:
+            message = result.stderr.strip()
+        raise RuntimeError(message or "Runtime 命令执行失败")
+    return json.loads(result.stdout)

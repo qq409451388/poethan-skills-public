@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import closing
 from unittest import mock
 from pathlib import Path
 
@@ -88,13 +89,14 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             }
             INSTALLER_MODULE.ensure_dirs(review_home)
             INSTALLER_MODULE.migrate(database, review_home / "backups")
+            runtime_config = json.loads((source / "config" / "runtime.json").read_text(encoding="utf-8"))
+            runtime_config["database"] = str(database)
             (review_home / "config" / "runtime.json").write_text(
-                json.dumps({"database": str(database)}),
-                encoding="utf-8",
+                json.dumps(runtime_config), encoding="utf-8",
             )
 
             with mock.patch.object(Path, "symlink_to", side_effect=OSError("symlink denied")):
-                INSTALLER_MODULE.link_runtime(review_home, skill_config, force=False)
+                INSTALLER_MODULE.link_runtime(review_home, skill_config, force=False, skill_source=source)
                 INSTALLER_MODULE.install_role_skills(
                     tools_config,
                     skill_config,
@@ -121,6 +123,19 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(json.loads(result.stdout), [])
+            runtime_status = subprocess.run(
+                [sys.executable, str(review_home / "bin" / "code-inspector-supervisor.py"), "status"],
+                cwd=root,
+                env={
+                    **os.environ,
+                    "AGENT_REVIEW_HOME": str(review_home),
+                    "AGENT_REVIEW_DB": str(database),
+                },
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(runtime_status.returncode, 0, runtime_status.stderr)
+            self.assertEqual(json.loads(runtime_status.stdout), {"threads": [], "events": []})
 
     def test_webtool_launchers_are_platform_specific(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -149,10 +164,22 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             self.assertTrue((codex_skill / "references").is_dir())
             self.assertTrue((codex_skill / "scripts" / "watch.py").is_file())
             self.assertTrue((home / ".agent-review" / "bin" / "review-db.py").is_file())
+            self.assertTrue((home / ".agent-review" / "bin" / "code-inspector-supervisor.py").is_file())
+            self.assertTrue((home / ".agent-review" / "bin" / "runtime_identity.py").is_file())
+            if os.name != "nt":
+                self.assertTrue(os.access(home / ".agent-review" / "bin" / "code-inspector-supervisor.py", os.X_OK))
             bindings = json.loads((home / ".agent-review" / "config" / "agent-bindings.json").read_text())
+            installed_runtime = json.loads((home / ".agent-review" / "config" / "runtime.json").read_text())
+            self.assertEqual(installed_runtime["thread_runtime"]["isolation"]["granularity"], "issue_operator")
+            self.assertEqual(
+                Path(installed_runtime["database"]).resolve(),
+                (home / ".agent-review" / "data" / "review.db").resolve(),
+            )
             self.assertEqual(bindings["codex-dev"]["role"], "developer")
             self.assertEqual(bindings["codex-insp"]["role"], "inspector")
+            self.assertEqual(bindings["codex-insp"]["runtime_backend"], "codex-app-server")
             self.assertEqual(bindings["trae-inspector"]["role"], "inspector")
+            self.assertEqual(bindings["trae-inspector"]["runtime_backend"], "external")
             self.assertTrue((home / ".agent-review" / "bin" / "review-db-trae-inspector.py").exists())
             wrapper_text = (
                 home / ".agent-review" / "bin" / "review-db-codex-dev.py"
@@ -859,11 +886,12 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 "V011__activity_amendments.sql",
                 "V012__lean_issues_discussions_and_decisions.sql",
                 "V013__issue_thread_runtime.sql",
+                "V014__runtime_identity_leases_and_outbox.sql",
             ])
             self.assertIsNotNone(upgraded["backup"])
             with sqlite3.connect(database) as conn:
                 conn.row_factory = sqlite3.Row
-                self.assertEqual(conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0], 13)
+                self.assertEqual(conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0], 14)
                 task = conn.execute("SELECT * FROM review_task WHERE id = 41").fetchone()
                 self.assertEqual((task["task_key"], task["task_type"], task["scope_fingerprint"]),
                                  ("RT-OLD", "REVIEW", "old-fingerprint"))
@@ -950,6 +978,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 "V011__activity_amendments.sql",
                 "V012__lean_issues_discussions_and_decisions.sql",
                 "V013__issue_thread_runtime.sql",
+                "V014__runtime_identity_leases_and_outbox.sql",
             ])
             with sqlite3.connect(database) as conn:
                 conn.row_factory = sqlite3.Row
@@ -966,6 +995,52 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                         issue_id, attempt_no, activity_type, operator_type, operator_id, content
                     ) VALUES (2, 0, 'STAGE_SCOPE_DECLARED', 'DEVELOPMENT_AGENT', 'new-dev', '补充影响声明')"""
                 )
+                self.assertEqual(conn.execute("PRAGMA foreign_key_check").fetchall(), [])
+
+    def test_v013_runtime_data_upgrades_to_operator_identity_and_leases(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            v13_dir = root / "v13-installer"
+            migrations = v13_dir / "migrations"
+            migrations.mkdir(parents=True)
+            source = ROOT / "scripts" / "code-inspector-installer" / "migrations"
+            for migration in sorted(source.glob("V*.sql")):
+                if INSTALLER_MODULE.migration_version(migration) <= 13:
+                    shutil.copy2(migration, migrations / migration.name)
+            database = root / "review.db"
+            with mock.patch.object(INSTALLER_MODULE, "SCRIPT_DIR", v13_dir):
+                INSTALLER_MODULE.migrate(database)
+            with closing(sqlite3.connect(database)) as conn, conn:
+                conn.execute("INSERT INTO review_task(id,task_key,project_name,project_path,title,objective,status) VALUES(1,'RT-V13','p','/p','t','o','IN_PROGRESS')")
+                conn.execute(
+                    """INSERT INTO review_issue(id,issue_key,task_id,introduced_version,title,dimension,severity,
+                       remediation_benefit,remediation_cost,disposition,confidence,status,description,facts,rationale)
+                       VALUES(1,'RI-V13',1,1,'i','code_quality','medium','medium','low','current_iteration','high','IN_PROGRESS','d','f','r')"""
+                )
+                conn.execute(
+                    """INSERT INTO code_inspector_thread(issue_id,issue_key,role,thread_id,thread_status,cwd)
+                       VALUES(1,'RI-V13','inspector','thr-v13','WAITING','/p')"""
+                )
+                conn.execute(
+                    """INSERT INTO code_inspector_event(event_id,idempotency_key,issue_key,role,event_type,status,error_message)
+                       VALUES('evt-v13','idem-v13','RI-V13','inspector','STAGE_SUBMITTED','FAILED','old error')"""
+                )
+            upgraded = INSTALLER_MODULE.migrate(database, root / "backups")
+            self.assertEqual(upgraded["applied"], ["V014__runtime_identity_leases_and_outbox.sql"])
+            with closing(sqlite3.connect(database)) as conn, conn:
+                conn.row_factory = sqlite3.Row
+                thread = conn.execute("SELECT * FROM code_inspector_thread WHERE thread_id='thr-v13'").fetchone()
+                event = conn.execute("SELECT * FROM code_inspector_event WHERE event_id='evt-v13'").fetchone()
+                self.assertEqual(
+                    (thread["operator_id"], thread["agent_platform"], thread["runtime_backend"]),
+                    ("codex-insp", "codex", "codex-app-server"),
+                )
+                self.assertEqual(
+                    (event["operator_id"], event["attempt_count"], event["last_error"]),
+                    ("codex-insp", 0, "old error"),
+                )
+                columns = {row[1] for row in conn.execute("PRAGMA table_info(code_inspector_event)")}
+                self.assertTrue({"attempt_count", "claimed_at", "lease_until", "worker_id", "next_attempt_at", "failure_kind"}.issubset(columns))
                 self.assertEqual(conn.execute("PRAGMA foreign_key_check").fetchall(), [])
 
     def test_design_commands_permissions_atomicity_and_attempt_semantics(self):
@@ -1007,7 +1082,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             )
             initial_activity_count = len(db("developer", "activity-list", "--issue-key", "RI-DESIGN"))
             database = home / ".agent-review" / "data" / "review.db"
-            with sqlite3.connect(database) as conn:
+            with closing(sqlite3.connect(database)) as conn, conn:
                 conn.execute(
                     """CREATE TRIGGER force_design_update_failure
                        BEFORE UPDATE OF status ON review_issue
@@ -1841,6 +1916,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 sys.path.insert(0, str(webtool_dir))
                 from app import app  # pylint: disable=import-outside-toplevel
                 from app import localtime, markdown  # pylint: disable=import-outside-toplevel
+                app.config.update(TESTING=True, CSRF_ENABLED=False)
                 self.assertEqual(localtime("2026-07-19 06:29:31"), "2026-07-19 14:29:31")
                 rendered = str(markdown("第一行\n第二行\n\n```python\nprint('<safe>')\n```"))
                 self.assertIn("第一行<br>第二行", rendered)
@@ -2206,6 +2282,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                     "IN_PROGRESS",
                 )
             finally:
+                app.config["CSRF_ENABLED"] = True
                 sys.path.pop(0)
                 if previous_home is None:
                     os.environ.pop("AGENT_REVIEW_HOME", None)
@@ -2215,6 +2292,88 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                     os.environ.pop("AGENT_REVIEW_DB", None)
                 else:
                     os.environ["AGENT_REVIEW_DB"] = previous_db
+
+    def test_webtool_runtime_observability_csrf_and_debug(self):
+        try:
+            import flask  # noqa: F401  # pylint: disable=unused-import,import-outside-toplevel
+        except ModuleNotFoundError:
+            self.skipTest("Flask dependency is not installed")
+        with tempfile.TemporaryDirectory() as temp:
+            home = Path(temp)
+            self.run_cmd(home, str(INSTALLER), "install")
+            review_home = home / ".agent-review"
+            database = review_home / "data" / "review.db"
+            with closing(sqlite3.connect(database)) as conn, conn:
+                conn.execute(
+                    "INSERT INTO review_task(task_key,project_name,project_path,title,objective,status) VALUES('RT-RUNTIME','p',?,'t','o','IN_PROGRESS')",
+                    (str(home),),
+                )
+                conn.execute(
+                    """INSERT INTO review_issue(issue_key,task_id,introduced_version,title,dimension,severity,
+                       remediation_benefit,remediation_cost,disposition,confidence,status,description,facts,rationale)
+                       VALUES('RI-RUNTIME',1,1,'Runtime','code_quality','medium','medium','low',
+                              'current_iteration','high','IN_PROGRESS','d','f','r')"""
+                )
+                conn.execute(
+                    """INSERT INTO code_inspector_thread(
+                       issue_id,issue_key,role,operator_id,agent_platform,runtime_backend,thread_id,
+                       thread_status,issue_status,next_action,last_event,cwd,context_tokens,context_window)
+                       VALUES(1,'RI-RUNTIME','inspector','codex-insp','codex','codex-app-server',
+                              'thr-visible','WAITING','IN_PROGRESS','await_event','STAGE_SUBMITTED',?,630,1000)""",
+                    (str(home),),
+                )
+                conn.execute(
+                    """INSERT INTO code_inspector_event(
+                       event_id,idempotency_key,issue_key,role,operator_id,agent_platform,runtime_backend,event_type,status)
+                       VALUES('evt-visible','idem-visible','RI-RUNTIME','inspector','codex-insp','codex',
+                              'codex-app-server','STAGE_SUBMITTED','FAILED')"""
+                )
+            old_home, old_db = os.environ.get("AGENT_REVIEW_HOME"), os.environ.get("AGENT_REVIEW_DB")
+            os.environ["AGENT_REVIEW_HOME"] = str(review_home)
+            os.environ["AGENT_REVIEW_DB"] = str(database)
+            webtool_dir = ROOT / "apps" / "code-inspector-webtool"
+            sys.path.insert(0, str(webtool_dir))
+            try:
+                import importlib
+                module = importlib.import_module("app")
+                module.app.config.update(TESTING=True, CSRF_ENABLED=True)
+                client = module.app.test_client()
+                runtime_page = client.get("/runtime")
+                self.assertEqual(runtime_page.status_code, 200)
+                runtime_html = runtime_page.get_data(as_text=True)
+                self.assertIn("thr-visible", runtime_html)
+                self.assertIn("evt-visible", runtime_html)
+                self.assertIn("63.0%", runtime_html)
+                issue_html = client.get("/issues/RI-RUNTIME").get_data(as_text=True)
+                self.assertIn("Agent Runtime", issue_html)
+                self.assertIn("codex-insp", issue_html)
+
+                denied = client.post("/runtime/events/evt-visible/retry", follow_redirects=False)
+                self.assertEqual(denied.status_code, 403)
+                with client.session_transaction() as state:
+                    token = state.get("csrf_token")
+                self.assertTrue(token)
+                with mock.patch.object(module, "run_runtime_command", return_value={"status": "PENDING"}) as command:
+                    accepted = client.post(
+                        "/runtime/events/evt-visible/retry", data={"csrf_token": token},
+                        follow_redirects=False,
+                    )
+                self.assertEqual(accepted.status_code, 302)
+                command.assert_called_once_with("retry-event", "--event-id", "evt-visible", "--confirm")
+                with mock.patch.dict(os.environ, {"WEBTOOL_DEBUG": "false"}):
+                    self.assertFalse(module.env_bool("WEBTOOL_DEBUG"))
+                with mock.patch.dict(os.environ, {"WEBTOOL_DEBUG": "yes"}):
+                    self.assertTrue(module.env_bool("WEBTOOL_DEBUG"))
+            finally:
+                sys.path.pop(0)
+                if old_home is None:
+                    os.environ.pop("AGENT_REVIEW_HOME", None)
+                else:
+                    os.environ["AGENT_REVIEW_HOME"] = old_home
+                if old_db is None:
+                    os.environ.pop("AGENT_REVIEW_DB", None)
+                else:
+                    os.environ["AGENT_REVIEW_DB"] = old_db
 
 
 if __name__ == "__main__":

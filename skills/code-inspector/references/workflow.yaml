@@ -126,6 +126,29 @@ issue_statuses:
   - CONFIRMED
   - CANCELLED
 
+runtime_events:
+  source: transactional_outbox
+  atomicity: 领域状态/Activity 与 code_inspector_event 必须在同一 SQLite Transaction 提交；Runtime binding 无效时领域变更回滚。
+  operator_resolution: 使用 agent-roles.json runtime.dispatch_operators 指定的已安装 binding；role 参数只做一致性校验。
+  mappings:
+    ISSUE_CREATED: developer
+    DESIGN_REQUESTED: developer
+    DESIGN_SUBMITTED: inspector
+    DESIGN_APPROVED: developer
+    DESIGN_REJECTED: developer
+    STAGE_SUBMITTED: inspector
+    STAGE_APPROVED: developer
+    STAGE_REJECTED: developer
+    IMPLEMENTATION_SUBMITTED: inspector
+    REVIEW_REJECTED: developer
+    VERIFICATION_FAILED: developer
+    INSPECTOR_CONFIRMATION_REQUIRED: inspector
+    HUMAN_CONFIRMATION_PROVIDED_to_DESIGN_REQUIRED_or_IN_PROGRESS: developer
+    HUMAN_STATUS_OVERRIDE_to_DESIGN_PENDING_REVIEW_or_IMPLEMENTED_PENDING_REVIEW: inspector
+    HUMAN_OR_INSPECTOR_STATUS_RESUME_to_DESIGN_REQUIRED_or_IN_PROGRESS: developer
+  no_agent_dispatch: [ON_HOLD, BLOCKED, HUMAN_CONFIRMATION_REQUIRED, CONFIRMED, CANCELLED]
+  manual_watch: 独立能力；不消费、不替代 Runtime Event Queue，仍要求用户显式开启。
+
 # Human 可人工覆盖到任一普通合法状态；HUMAN_CONFIRMATION_REQUIRED 使用专用入口，
 # CONFIRMED 对所有角色仍要求当前 implementation attempt 已有 VERIFICATION_PASSED。
 human_issue_override_statuses: &human_issue_override_statuses
