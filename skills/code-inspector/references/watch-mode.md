@@ -68,3 +68,5 @@ stage=2
 命中条件时只输出一次事件并结束 Shell command，使同一个 Codex turn 恢复。收到事件后，不使用启动前缓存作决定。重新读取最新 Issue、当前 Stage、最新 Activity，以及本次动作真正需要的 Review Result、Evidence、Diff、Tests 和代码，再按当前角色流程处理。
 
 一次 watcher 只观察本次明确目标，不扩大到所有 Issue，不把“Stage 2”扩大到后续 Stage。处理完本次事件后默认结束 Watch，不自动重启。只有用户最初明确要求“持续到整个任务结束”时，`continuation=until-target-terminal` 才允许在每次处理完成后，用同一目标和下一明确条件重新校验并启动一个新的一次性 watcher；用户再次明确要求也可重新启动。
+
+用户一次明确指定多个 Issue 时，可把已校验的 Specification 数组交给 `scripts/task_watcher.py --spec-file ...`。它由一个长生命周期 Shell 进程轮询全部目标，未命中时完全静默，只输出第一个需要动作的 Issue；不得为每个 Issue 创建 Goal 或周期性 LLM Turn。一个 Issue 的命中不会自动扩大或续订其他 Issue 的 Watch 生命周期。

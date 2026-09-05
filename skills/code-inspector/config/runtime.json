@@ -1,0 +1,36 @@
+{
+  "thread_runtime": {
+    "enabled": true,
+    "isolation": {
+      "enabled": true,
+      "granularity": "issue_role"
+    },
+    "concurrency": {
+      "max_active_issue_threads": 3,
+      "single_writer_per_thread": true,
+      "single_dispatcher_per_issue_role": true
+    },
+    "compact": {
+      "enabled": true,
+      "threshold": 0.8,
+      "trigger": "stage_transition",
+      "capability_verified": true
+    },
+    "watch": {
+      "enabled": true,
+      "interval_seconds": 120,
+      "require_explicit_activation": true,
+      "use_goal": false
+    },
+    "workspace": {
+      "enforce_safe_write": true
+    },
+    "app_server": {
+      "command": ["codex", "app-server", "--listen", "stdio://"],
+      "request_timeout_seconds": 120,
+      "turn_timeout_seconds": 1800,
+      "max_retry": 2,
+      "backoff_seconds": 1
+    }
+  }
+}

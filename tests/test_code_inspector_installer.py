@@ -166,32 +166,31 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             self.assertIn(str(trae_skill / "tools" / "review-db-trae-inspector.py"), trae_skill_text)
             self.assertIn("$code-inspector start dev", codex_skill_text)
             self.assertIn("$code-inspector start insp", codex_skill_text)
-            self.assertIn("Watch Mode 默认关闭", codex_skill_text)
-            self.assertIn("禁止为 Watch 创建或维持 Codex Goal", codex_skill_text)
+            self.assertIn("references/core-workflow.md", codex_skill_text)
+            self.assertIn("references/role-workflows.md", codex_skill_text)
+            self.assertIn("references/watch-mode.md", codex_skill_text)
             self.assertIn(str(codex_skill / "scripts" / "watch.py"), codex_skill_text)
             self.assertIn("缺少参数", codex_skill_text)
             self.assertIn("当前平台仅配置 `inspector` 角色", trae_skill_text)
             self.assertIn("$code-inspector start` 即可启动", trae_skill_text)
             self.assertIn('固定工具：`python "', codex_skill_text)
             self.assertNotIn("modify-business-code", codex_skill_text.split("可执行命令：", 1)[1].split("。", 1)[0])
-            self.assertIn("Issue 默认只写标题、短摘要、维度和严重度", codex_skill_text)
-            self.assertIn("讨论达成一致后由 Inspector", codex_skill_text)
-            self.assertIn("摘要可以使用轻量 Markdown", trae_skill_text)
-            self.assertIn("主审核者必须额外串联跨模块数据流", trae_skill_text)
-            self.assertIn("先做覆盖面回查和补充扫描", trae_skill_text)
-            self.assertIn("design-submit", codex_skill_text)
-            self.assertIn("design-request", trae_skill_text)
-            self.assertIn("stage-submit", codex_skill_text)
-            self.assertIn("stage-prepare", codex_skill_text)
-            self.assertIn("stage-plan-create", trae_skill_text)
-            self.assertIn("不得提前实施后续 Stage", codex_skill_text)
-            self.assertIn("BLOCKER/MUST 清零", trae_skill_text)
-            self.assertIn("不得直接进入 `HUMAN_CONFIRMATION_REQUIRED`", codex_skill_text)
-            self.assertIn("human-escalate", trae_skill_text)
-            self.assertIn("Human 是异常兜底，不是普通 Reviewer", trae_skill_text)
-            self.assertIn("不得倾倒长日志、完整代码或 Agent 对话", trae_skill_text)
-            self.assertIn("连续两次失败必须重新判断设计是否对齐", trae_skill_text)
-            self.assertIn("CONTINUOUS", trae_skill_text)
+            self.assertNotIn("### 执行流程", codex_skill_text)
+            self.assertNotIn("Issue 默认正文只写", codex_skill_text)
+            self.assertNotIn("Watch Mode 默认关闭", codex_skill_text)
+            core_text = (trae_skill / "references" / "core-workflow.md").read_text(encoding="utf-8")
+            role_text = (trae_skill / "references" / "role-workflows.md").read_text(encoding="utf-8")
+            watch_text = (trae_skill / "references" / "watch-mode.md").read_text(encoding="utf-8")
+            self.assertIn("Issue 默认正文只写", core_text)
+            self.assertIn("讨论达成一致后", core_text)
+            self.assertIn("Human 只作为极低频最终兜底", core_text)
+            self.assertIn("主审核者必须额外串联跨模块数据流", role_text)
+            self.assertIn("先做覆盖面回查和补充扫描", role_text)
+            self.assertIn("stage-prepare", role_text)
+            self.assertIn("stage-plan-create", role_text)
+            self.assertIn("连续两次失败必须重新判断设计是否对齐", role_text)
+            self.assertIn("默认关闭", watch_text)
+            self.assertIn("禁止创建或维持 Codex Goal", watch_text)
             workflow_text = (trae_skill / "references" / "workflow.yaml").read_text(encoding="utf-8")
             levels_text = (trae_skill / "references" / "review-levels.yaml").read_text(encoding="utf-8")
             self.assertIn("确认动作不能被默认视为清理动作", workflow_text)
@@ -859,11 +858,12 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 "V010__stage_baselines_and_review_gates.sql",
                 "V011__activity_amendments.sql",
                 "V012__lean_issues_discussions_and_decisions.sql",
+                "V013__issue_thread_runtime.sql",
             ])
             self.assertIsNotNone(upgraded["backup"])
             with sqlite3.connect(database) as conn:
                 conn.row_factory = sqlite3.Row
-                self.assertEqual(conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0], 12)
+                self.assertEqual(conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0], 13)
                 task = conn.execute("SELECT * FROM review_task WHERE id = 41").fetchone()
                 self.assertEqual((task["task_key"], task["task_type"], task["scope_fingerprint"]),
                                  ("RT-OLD", "REVIEW", "old-fingerprint"))
@@ -949,6 +949,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 "V010__stage_baselines_and_review_gates.sql",
                 "V011__activity_amendments.sql",
                 "V012__lean_issues_discussions_and_decisions.sql",
+                "V013__issue_thread_runtime.sql",
             ])
             with sqlite3.connect(database) as conn:
                 conn.row_factory = sqlite3.Row

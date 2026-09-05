@@ -52,6 +52,22 @@ Windows 未启用开发者模式或当前用户无创建软链接权限，则自
 
 运行数据位于 `~/.agent-review/`，包括数据库、日志、导出内容和安装后的有效配置；这些数据不进入 Git。
 
+### 规则单一来源
+
+安装后生成的 `SKILL.md` 只保存当前平台的角色选择、alias、命令权限、固定工具路径和参考文件路由，不复制公共工作流正文。Agent 规则由 Git 仓库中的以下文件统一维护：
+
+```text
+references/core-workflow.md   # 所有角色共享规则
+references/role-workflows.md  # Developer / Inspector 分角色流程
+references/workflow.yaml      # 状态机
+references/tool-contracts.yaml
+references/watch-mode.md
+references/thread-runtime.md
+config/runtime.json
+```
+
+使用软链接的安装环境修改这些 reference 后立即生效；软链接不可用而回退为复制的环境需要重新执行安装，但不再需要同步修改安装器中的 Skill 文案。
+
 如果目标路径已有旧版普通文件，安装器会拒绝覆盖。确认该目录是旧安装器内容后可使用：
 
 ```bash
@@ -128,6 +144,18 @@ Human 使用 `human-confirmation-resolve` 记录业务边界或风险决定，�
 ## Git 更新后的行为
 
 参考规则和数据库工具优先通过软链接安装，因此执行 `git pull` 后，链接安装的内容会立即更新。Windows 因权限限制回退为复制时，拉取更新后需要重新执行 `install`；如果源文件已经变化，使用 `--force install`。平台目录中的 `SKILL.md` 是根据角色配置生成的固化入口，不是软链接。
+
+## 多 Issue Runtime
+
+启用 Thread Isolation 后，Supervisor 只保存 `(issue_key, role) → thread_id`、状态和事件等轻量调度数据；具体审核、实现、Diff/Evidence/测试分析由独立 Issue Thread 完成。App Server 适配层、Registry CLI、事件调度器、静默多目标 Watcher和兼容性探针位于 `scripts/`，开关集中在 `config/runtime.json`。
+
+```bash
+python3 scripts/issue_thread.py status
+python3 scripts/supervisor.py status
+python3 scripts/capability_probe.py
+```
+
+Developer Thread 只获得 workspace-write 能力，并按项目路径加 Workspace Lock；需要多个 Developer 真正同时改同一仓库时，仍必须先分配独立 worktree/branch。
 
 以下情况仍需要显式执行安装器：
 
