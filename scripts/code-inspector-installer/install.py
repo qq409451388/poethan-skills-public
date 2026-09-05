@@ -262,7 +262,20 @@ def generated_skill_text(platform: str, identities: list[dict[str, Any]], target
             f"职责：{'；'.join(policy['responsibilities'])}。\n\n"
             f"禁止：{', '.join(policy['prohibited'])}。\n\n{workflow}"
         )
-    return "---\nname: code-inspector\ndescription: 已安装的 Code Inspector 角色 Skill。仅在用户明确开启代码检查模式后，按启动时选定的逻辑身份执行。\n---\n\n# Code Inspector\n\n当前平台：`" + platform + "`。仅在用户明确开启后使用本流程；完整规则见 `references/activation.yaml`。\n\n## 会话角色选择\n\n" + activation + "\n\n只使用启动时选定的下列逻辑身份，不得越权。所有状态流转先以 `references/workflow.yaml` 为准；工具参数以 `references/tool-contracts.yaml` 为准；不得直接操作 SQLite。\n\n" + "\n\n".join(rows) + "\n\n需要审核等级时读取 `references/review-levels.yaml`；仅在用户要求导出时读取 `references/report-schema.yaml`。\n\nIssue 默认只写标题、短摘要、维度和严重度；按需补完成标准、技术说明、本项目术语和证据。摘要可以使用轻量 Markdown，但不要写推理过程、长日志或完整代码；代码位置优先写文件与符号，行号不能作为唯一定位。通用技术词不解释，只定义项目内或临时创造的词。讨论使用 `discussion-*` 并与处理历史分开；Developer/Inspector 修正自己的讨论时 amend 原消息。讨论达成一致后由 Inspector 用 `decision-record` 录入有效结论。`activity-amend` 仅修订尚未被审核的提交文案，最终结论不得覆盖。\n"
+    watch_path = target / "scripts" / "watch.py"
+    watch = (
+        "## 手动持续观察 / Watch Mode\n\n"
+        "Watch Mode 默认关闭，等待状态绝不自动开启。只有用户明确要求持续观察并指定任务时，"
+        "才读取 `references/watch-mode.md`，解析并校验唯一目标、查询方式、唤醒条件和当前角色。"
+        "任一项无法可靠确定或角色冲突时不得启动，也不得猜测。校验通过后使用 "
+        f"`python \"{watch_path}\"` 启动 Shell watcher；默认每 120 秒静默检测，"
+        "整个等待期只维持这一个长生命周期 Shell command，未命中不得输出、退出或触发模型查询。"
+        "禁止为 Watch 创建或维持 Codex Goal，也不得使用 Goal automatic continuation。"
+        "命中后只输出一次最小 `ACTION_REQUIRED` 事件并结束 command，使当前 turn 恢复，再重新获取最新上下文。"
+        "一次 Watch 默认只处理一次事件，不扩大目标、不自动续订；仅当用户一开始明确要求持续到整个任务结束时才可逐次重启。"
+        "用户要求停止时立即中断保存的 Shell execution session。\n"
+    )
+    return "---\nname: code-inspector\ndescription: 已安装的 Code Inspector 角色 Skill。仅在用户明确开启代码检查模式后，按启动时选定的逻辑身份执行。\n---\n\n# Code Inspector\n\n当前平台：`" + platform + "`。仅在用户明确开启后使用本流程；完整规则见 `references/activation.yaml`。\n\n## 会话角色选择\n\n" + activation + "\n\n只使用启动时选定的下列逻辑身份，不得越权。所有状态流转先以 `references/workflow.yaml` 为准；工具参数以 `references/tool-contracts.yaml` 为准；不得直接操作 SQLite。\n\n" + watch + "\n" + "\n\n".join(rows) + "\n\n需要审核等级时读取 `references/review-levels.yaml`；仅在用户要求导出时读取 `references/report-schema.yaml`。\n\nIssue 默认只写标题、短摘要、维度和严重度；按需补完成标准、技术说明、本项目术语和证据。摘要可以使用轻量 Markdown，但不要写推理过程、长日志或完整代码；代码位置优先写文件与符号，行号不能作为唯一定位。通用技术词不解释，只定义项目内或临时创造的词。讨论使用 `discussion-*` 并与处理历史分开；Developer/Inspector 修正自己的讨论时 amend 原消息。讨论达成一致后由 Inspector 用 `decision-record` 录入有效结论。`activity-amend` 仅修订尚未被审核的提交文案，最终结论不得覆盖。\n"
 
 def install_generated_skill(source: Path, target: Path, platform: str, identities: list[dict[str, Any]], home: Path, force: bool) -> None:
     if target.is_symlink():
@@ -274,7 +287,7 @@ def install_generated_skill(source: Path, target: Path, platform: str, identitie
     target.mkdir(parents=True, exist_ok=True)
     (target / ".code-inspector-generated").write_text("generated\n", encoding="utf-8")
     (target / "SKILL.md").write_text(generated_skill_text(platform, identities, target), encoding="utf-8")
-    for name in ("references",):
+    for name in ("references", "scripts"):
         link = target / name
         if link.exists() or link.is_symlink():
             link.unlink() if link.is_symlink() else shutil.rmtree(link)

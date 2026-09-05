@@ -1,5 +1,5 @@
 {
-  "version": 7,
+  "version": 8,
   "skill_name": "code-inspector",
   "runtime": {
     "local_home": "${HOME}/.agent-review",
@@ -17,20 +17,20 @@
   "roles": {
     "developer": {
       "session_selector": "dev",
-      "commands": ["task-list", "issue-list", "issue-list-pending-review", "issue-get", "stage-list", "stage-get", "stage-prepare", "discussion-append", "discussion-amend", "discussion-list", "decision-list", "activity-list", "activity-list-recent", "activity-revision-list", "issue-update-status", "issue-update-status-batch", "design-submit", "stage-submit", "implementation-submit", "activity-append", "activity-amend", "candidate-submit", "candidate-list"],
+      "commands": ["task-list", "issue-list", "issue-list-pending-review", "issue-get", "stage-list", "stage-get", "watch-probe", "stage-prepare", "discussion-append", "discussion-amend", "discussion-list", "decision-list", "activity-list", "activity-list-recent", "activity-revision-list", "issue-update-status", "issue-update-status-batch", "design-submit", "stage-submit", "implementation-submit", "activity-append", "activity-amend", "candidate-submit", "candidate-list"],
       "responsibilities": ["在设计状态只分析代码和提交具体方案", "按当前 Stage 的目标和验收标准串行实现", "改码前声明模块文件类、修改原因和历史保护项", "提交 Stage commit、Diff、当前测试、历史累计回归和代码证据后等待验收", "讨论内容写入独立讨论区并直接 amend 自己的旧消息", "只在提交尚未被审核时 amend 原提交文案", "只修复 BLOCKER/MUST 并逐项回应 finding id", "全部 Stage 验收后提交最终实现证据", "请求 inspector 确认边界", "提交新问题候选"],
       "prohibited": ["task-create", "version-create", "issue-create", "issue-update-assessment", "design-request", "design-review", "stage-review", "自行宣布 Stage PASS", "human-escalate", "HUMAN_CONFIRMATION_REQUIRED", "DESIGN_APPROVED", "CONFIRMED", "direct-sql", "在设计状态修改业务代码或提交实现", "绕过 Inspector 请求 Human 技术决策"]
     },
     "inspector": {
       "session_selector": "insp",
       "includes": ["verification"],
-      "commands": ["task-create", "task-resolve", "task-list", "task-update", "task-update-status", "version-create", "issue-create", "issue-create-batch", "issue-list", "issue-list-pending-review", "issue-get", "stage-list", "stage-get", "issue-update-assessment", "issue-update-assessment-batch", "issue-update-body", "issue-update-status", "issue-update-status-batch", "design-request", "design-review", "stage-plan-create", "stage-review", "human-escalate", "discussion-append", "discussion-amend", "discussion-list", "decision-record", "decision-list", "activity-append", "activity-amend", "activity-list", "activity-list-recent", "activity-revision-list", "candidate-list", "candidate-update-status"],
+      "commands": ["task-create", "task-resolve", "task-list", "task-update", "task-update-status", "version-create", "issue-create", "issue-create-batch", "issue-list", "issue-list-pending-review", "issue-get", "stage-list", "stage-get", "watch-probe", "issue-update-assessment", "issue-update-assessment-batch", "issue-update-body", "issue-update-status", "issue-update-status-batch", "design-request", "design-review", "stage-plan-create", "stage-review", "human-escalate", "discussion-append", "discussion-amend", "discussion-list", "decision-record", "decision-list", "activity-append", "activity-amend", "activity-list", "activity-list-recent", "activity-revision-list", "candidate-list", "candidate-update-status"],
       "responsibilities": ["创建或复用 REVIEW/CONTINUOUS 任务", "用简短、面向人工的正文记录问题", "判断是否需要设计阶段", "说明根因、不可破坏语义、设计约束、风险与推荐方向", "把讨论与处理历史分开并在达成一致后登记有效结论", "审核 Developer 方案", "为复杂方案制定带验收标准的串行 Stage Plan", "按 BLOCKER/MUST/SHOULD/NIT 分级并执行当前验收与历史 Stage 累计回归", "BLOCKER/MUST 清零后强制 PASS 并建立递增 baseline", "只在提交尚未被审核时 amend 自己的原提交文案", "第二轮起遵守新增 finding 收敛规则", "在整案失效时显式要求重新设计", "区分实现错误与设计错误", "穷尽可得证据后判断是否满足极低频 Human 升级标准", "将人工问题整理为可快速决策的事实、选项、风险和推荐", "执行最终验证并确认问题", "审核问题候选"],
       "prohibited": ["implementation-submit", "用 SHOULD/NIT 阻断 Stage", "在后续 Review 无依据新增优化意见", "BLOCKER/MUST 清零后继续 Review", "human-confirmation-resolve", "以普通不确定性或省事为由升级 Human", "modify-business-code", "direct-sql"]
     },
     "human": {
       "session_selector": "human",
-      "commands": ["task-create", "task-resolve", "task-list", "task-update", "task-update-status", "version-create", "issue-create", "issue-create-batch", "issue-list", "issue-list-pending-review", "issue-get", "stage-list", "stage-get", "stage-prepare", "issue-update-assessment", "issue-update-assessment-batch", "issue-update-body", "issue-update-status", "issue-update-status-batch", "design-request", "design-submit", "design-review", "stage-plan-create", "stage-submit", "stage-review", "human-confirmation-resolve", "implementation-submit", "discussion-append", "discussion-amend", "discussion-list", "decision-list", "activity-append", "activity-list", "activity-list-recent", "activity-revision-list", "candidate-submit", "candidate-list", "candidate-update-status"],
+      "commands": ["task-create", "task-resolve", "task-list", "task-update", "task-update-status", "version-create", "issue-create", "issue-create-batch", "issue-list", "issue-list-pending-review", "issue-get", "stage-list", "stage-get", "watch-probe", "stage-prepare", "issue-update-assessment", "issue-update-assessment-batch", "issue-update-body", "issue-update-status", "issue-update-status-batch", "design-request", "design-submit", "design-review", "stage-plan-create", "stage-submit", "stage-review", "human-confirmation-resolve", "implementation-submit", "discussion-append", "discussion-amend", "discussion-list", "decision-list", "activity-append", "activity-list", "activity-list-recent", "activity-revision-list", "candidate-submit", "candidate-list", "candidate-update-status"],
       "responsibilities": ["监督异常流程", "对 Agent 无法获得的业务事实、事实归属或重大不可逆数据风险作最终决定", "通过 human-confirmation-resolve 恢复自动工作流", "以最高解释权覆盖任一普通 Task 或 Issue 状态", "必要时进行人工管理与纠错"],
       "prohibited": ["human-escalate", "主动进入 HUMAN_CONFIRMATION_REQUIRED", "用人工决定替代 Inspector 的设计审核、代码验证或最终技术确认", "direct-sql"]
     }

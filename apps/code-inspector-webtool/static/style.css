@@ -324,6 +324,10 @@ tbody tr:last-child td { border-bottom: 0; }
 .event-head { display: flex; justify-content: space-between; gap: 10px; margin-bottom: 5px; color: var(--muted); font-size: 12px; }
 .event-head > div { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .event-head strong { color: var(--text); }
+.event-operator { color: var(--muted); }
+.event-operator b { color: var(--text); font-weight: 700; }
+.record-stream { display: grid; gap: 8px; }
+.record-stream .event { margin-bottom: 0; }
 .activity-enum { padding: 1px 5px; border-radius: 4px; background: #e8edf3; color: #586477; font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; }
 .event-details { margin-top: 8px; }
 

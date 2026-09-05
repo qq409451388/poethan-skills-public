@@ -13,13 +13,18 @@ collaboration_records:
     commands: [discussion-append, discussion-list, discussion-amend]
     purpose: 保存尚未定论的方案、实现和验证交流；不进入默认处理历史。
     correction: 原作者必须 amend 原消息，不追加“更正”或“以此为准”。
+    ui_projection:
+      includes_activity_types: [DESIGN_SUBMITTED, REDESIGN_SUBMITTED, STAGE_SUBMITTED, IMPLEMENTATION_SUBMITTED]
+      rationale: 这些正式提交既是工作流里程碑，也是等待另一角色阅读和反馈的协作内容，因此同时出现在讨论视图。
+      storage_rule: 只保留原 Activity，不复制为 issue_discussion；讨论视图是跨两类记录的只读投影。
   conclusion:
     command: decision-record
     normal_role: inspector
     purpose: 讨论达成一致后，整理为一条短小、可执行、可供后续判断的有效结论。
     source: 使用 source-discussion-ids 关联讨论依据。
     supersession: 相同 decision_type + scope_key 的新结论替代旧结论；旧结论仅留审计。
-  processing_history: 默认展示正式结论与工作流里程碑，不混入讨论草稿。
+  processing_history: 展示正式结论与工作流里程碑；协作提交可同时投影到讨论视图，但不得重复落库。
+  combined_view: 页面默认提供去重后的全部记录并按最新优先展示，同时保留讨论和处理历史两个筛选视图。
 
 task_types:
   REVIEW:

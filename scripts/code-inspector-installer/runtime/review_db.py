@@ -2378,6 +2378,77 @@ def activity_list(args: argparse.Namespace) -> None:
         result.append(item)
     print_json(result)
 
+def watch_probe(args: argparse.Namespace) -> None:
+    """Return the smallest watch state without producing read-audit traffic."""
+    require_agent(args.agent)
+    if args.kind == "stage-status" and (args.stage_no is None or args.stage_no < 1):
+        raise ValueError("stage-status watch-probe 需要正整数 --stage-no")
+    if args.kind == "activity" and not args.activity_type:
+        raise ValueError("activity watch-probe 至少需要一个 --activity-type")
+    if args.after_activity_id < 0:
+        raise ValueError("--after-activity-id 不能为负数")
+    with connect() as conn:
+        if args.kind == "issue-status":
+            row = conn.execute(
+                "SELECT status FROM review_issue WHERE issue_key = ?", (args.target,),
+            ).fetchone()
+            if not row:
+                raise KeyError(f"问题不存在: {args.target}")
+            result = {"target": args.target, "status": row["status"]}
+        elif args.kind == "task-status":
+            row = conn.execute(
+                "SELECT status FROM review_task WHERE task_key = ?", (args.target,),
+            ).fetchone()
+            if not row:
+                raise KeyError(f"任务不存在: {args.target}")
+            result = {"target": args.target, "status": row["status"]}
+        elif args.kind == "stage-status":
+            issue = issue_row(conn, args.target)
+            plan_no = args.plan_no
+            if plan_no is None:
+                latest = conn.execute(
+                    "SELECT MAX(plan_no) AS plan_no FROM issue_stage WHERE issue_id = ?",
+                    (issue["id"],),
+                ).fetchone()
+                plan_no = latest["plan_no"]
+            if plan_no is None:
+                raise KeyError(f"问题没有 Stage Plan: {args.target}")
+            row = conn.execute(
+                """SELECT plan_no, stage_no, status FROM issue_stage
+                   WHERE issue_id = ? AND plan_no = ? AND stage_no = ?""",
+                (issue["id"], plan_no, args.stage_no),
+            ).fetchone()
+            if not row:
+                raise KeyError(f"Stage 不存在: plan={plan_no}, stage={args.stage_no}")
+            result = {
+                "target": args.target,
+                "plan_no": row["plan_no"],
+                "stage_no": row["stage_no"],
+                "status": row["status"],
+            }
+        else:
+            issue = issue_row(conn, args.target)
+            placeholders = ",".join("?" for _ in args.activity_type)
+            row = conn.execute(
+                f"""SELECT id, activity_type, metadata_json FROM issue_activity
+                    WHERE issue_id = ? AND id > ? AND activity_type IN ({placeholders})
+                    ORDER BY id ASC LIMIT 1""",
+                [issue["id"], args.after_activity_id, *args.activity_type],
+            ).fetchone()
+            if not row:
+                result = {"target": args.target, "matched": False}
+            else:
+                metadata = loads(row["metadata_json"], {})
+                result = {
+                    "target": args.target,
+                    "matched": True,
+                    "id": row["id"],
+                    "activity_type": row["activity_type"],
+                    "stage_no": metadata.get("stage_no"),
+                }
+    # Polling must not append agent_audit_log rows every 120 seconds.
+    print_json(result)
+
 def normalize_since(value: str) -> str:
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
@@ -2817,6 +2888,18 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("activity-list")
     p.add_argument("--issue-key", required=True)
     p.set_defaults(func=activity_list)
+
+    p = sub.add_parser("watch-probe")
+    p.add_argument(
+        "--kind", required=True,
+        choices=["issue-status", "stage-status", "activity", "task-status"],
+    )
+    p.add_argument("--target", required=True)
+    p.add_argument("--stage-no", type=int)
+    p.add_argument("--plan-no", type=int)
+    p.add_argument("--after-activity-id", type=int, default=0)
+    p.add_argument("--activity-type", action="append", choices=sorted(ALLOWED_ACTIVITY_TYPES))
+    p.set_defaults(func=watch_probe)
 
     p = sub.add_parser("activity-list-recent")
     p.add_argument("--task-key")

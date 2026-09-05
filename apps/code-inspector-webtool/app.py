@@ -73,6 +73,9 @@ HISTORY_MILESTONE_TYPES = {
     "VERIFICATION_PASSED", "VERIFICATION_FAILED", "INSPECTOR_CONFIRMATION_PROVIDED",
     "HUMAN_CONFIRMATION_REQUESTED", "HUMAN_CONFIRMATION_PROVIDED", "STATUS_CHANGED",
 }
+COLLABORATIVE_SUBMISSION_TYPES = {
+    "DESIGN_SUBMITTED", "REDESIGN_SUBMITTED", "STAGE_SUBMITTED", "IMPLEMENTATION_SUBMITTED",
+}
 TOPIC_LABELS = dict(DISCUSSION_TOPICS)
 DECISION_LABELS = {
     "DESIGN_REVIEW": "设计结论", "STAGE_REVIEW": "阶段验收结论",
@@ -242,7 +245,16 @@ def issue_with_json(row: dict) -> dict:
 def activity_with_json(row: dict) -> dict:
     row["code_reference"] = parse_json_field(row.get("code_reference_json"), [])
     row["metadata"] = parse_json_field(row.get("metadata_json"), {})
+    row["record_kind"] = "activity"
     return row
+
+
+def record_sort_key(row: dict) -> tuple[str, str, int]:
+    return (
+        row.get("amended_at") or row.get("created_at") or "",
+        row["record_kind"],
+        row["id"],
+    )
 
 
 def decision_with_json(row: dict) -> dict:
@@ -546,10 +558,20 @@ def issue_detail(issue_key: str):
         """SELECT * FROM issue_discussion
            WHERE issue_id = ? ORDER BY created_at ASC, id ASC""", (issue["id"],)
     )
+    for discussion in discussions:
+        discussion["record_kind"] = "discussion"
     history_activities = [
         activity for activity in activities
         if activity["activity_type"] in HISTORY_MILESTONE_TYPES
     ]
+    discussion_records = sorted(
+        [*discussions, *(activity for activity in history_activities
+                          if activity["activity_type"] in COLLABORATIVE_SUBMISSION_TYPES)],
+        key=record_sort_key, reverse=True,
+    )
+    all_records = sorted(
+        [*discussions, *history_activities], key=record_sort_key, reverse=True,
+    )
     grouped: OrderedDict[int, list[dict]] = OrderedDict()
     for activity in history_activities:
         grouped.setdefault(activity["attempt_no"], []).append(activity)
@@ -575,7 +597,8 @@ def issue_detail(issue_key: str):
     stage, status_explanation = STATUS_PRESENTATION.get(issue["status"], (1, issue["status"]))
     return render_template(
         "issue_detail.html", issue=issue, activities=history_activities, activity_groups=grouped,
-        decisions=decisions, discussions=discussions,
+        decisions=decisions, discussions=discussions, discussion_records=discussion_records,
+        all_records=all_records,
         latest_implementation=latest_implementation, verification_activities=verification_activities,
         latest_human_request=latest_human_request,
         stage_plans=stage_plans, active_stage_plan=active_stage_plan,

@@ -263,6 +263,16 @@ commands:
   activity-list:
     roles: [inspector, developer, human]
     required: [--issue-key]
+  watch-probe:
+    roles: [inspector, developer, human]
+    purpose: Watcher 专用的最小只读状态探针；不写 agent_audit_log，不得用于正常上下文读取。
+    required: [--kind, --target]
+    kinds: [issue-status, stage-status, activity, task-status]
+    conditional:
+      stage-status: [--stage-no]
+      activity: [--after-activity-id, --activity-type]
+    optional: [--plan-no, --activity-type]
+    output: 只返回目标状态或首个匹配的新 Activity，不返回 Issue、Stage 或 Activity 正文。
   activity-list-recent:
     roles: [inspector, developer, human]
     purpose: 跨 issue 查询近期活动，避免逐条遍历 issue。

@@ -22,11 +22,11 @@ database_pragmas:
 history:
   issue_activity:
     identity: append_only
-    purpose: 工作流里程碑及其审计来源；讨论不写入此表。
+    purpose: 工作流里程碑及其审计来源；正式协作提交保存在此表，页面可将其只读投影到讨论视图。
     current_content: 只有尚未被审核消费的提交和补充证据可由原逻辑身份通过 activity-amend 覆盖。
     revisions: 被替换正文保存在 issue_activity_revision；审核、验证与人工决定等最终结论不可 amend。
   issue_discussion:
-    purpose: 方案、实现、验证和一般讨论；默认与处理历史分开展示。
+    purpose: 非正式的方案、实现、验证和一般讨论；不存放正式提交，页面讨论视图可与正式协作提交合并展示。
     current_content: 原作者可用 discussion-amend 修订，普通读取只返回当前正文。
     revisions: 被替换正文保存在 issue_discussion_revision。
   issue_decision:

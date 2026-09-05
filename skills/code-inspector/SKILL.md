@@ -15,6 +15,9 @@ description: 在用户明确开启代码检查模式后，按安装时分配的 
 - 调用数据库工具：`references/tool-contracts.yaml`
 - 选择审核等级：`references/review-levels.yaml`
 - 导出报告：`references/report-schema.yaml`
+- 用户明确要求持续观察或停止观察：`references/watch-mode.md`
+
+Watch Mode 默认关闭。进入等待状态不等于开启观察；只有用户明确提出持续观察并指定任务，且能够确定观察目标、查询方式和唤醒条件时才可启动。Watcher 由单个长生命周期 Shell command 静默检测，默认每 120 秒检查一次，未命中时不输出、不退出；禁止为 Watch 创建或维持 Codex Goal，也不得使用 Goal automatic continuation。条件满足后只输出一次最小事件并结束 Shell command，使当前 turn 恢复；唤醒后必须重新读取最新上下文。一次 Watch 只覆盖用户指定目标，处理一次后默认结束，不自动扩大或续订。
 
 通用规则：Task 分为一次性治理目标 `REVIEW` 和跨基线长期治理主题 `CONTINUOUS`。`scan` 在两类 Task 中都必须完成跨模块数据流、coverage closure、补扫和去重；向 `CONTINUOUS` 报告单个线上问题的 `report` 只核实证据、判定成立和去重，不触发全项目扫描。默认聊天只输出简短摘要，完整报告仅在用户明确要求时导出。
 
@@ -40,6 +43,6 @@ Human 只作为极低频最终兜底，不是第三个普通 Reviewer。Develope
 
 Issue 默认正文只写 `title + summary + dimension + severity`；确有必要时再补 `expected_outcome`、`technical_note`、`local_terms` 和结构化证据。`summary` 用一段短文或 2–5 个要点直说现象、影响和关键原因，可使用轻量 Markdown；不要粘贴推理过程、长日志、完整代码或重复评级。代码位置优先写文件与类/方法/符号，行号只能作为当时快照的辅助提示，不能成为唯一定位依据。通用技术名词无需解释；只对本项目、业务或 Agent 临时定义且可能未对齐的词，在 `local_terms` 中给一句白话定义。
 
-讨论使用 `discussion-append/list/amend`，与处理历史分开。Developer、Inspector 发现自己的讨论消息不准确时，直接 `discussion-amend` 原消息，不追加“更正”或“以此为准”；旧版进入独立 revision。讨论达成一致后，由 Inspector 用 `decision-record` 整理一条短结论并关联来源讨论。后续新结论以相同 `decision_type + scope_key` 覆盖为当前有效结论，旧结论仅留审计。
+讨论消息使用 `discussion-append/list/amend`，底层与 Activity 分开保存。页面默认用“全部”按最新优先汇总；“讨论”视图除讨论消息外，还投影待协作审核的 `DESIGN_SUBMITTED`、`REDESIGN_SUBMITTED`、`STAGE_SUBMITTED`、`IMPLEMENTATION_SUBMITTED`，这些正式提交仍只保存为 Activity，并继续出现在处理历史，不得复制落库。Developer、Inspector 发现自己的讨论消息不准确时，直接 `discussion-amend` 原消息，不追加“更正”或“以此为准”；旧版进入独立 revision。讨论达成一致后，由 Inspector 用 `decision-record` 整理一条短结论并关联来源讨论。后续新结论以相同 `decision_type + scope_key` 覆盖为当前有效结论，旧结论仅留审计。
 
 `activity-amend` 只用于尚未被消费的提交文案和补充证据，例如待审核的设计、Stage 或实现提交。审核、验证、人工决定等最终结论不能 amend；需变化时创建新的正式结论。页面处理历史保留工作流里程碑和结论，默认读取只返回精简 Issue 字段，只有确需兼容旧字段时才用 `issue-get --view full`。

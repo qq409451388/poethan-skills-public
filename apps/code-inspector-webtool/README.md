@@ -55,7 +55,7 @@ python3 apps/code-inspector-webtool/app.py
 - 待我处理：首页顶部先显示最多 6 个最近活跃任务，活跃时间综合 Task、Issue、Activity 和 Candidate 的最近变化；下方按待审核实现、需要人工确认、受阻和候选待审核聚合 Human 当前工作。`HUMAN_CONFIRMATION_REQUIRED` 会突出显示 Inspector 整理的原因、问题、选项、推荐和关键风险；普通 `INSPECTOR_CONFIRMATION_REQUIRED` 仍由 Agent 自主处理，不计入 Human 待确认。
 - 检查任务：默认显示活动任务，可按项目、状态和 `REVIEW` / `CONTINUOUS` 类型筛选并选择显示已关闭任务；整行进入任务详情。
 - 任务详情：展示任务信息、版本历史、统计指标和可组合筛选的问题列表；任务编辑集中在弹窗中。
-- Issue 详情：展示设计、实现与审核阶段、结构化证据、当前轮实现和按尝试次数分组的完整活动历史；Human 可处理最终边界/安全确认，用专用 `human-confirmation-resolve` 恢复设计或实现流程，但不能借此直接 `CONFIRMED`。所有写操作仍走 human 领域命令。
+- Issue 详情：展示设计、实现与审核阶段、结构化证据、当前轮实现和协作记录；协作记录默认按最新优先汇总全部内容，同时保留讨论与处理历史筛选，设计、Stage、实现等正式协作提交会同时投影到讨论和历史但只落库一次。Human 可处理最终边界/安全确认，用专用 `human-confirmation-resolve` 恢复设计或实现流程，但不能借此直接 `CONFIRMED`。所有写操作仍走 human 领域命令。
 - 候选问题：默认显示 `SUBMITTED` / `UNDER_REVIEW`，支持任务和状态筛选；接受与拒绝都要求填写审核结论，且接受不会自动创建正式 Issue。
 
 弹窗支持遮罩、关闭按钮和 ESC 关闭，Tab 切换时不会丢失当前页面上下文。活动内容继续支持换行、列表、行内代码和 fenced Markdown 代码块。

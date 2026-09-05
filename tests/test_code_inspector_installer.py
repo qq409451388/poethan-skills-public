@@ -147,6 +147,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             self.assertTrue((codex_skill / ".code-inspector-generated").exists())
             self.assertTrue((trae_skill / ".code-inspector-generated").exists())
             self.assertTrue((codex_skill / "references").is_dir())
+            self.assertTrue((codex_skill / "scripts" / "watch.py").is_file())
             self.assertTrue((home / ".agent-review" / "bin" / "review-db.py").is_file())
             bindings = json.loads((home / ".agent-review" / "config" / "agent-bindings.json").read_text())
             self.assertEqual(bindings["codex-dev"]["role"], "developer")
@@ -165,6 +166,9 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             self.assertIn(str(trae_skill / "tools" / "review-db-trae-inspector.py"), trae_skill_text)
             self.assertIn("$code-inspector start dev", codex_skill_text)
             self.assertIn("$code-inspector start insp", codex_skill_text)
+            self.assertIn("Watch Mode 默认关闭", codex_skill_text)
+            self.assertIn("禁止为 Watch 创建或维持 Codex Goal", codex_skill_text)
+            self.assertIn(str(codex_skill / "scripts" / "watch.py"), codex_skill_text)
             self.assertIn("缺少参数", codex_skill_text)
             self.assertIn("当前平台仅配置 `inspector` 角色", trae_skill_text)
             self.assertIn("$code-inspector start` 即可启动", trae_skill_text)
@@ -234,6 +238,14 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             full_issue = db("developer", "issue-get", "--issue-key", "RI-TEST", "--view", "full")
             self.assertEqual(full_issue["description"], compact_issue["summary"])
             self.assertEqual(full_issue["remediation_benefit"], "medium")
+            installed_database = home / ".agent-review" / "data" / "review.db"
+            with sqlite3.connect(installed_database) as conn:
+                audit_before = conn.execute("SELECT COUNT(*) FROM agent_audit_log").fetchone()[0]
+            probe = db("developer", "watch-probe", "--kind", "issue-status", "--target", "RI-TEST")
+            self.assertEqual(probe, {"target": "RI-TEST", "status": "PROPOSED"})
+            with sqlite3.connect(installed_database) as conn:
+                audit_after = conn.execute("SELECT COUNT(*) FROM agent_audit_log").fetchone()[0]
+            self.assertEqual(audit_after, audit_before)
 
             blocked = subprocess.run(
                 [sys.executable, str(db_tool), "--agent", "inspector", "--operator-id", "trae-inspector", "issue-update-status",
@@ -1959,6 +1971,8 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 self.assertEqual(issue_page.status_code, 200)
                 self.assertIn("编辑当前 Issue", issue_html)
                 self.assertIn("关键证据", issue_html)
+                self.assertIn('class="tab active" data-tab-target="all"', issue_html)
+                self.assertIn('class="tab-pane active" data-tab-pane="all"', issue_html)
                 self.assertIn("讨论 1", issue_html)
                 self.assertIn("处理历史", issue_html)
                 self.assertIn("高级状态", issue_html)
@@ -1966,6 +1980,8 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 self.assertIn("重复提交会创建两笔订单", issue_html)
                 self.assertIn("回归项", issue_html)
                 self.assertIn('<code class="language-python">', issue_html)
+                self.assertIn('提交人 <b class="mono">human</b> · Human', issue_html)
+                self.assertIn('提交人 <b class="mono">trae-inspector</b> · Inspector', issue_html)
 
                 candidates = client.get("/candidates")
                 candidate_html = candidates.get_data(as_text=True)
@@ -2004,6 +2020,11 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 self.assertIn("本次实现", review_page)
                 self.assertIn("Human 操作台", review_page)
                 self.assertIn("order.py", review_page)
+                self.assertIn('提交人 <b class="mono">codex-dev</b> · Developer', review_page)
+                implementation_discussion = review_page.split(
+                    'data-tab-pane="discussion"', 1,
+                )[1].split('data-tab-pane="history"', 1)[0]
+                self.assertIn('data-activity-type="IMPLEMENTATION_SUBMITTED"', implementation_discussion)
 
                 confirmed = client.post(
                     f"/issues/{issue_key}/human-action",
@@ -2041,6 +2062,11 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 )
                 design_page = client.get("/issues/RI-WEB-DESIGN").get_data(as_text=True)
                 self.assertIn("审核设计方案", design_page)
+                design_discussion = design_page.split(
+                    'data-tab-pane="discussion"', 1,
+                )[1].split('data-tab-pane="history"', 1)[0]
+                self.assertIn('data-activity-type="DESIGN_SUBMITTED"', design_discussion)
+                self.assertIn("Human 代为补充具体方案", design_discussion)
                 self.assertEqual(
                     client.post(
                         "/issues/RI-WEB-DESIGN/stage-plan",
