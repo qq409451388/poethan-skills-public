@@ -1,4 +1,4 @@
-version: 3.0.0
+version: 3.1.0
 
 command: review-db.py
 identity:
@@ -132,7 +132,7 @@ commands:
     allowed_from: [DESIGN_PENDING_REVIEW]
     stage_item_required: [stage_no, title, objective, acceptance_criteria]
     constraints: [stage_no 从 1 连续递增, 同一 issue 同一 plan 不能重复, 已有 active plan 时拒绝]
-    effects: [插入 PLANNED Stage, 追加 STAGE_PLAN_CREATED]
+    effects: [以 governance_version=2 插入 PLANNED Stage, 追加 STAGE_PLAN_CREATED]
   stage-list:
     roles: [inspector, developer, human]
     required: [--issue-key]
@@ -143,28 +143,61 @@ commands:
     required: [--issue-key, --stage-no]
     optional: [--plan-no]
     defaults: {plan-no: 最新计划}
+    returns_extra: historical_baselines，包含之前全部 APPROVED Stage 的 baseline 与 PASSED 状态。
+  stage-prepare:
+    roles: [developer, human]
+    purpose: Developer 修改代码前声明当前 Stage 的预计影响范围、修改原因与必须保护的历史行为。
+    required: [--issue-key, --stage-no, --change-scope, --change-reason]
+    optional: [--protected-behaviors]
+    json_arguments: [--change-scope, --protected-behaviors]
+    allowed_issue_status: IN_PROGRESS
+    allowed_stage_status: IN_PROGRESS
+    effects: [保存开发前声明, 追加 STAGE_SCOPE_DECLARED]
+    constraints: [Stage 2+ 必须存在历史 PASSED baseline, Stage 2+ protected-behaviors 不能为空]
   stage-submit:
     roles: [developer, human]
     purpose: 原子提交当前 Stage 的实现证据并转为 PENDING_REVIEW。
     required: [--issue-key, --stage-no, --content, --commit-sha]
-    optional: [--code-reference, --test-evidence, --metadata]
-    json_arguments: [--code-reference, --test-evidence, --metadata]
+    governance_v2_required: [--diff-summary, --code-reference, --test-evidence, 已执行 stage-prepare]
+    optional: [--resolved-findings, --metadata]
+    json_arguments: [--code-reference, --test-evidence, --resolved-findings, --metadata]
     allowed_issue_status: IN_PROGRESS
     allowed_stage_status: IN_PROGRESS
-    effects: [保存 commit 和阶段实现证据, 追加 STAGE_SUBMITTED, Stage 转 PENDING_REVIEW]
+    effects: [保存 commit、Diff、当前与历史测试证据, 追加 STAGE_SUBMITTED, Stage 转 PENDING_REVIEW]
+    resubmission_rule: 若上轮存在 BLOCKER/MUST，resolved-findings 必须逐项包含其 finding id；SHOULD/NIT 不要求修复。
     attempt_effect: none
   stage-review:
     roles: [inspector, human]
     purpose: 原子验收当前 PENDING_REVIEW Stage；redesign 是兼容 UI 人工接管的显式整案失效扩展。
     required: [--issue-key, --stage-no, --decision, --content]
+    governance_v2_required: [--review-result, approved 时 --baseline]
     optional: [--plan-no]
-    enum: {decision: [approved, rejected, redesign]}
+    json_arguments: [--review-result, --baseline]
+    enum: {decision: [auto, approved, rejected, redesign]}
     allowed_issue_status: IN_PROGRESS
     allowed_stage_status: PENDING_REVIEW
     effects:
       approved: [追加 STAGE_APPROVED, 当前 Stage 转 APPROVED, 自动激活下一个 PLANNED Stage]
       rejected: [追加 STAGE_REJECTED, 当前 Stage 回 IN_PROGRESS]
       redesign: [追加 STAGE_REJECTED, 未完成 Stage 转 SUPERSEDED, 追加 STAGE_PLAN_SUPERSEDED, Issue 转 REDESIGN_REQUIRED]
+    review_result_schema:
+      findings:
+        required_keys: [BLOCKER, MUST, SHOULD, NIT]
+        item_required: [id, summary]
+        blocking_item_required: [evidence, risk]
+      historical_regression: "以已批准 stage_no 为 key；每项包含 status=PASS|FAIL 与 evidence"
+      current_acceptance: "按原顺序逐项复制 acceptance criterion；每项包含 status=PASS|FAIL 与 evidence"
+    baseline_schema:
+      required_keys: [verified_behaviors, input_output_contracts, business_semantics, tests]
+      non_empty: [verified_behaviors, tests]
+    convergence:
+      - governance v2 推荐 decision=auto，由 Runtime 按 Gate 计算 approved/rejected；整案失效仍显式 redesign
+      - 历史回归 FAIL 必须记录 BLOCKER
+      - 第二轮起新增 BLOCKER/MUST 必须有 why_not_found_earlier、evidence、risk
+      - 第二轮起新增 SHOULD/NIT 只允许由本轮修复新引入，且必须有 introduced_by_fix=true 与 evidence
+      - BLOCKER/MUST 为 0 且当前验收和历史回归全 PASS 时，decision 必须 approved
+      - SHOULD/NIT 只作为 Backlog，不能支持 rejected
+    returns: [inspection_result, final_decision, review_round, blocking_counts, next_stage_no]
   human-escalate:
     roles: [inspector]
     purpose: 在 Agent 无法取得关键业务事实或存在重大不可逆数据风险时，原子请求 Human 最终边界或安全决策。
@@ -191,7 +224,7 @@ commands:
     required: [--issue-key, --activity-type, --content]
     optional: [--attempt-no, --result-status, --code-reference, --metadata]
     json_arguments: [--code-reference, --metadata]
-    forbidden_atomic_types: [DESIGN_REQUESTED, DESIGN_SUBMITTED, DESIGN_APPROVED, DESIGN_REJECTED, STAGE_PLAN_CREATED, STAGE_SUBMITTED, STAGE_APPROVED, STAGE_REJECTED, STAGE_PLAN_SUPERSEDED, HUMAN_CONFIRMATION_REQUESTED, HUMAN_CONFIRMATION_PROVIDED]
+    forbidden_atomic_types: [DESIGN_REQUESTED, DESIGN_SUBMITTED, DESIGN_APPROVED, DESIGN_REJECTED, STAGE_PLAN_CREATED, STAGE_SCOPE_DECLARED, STAGE_SUBMITTED, STAGE_APPROVED, STAGE_REJECTED, STAGE_PLAN_SUPERSEDED, HUMAN_CONFIRMATION_REQUESTED, HUMAN_CONFIRMATION_PROVIDED]
     note: DESIGN_GUIDANCE 可由 inspector/human 追加；核心设计活动和 Human 升级活动必须由对应原子命令生成。
     content_format:
       short: 单行纯文本，不添加 Markdown 装饰。
@@ -256,6 +289,6 @@ workflow_statuses:
 
 activity_types:
   design: [DESIGN_REQUESTED, DESIGN_GUIDANCE, DESIGN_SUBMITTED, DESIGN_APPROVED, DESIGN_REJECTED]
-  stage: [STAGE_PLAN_CREATED, STAGE_SUBMITTED, STAGE_APPROVED, STAGE_REJECTED, STAGE_PLAN_SUPERSEDED]
+  stage: [STAGE_PLAN_CREATED, STAGE_SCOPE_DECLARED, STAGE_SUBMITTED, STAGE_APPROVED, STAGE_REJECTED, STAGE_PLAN_SUPERSEDED]
   human_confirmation: [HUMAN_CONFIRMATION_REQUESTED, HUMAN_CONFIRMATION_PROVIDED]
   legacy_compatible: [REVIEW_APPROVED, REVIEW_REJECTED, REDESIGN_SUBMITTED]

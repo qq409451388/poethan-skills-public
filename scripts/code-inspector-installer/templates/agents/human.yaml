@@ -9,7 +9,7 @@ role:
     - 人工关闭任务或问题
     - 按最高解释权纠正、暂停、关闭或重新打开 Task 状态
     - 按最高解释权覆盖任一普通 Issue 状态并留下审计说明
-    - 必要时人工创建、提交或验收 Stage，但不替代正常 Agent 协作
+    - 必要时人工准备、提交或验收 Stage，但不替代正常 Agent 协作
     - 使用 human-confirmation-resolve 提供事实归属、业务边界或风险接受决定
   prohibited:
     - 直接访问数据库

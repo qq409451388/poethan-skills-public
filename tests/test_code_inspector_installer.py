@@ -177,8 +177,10 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             self.assertIn("design-submit", codex_skill_text)
             self.assertIn("design-request", trae_skill_text)
             self.assertIn("stage-submit", codex_skill_text)
+            self.assertIn("stage-prepare", codex_skill_text)
             self.assertIn("stage-plan-create", trae_skill_text)
             self.assertIn("不得提前实施后续 Stage", codex_skill_text)
+            self.assertIn("BLOCKER/MUST 清零", trae_skill_text)
             self.assertIn("不得直接进入 `HUMAN_CONFIRMATION_REQUIRED`", codex_skill_text)
             self.assertIn("human-escalate", trae_skill_text)
             self.assertIn("Human 是异常兜底，不是普通 Reviewer", trae_skill_text)
@@ -712,11 +714,12 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 "V007__design_workflow_and_continuous_tasks.sql",
                 "V008__human_confirmation_escalation.sql",
                 "V009__issue_stage_plans.sql",
+                "V010__stage_baselines_and_review_gates.sql",
             ])
             self.assertIsNotNone(upgraded["backup"])
             with sqlite3.connect(database) as conn:
                 conn.row_factory = sqlite3.Row
-                self.assertEqual(conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0], 9)
+                self.assertEqual(conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0], 10)
                 task = conn.execute("SELECT * FROM review_task WHERE id = 41").fetchone()
                 self.assertEqual((task["task_key"], task["task_type"], task["scope_fingerprint"]),
                                  ("RT-OLD", "REVIEW", "old-fingerprint"))
@@ -730,6 +733,11 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 self.assertEqual(conn.execute("SELECT COUNT(*) FROM agent_audit_log WHERE id = 45").fetchone()[0], 1)
                 self.assertEqual(conn.execute("SELECT COUNT(*) FROM issue_candidate WHERE id = 46").fetchone()[0], 1)
                 self.assertEqual(conn.execute("SELECT COUNT(*) FROM issue_stage").fetchone()[0], 0)
+                stage_columns = {row[1] for row in conn.execute("PRAGMA table_info(issue_stage)")}
+                self.assertTrue({
+                    "governance_version", "planned_change_scope_json", "review_round",
+                    "review_findings_json", "historical_regression_json", "baseline_json",
+                }.issubset(stage_columns))
                 self.assertEqual(conn.execute("PRAGMA foreign_key_check").fetchall(), [])
                 conn.execute("UPDATE review_issue SET status = 'DESIGN_REQUIRED' WHERE id = 43")
                 conn.execute(
@@ -744,6 +752,69 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                     ) VALUES (43, 2, 'HUMAN_CONFIRMATION_REQUESTED', 'INSPECTOR_AGENT',
                               'new-inspector', '需要人工决定')"""
                 )
+
+    def test_v009_stage_history_migrates_as_legacy_governance(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            legacy_script_dir = root / "v009-installer"
+            legacy_migrations = legacy_script_dir / "migrations"
+            legacy_migrations.mkdir(parents=True)
+            source_migrations = ROOT / "scripts" / "code-inspector-installer" / "migrations"
+            for migration in sorted(source_migrations.glob("V*.sql")):
+                if INSTALLER_MODULE.migration_version(migration) <= 9:
+                    shutil.copy2(migration, legacy_migrations / migration.name)
+            database = root / "review.db"
+            with mock.patch.object(INSTALLER_MODULE, "SCRIPT_DIR", legacy_script_dir):
+                INSTALLER_MODULE.migrate(database)
+            with sqlite3.connect(database) as conn:
+                conn.execute(
+                    """INSERT INTO review_task(
+                        id, task_key, project_name, project_path, title, objective,
+                        current_version, task_type, status, scope_fingerprint
+                    ) VALUES (1, 'RT-V9', 'project', '/project', 'V9 Task', 'legacy',
+                              1, 'REVIEW', 'IN_PROGRESS', 'legacy')"""
+                )
+                conn.execute(
+                    """INSERT INTO review_issue(
+                        id, issue_key, task_id, introduced_version, title, dimension, severity,
+                        remediation_benefit, remediation_cost, disposition, confidence, status,
+                        description, facts, rationale, current_attempt_no, dedupe_key
+                    ) VALUES (2, 'RI-V9-STAGE', 1, 1, '旧 Stage', 'code_quality', 'medium',
+                              'medium', 'low', 'current_iteration', 'high', 'IN_PROGRESS',
+                              '描述', '事实', '依据', 0, 'legacy-stage')"""
+                )
+                conn.execute(
+                    """INSERT INTO issue_stage(
+                        id, issue_id, plan_no, stage_no, title, objective, acceptance_criteria,
+                        status, submitted_commit_sha, developer_summary, test_evidence_json
+                    ) VALUES (3, 2, 1, 1, '旧阶段', '旧目标', '旧标准', 'PENDING_REVIEW',
+                              'abc123', '旧提交', '["legacy passed"]')"""
+                )
+                conn.execute(
+                    """INSERT INTO issue_activity(
+                        id, issue_id, attempt_no, activity_type, operator_type, operator_id, content
+                    ) VALUES (4, 2, 0, 'STAGE_SUBMITTED', 'DEVELOPMENT_AGENT', 'old-dev', '旧 Stage 提交')"""
+                )
+                conn.commit()
+
+            upgraded = INSTALLER_MODULE.migrate(database, root / "backups")
+            self.assertEqual(upgraded["applied"], ["V010__stage_baselines_and_review_gates.sql"])
+            with sqlite3.connect(database) as conn:
+                conn.row_factory = sqlite3.Row
+                stage = conn.execute("SELECT * FROM issue_stage WHERE id = 3").fetchone()
+                self.assertEqual((stage["governance_version"], stage["status"], stage["submitted_commit_sha"]),
+                                 (1, "PENDING_REVIEW", "abc123"))
+                self.assertEqual(stage["review_round"], 0)
+                self.assertEqual(stage["baseline_json"], "{}")
+                activity = conn.execute("SELECT * FROM issue_activity WHERE id = 4").fetchone()
+                self.assertEqual((activity["activity_type"], activity["content"]),
+                                 ("STAGE_SUBMITTED", "旧 Stage 提交"))
+                conn.execute(
+                    """INSERT INTO issue_activity(
+                        issue_id, attempt_no, activity_type, operator_type, operator_id, content
+                    ) VALUES (2, 0, 'STAGE_SCOPE_DECLARED', 'DEVELOPMENT_AGENT', 'new-dev', '补充影响声明')"""
+                )
+                self.assertEqual(conn.execute("PRAGMA foreign_key_check").fetchall(), [])
 
     def test_design_commands_permissions_atomicity_and_attempt_semantics(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -909,6 +980,42 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0, result.stdout)
                 return result
 
+            def prepare(stage_no: int, protected: list[str] | None = None) -> dict:
+                return db(
+                    "developer", "stage-prepare", "--issue-key", "RI-STAGE",
+                    "--stage-no", str(stage_no),
+                    "--change-scope", json.dumps({"files": [f"stage{stage_no}.py"]}),
+                    "--change-reason", f"实现 Stage {stage_no} 验收目标",
+                    "--protected-behaviors", json.dumps(protected or [], ensure_ascii=False),
+                )
+
+            def review_payload(
+                criteria: list[str], history: dict[str, dict] | None = None,
+                findings: dict[str, list[dict]] | None = None,
+                failed_criteria: set[str] | None = None,
+            ) -> str:
+                failed_criteria = failed_criteria or set()
+                return json.dumps({
+                    "findings": findings or {"BLOCKER": [], "MUST": [], "SHOULD": [], "NIT": []},
+                    "historical_regression": history or {},
+                    "current_acceptance": [
+                        {
+                            "criterion": criterion,
+                            "status": "FAIL" if criterion in failed_criteria else "PASS",
+                            "evidence": [f"{criterion}: verified"],
+                        }
+                        for criterion in criteria
+                    ],
+                }, ensure_ascii=False)
+
+            def stage_baseline(stage_no: int) -> str:
+                return json.dumps({
+                    "verified_behaviors": [f"Stage {stage_no} behavior"],
+                    "input_output_contracts": [f"Stage {stage_no} I/O"],
+                    "business_semantics": [f"Stage {stage_no} semantics"],
+                    "tests": [f"stage{stage_no}_regression"],
+                }, ensure_ascii=False)
+
             task = db(
                 "inspector", "task-resolve", "--title", "Stage 治理", "--objective", "防止复杂实现跑偏",
                 "--review-level", "L3", "--review-scope", "writer,backfill",
@@ -970,6 +1077,20 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 [item["status"] for item in db("developer", "stage-list", "--issue-key", "RI-STAGE")],
                 ["IN_PROGRESS", "PLANNED", "PLANNED"],
             )
+            prepare_required = fails(
+                "developer", "stage-submit", "--issue-key", "RI-STAGE", "--stage-no", "1",
+                "--content", "跳过准备", "--commit-sha", "bad",
+                "--diff-summary", "diff", "--test-evidence", json.dumps(["unit: passed"]),
+                "--code-reference", json.dumps([{"file_path": "domain.py"}]),
+            )
+            self.assertIn("stage-prepare", prepare_required.stderr)
+            fails(
+                "inspector", "stage-prepare", "--issue-key", "RI-STAGE", "--stage-no", "1",
+                "--change-scope", json.dumps({"files": ["domain.py"]}),
+                "--change-reason", "Inspector 不得替 Dev 声明",
+            )
+            prepared = prepare(1)
+            self.assertEqual(prepared["historical_baselines"], [])
             fails("developer", "stage-submit", "--issue-key", "RI-STAGE", "--stage-no", "2",
                   "--content", "提前提交", "--commit-sha", "bad")
             fails("developer", "implementation-submit", "--issue-key", "RI-STAGE", "--content", "提前最终提交")
@@ -986,6 +1107,8 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             fails(
                 "developer", "stage-submit", "--issue-key", "RI-STAGE", "--stage-no", "1",
                 "--content", "模型完成", "--commit-sha", "abc001",
+                "--diff-summary", "新增领域版本模型", "--test-evidence", json.dumps(["unit: passed"]),
+                "--code-reference", json.dumps([{"file_path": "domain.py", "line_start": 10}]),
             )
             self.assertEqual(db("developer", "stage-get", "--issue-key", "RI-STAGE", "--stage-no", "1")["status"],
                              "IN_PROGRESS")
@@ -995,6 +1118,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             submitted = db(
                 "developer", "stage-submit", "--issue-key", "RI-STAGE", "--stage-no", "1",
                 "--content", "模型完成", "--commit-sha", "abc001",
+                "--diff-summary", "新增领域版本模型",
                 "--test-evidence", json.dumps(["unit: passed"]),
                 "--code-reference", json.dumps([{"file_path": "domain.py", "line_start": 10}]),
             )
@@ -1011,6 +1135,15 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             fails(
                 "inspector", "stage-review", "--issue-key", "RI-STAGE", "--stage-no", "1",
                 "--decision", "rejected", "--content", "验证验收事务回滚",
+                "--review-result", review_payload(
+                    ["旧数据可读", "版本单测通过"],
+                    findings={
+                        "BLOCKER": [],
+                        "MUST": [{"id": "M-LEGACY", "summary": "缺少兼容测试", "evidence": "test missing", "risk": "旧数据不可读"}],
+                        "SHOULD": [], "NIT": [],
+                    },
+                    failed_criteria={"旧数据可读"},
+                ),
             )
             self.assertEqual(db("developer", "stage-get", "--issue-key", "RI-STAGE", "--stage-no", "1")["status"],
                              "PENDING_REVIEW")
@@ -1021,30 +1154,178 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             rejected = db(
                 "inspector", "stage-review", "--issue-key", "RI-STAGE", "--stage-no", "1",
                 "--decision", "rejected", "--content", "缺少 legacy fallback 测试",
+                "--review-result", review_payload(
+                    ["旧数据可读", "版本单测通过"],
+                    findings={
+                        "BLOCKER": [],
+                        "MUST": [{"id": "M-LEGACY", "summary": "缺少兼容测试", "evidence": "test missing", "risk": "旧数据不可读"}],
+                        "SHOULD": [{"id": "S-NAME", "summary": "测试名可更清晰"}], "NIT": [],
+                    },
+                    failed_criteria={"旧数据可读"},
+                ),
             )
             self.assertEqual(rejected["status"], "IN_PROGRESS")
             db(
                 "developer", "stage-submit", "--issue-key", "RI-STAGE", "--stage-no", "1",
                 "--content", "补齐兼容测试", "--commit-sha", "abc002",
+                "--diff-summary", "增加 legacy fallback 及其回归测试",
+                "--test-evidence", json.dumps(["unit: passed", "legacy: passed"]),
+                "--code-reference", json.dumps([{"file_path": "domain.py", "line_start": 10}]),
+                "--resolved-findings", json.dumps(["M-LEGACY"]),
             )
+            late_must = fails(
+                "inspector", "stage-review", "--issue-key", "RI-STAGE", "--stage-no", "1",
+                "--decision", "rejected", "--content", "试图新增未解释的阻断项",
+                "--review-result", review_payload(
+                    ["旧数据可读", "版本单测通过"],
+                    findings={
+                        "BLOCKER": [],
+                        "MUST": [{"id": "M-LATE", "summary": "新增阻断", "evidence": "new", "risk": "risk"}],
+                        "SHOULD": [], "NIT": [],
+                    },
+                    failed_criteria={"版本单测通过"},
+                ),
+            )
+            self.assertIn("why_not_found_earlier", late_must.stderr)
+            second_round_should = fails(
+                "inspector", "stage-review", "--issue-key", "RI-STAGE", "--stage-no", "1",
+                "--decision", "approved", "--content", "试图新增无关优化",
+                "--review-result", review_payload(
+                    ["旧数据可读", "版本单测通过"],
+                    findings={
+                        "BLOCKER": [], "MUST": [],
+                        "SHOULD": [{"id": "S-NEW", "summary": "可以进一步抽象"}], "NIT": [],
+                    },
+                ),
+                "--baseline", stage_baseline(1),
+            )
+            self.assertIn("不得新增无关 SHOULD", second_round_should.stderr)
             approved = db(
                 "inspector", "stage-review", "--issue-key", "RI-STAGE", "--stage-no", "1",
                 "--decision", "approved", "--content", "模型与兼容测试满足标准",
+                "--review-result", review_payload(
+                    ["旧数据可读", "版本单测通过"],
+                    findings={
+                        "BLOCKER": [], "MUST": [],
+                        "SHOULD": [{"id": "S-NAME", "summary": "测试名可更清晰"}], "NIT": [],
+                    },
+                ),
+                "--baseline", stage_baseline(1),
             )
+            self.assertEqual((approved["inspection_result"], approved["final_decision"]), ("PASS", "PASS"))
             self.assertEqual(approved["next_stage_no"], 2)
             self.assertEqual(
                 [item["status"] for item in db("developer", "stage-list", "--issue-key", "RI-STAGE")],
                 ["APPROVED", "IN_PROGRESS", "PLANNED"],
             )
-            for stage_no in (2, 3):
-                db(
-                    "developer", "stage-submit", "--issue-key", "RI-STAGE", "--stage-no", str(stage_no),
-                    "--content", f"Stage {stage_no} 完成", "--commit-sha", f"abc00{stage_no + 1}",
-                )
-                db(
-                    "inspector", "stage-review", "--issue-key", "RI-STAGE", "--stage-no", str(stage_no),
-                    "--decision", "approved", "--content", f"Stage {stage_no} 验收通过",
-                )
+            prepare(2, ["Stage 1 behavior", "Stage 1 I/O"])
+            db(
+                "developer", "stage-submit", "--issue-key", "RI-STAGE", "--stage-no", "2",
+                "--content", "Stage 2 完成", "--commit-sha", "abc003",
+                "--diff-summary", "Writer 接入领域版本",
+                "--test-evidence", json.dumps(["stage1_regression: passed", "writer: passed"]),
+                "--code-reference", json.dumps([{"file_path": "writer.py", "line_start": 20}]),
+            )
+            should_only_reject = fails(
+                "inspector", "stage-review", "--issue-key", "RI-STAGE", "--stage-no", "2",
+                "--decision", "rejected", "--content", "仅有可选抽象优化",
+                "--review-result", review_payload(
+                    ["并发写入不能互相覆盖"],
+                    history={"1": {"status": "PASS", "evidence": ["stage1_regression: passed"]}},
+                    findings={
+                        "BLOCKER": [], "MUST": [],
+                        "SHOULD": [{"id": "S-ABSTRACT", "summary": "可提取辅助类"}], "NIT": [],
+                    },
+                ),
+            )
+            self.assertIn("Inspector 必须 PASS", should_only_reject.stderr)
+            db(
+                "inspector", "stage-review", "--issue-key", "RI-STAGE", "--stage-no", "2",
+                "--decision", "approved", "--content", "Stage 2 达到交付标准；优化进入 Backlog",
+                "--review-result", review_payload(
+                    ["并发写入不能互相覆盖"],
+                    history={"1": {"status": "PASS", "evidence": ["stage1_regression: passed"]}},
+                    findings={
+                        "BLOCKER": [], "MUST": [],
+                        "SHOULD": [{"id": "S-ABSTRACT", "summary": "可提取辅助类"}], "NIT": [],
+                    },
+                ),
+                "--baseline", stage_baseline(2),
+            )
+
+            prepared_stage3 = prepare(3, ["Stage 1 behavior", "Stage 1 I/O", "Stage 2 behavior"])
+            self.assertEqual(
+                [item["stage_no"] for item in prepared_stage3["historical_baselines"]], [1, 2],
+            )
+            db(
+                "developer", "stage-submit", "--issue-key", "RI-STAGE", "--stage-no", "3",
+                "--content", "Stage 3 完成", "--commit-sha", "abc004",
+                "--diff-summary", "接入回灌兼容路径",
+                "--test-evidence", json.dumps([
+                    "stage1_regression: failed", "stage2_regression: passed", "backfill: passed",
+                ]),
+                "--code-reference", json.dumps([{"file_path": "backfill.py", "line_start": 30}]),
+            )
+            unclassified_regression = fails(
+                "inspector", "stage-review", "--issue-key", "RI-STAGE", "--stage-no", "3",
+                "--decision", "rejected", "--content", "未按 BLOCKER 标注历史破坏",
+                "--review-result", review_payload(
+                    ["回灌不能覆盖更晚线上事实"],
+                    history={
+                        "1": {"status": "FAIL", "evidence": ["stage1_regression: failed"]},
+                        "2": {"status": "PASS", "evidence": ["stage2_regression: passed"]},
+                    },
+                ),
+            )
+            self.assertIn("历史 Stage 回归失败必须至少记录一个 BLOCKER", unclassified_regression.stderr)
+            stage3_blocked = db(
+                "inspector", "stage-review", "--issue-key", "RI-STAGE", "--stage-no", "3",
+                "--decision", "rejected", "--content", "Stage 3 破坏 Stage 1 旧数据读取契约",
+                "--review-result", review_payload(
+                    ["回灌不能覆盖更晚线上事实"],
+                    history={
+                        "1": {"status": "FAIL", "evidence": ["stage1_regression: failed"]},
+                        "2": {"status": "PASS", "evidence": ["stage2_regression: passed"]},
+                    },
+                    findings={
+                        "BLOCKER": [{
+                            "id": "B-STAGE1-REGRESSION", "summary": "破坏 Stage 1 旧数据读取",
+                            "evidence": "stage1_regression failed", "risk": "历史数据无法读取",
+                        }],
+                        "MUST": [], "SHOULD": [], "NIT": [],
+                    },
+                ),
+            )
+            self.assertEqual(stage3_blocked["blocking_counts"]["BLOCKER"], 1)
+            db(
+                "developer", "stage-submit", "--issue-key", "RI-STAGE", "--stage-no", "3",
+                "--content", "修复 Stage 1 回归", "--commit-sha", "abc005",
+                "--diff-summary", "恢复旧数据 fallback 并保留回灌隔离",
+                "--test-evidence", json.dumps([
+                    "stage1_regression: passed", "stage2_regression: passed", "backfill: passed",
+                ]),
+                "--code-reference", json.dumps([{"file_path": "backfill.py", "line_start": 30}]),
+                "--resolved-findings", json.dumps(["B-STAGE1-REGRESSION"]),
+            )
+            stage3_passed = db(
+                "inspector", "stage-review", "--issue-key", "RI-STAGE", "--stage-no", "3",
+                "--decision", "auto", "--content", "当前验收与 Stage 1/2 累计回归全部通过",
+                "--review-result", review_payload(
+                    ["回灌不能覆盖更晚线上事实"],
+                    history={
+                        "1": {"status": "PASS", "evidence": ["stage1_regression: passed"]},
+                        "2": {"status": "PASS", "evidence": ["stage2_regression: passed"]},
+                    },
+                ),
+                "--baseline", stage_baseline(3),
+            )
+            self.assertEqual(
+                (stage3_passed["requested_decision"], stage3_passed["decision"], stage3_passed["final_decision"]),
+                ("auto", "approved", "PASS"),
+            )
+            stage3_state = db("developer", "stage-get", "--issue-key", "RI-STAGE", "--stage-no", "3")
+            self.assertEqual(stage3_state["baseline_status"], "PASSED")
+            self.assertEqual(stage3_state["baseline"]["inherits_stage_nos"], [1, 2])
             final = db("developer", "implementation-submit", "--issue-key", "RI-STAGE", "--content", "全阶段完成")
             self.assertEqual(final["attempt_no"], 1)
             stage_activity_types = {
@@ -1065,11 +1346,30 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                "--stages", json.dumps(stages[:2], ensure_ascii=False))
             db("inspector", "design-review", "--issue-key", "RI-STAGE-REDESIGN", "--decision", "approved",
                "--content", "批准初版")
+            db(
+                "developer", "stage-prepare", "--issue-key", "RI-STAGE-REDESIGN", "--stage-no", "1",
+                "--change-scope", json.dumps({"files": ["domain.py"]}),
+                "--change-reason", "验证设计失效路径", "--protected-behaviors", "[]",
+            )
             db("developer", "stage-submit", "--issue-key", "RI-STAGE-REDESIGN", "--stage-no", "1",
-               "--content", "第一阶段完成", "--commit-sha", "deadbeef")
+               "--content", "第一阶段完成", "--commit-sha", "deadbeef",
+               "--diff-summary", "实现初版领域模型",
+               "--test-evidence", json.dumps(["model: failed"]),
+               "--code-reference", json.dumps([{"file_path": "domain.py", "line_start": 1}]))
             redesigned = db(
                 "inspector", "stage-review", "--issue-key", "RI-STAGE-REDESIGN", "--stage-no", "1",
                 "--decision", "redesign", "--content", "新证据证明领域模型方向不成立",
+                "--review-result", review_payload(
+                    ["旧数据可读", "版本单测通过"],
+                    findings={
+                        "BLOCKER": [{
+                            "id": "B-DESIGN", "summary": "领域模型方向不成立",
+                            "evidence": "model test failed", "risk": "无法满足兼容边界",
+                        }],
+                        "MUST": [], "SHOULD": [], "NIT": [],
+                    },
+                    failed_criteria={"旧数据可读"},
+                ),
             )
             self.assertEqual(redesigned["status"], "REDESIGN_REQUIRED")
             old_plan = db("developer", "stage-list", "--issue-key", "RI-STAGE-REDESIGN", "--plan-no", "1")
@@ -1591,9 +1891,16 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 )
                 self.assertEqual(db("inspector", "issue-get", "--issue-key", "RI-WEB-DESIGN")["status"], "IN_PROGRESS")
                 db(
+                    "developer", "stage-prepare", "--issue-key", "RI-WEB-DESIGN", "--stage-no", "1",
+                    "--change-scope", json.dumps({"files": ["compat.py"]}),
+                    "--change-reason", "实现兼容层", "--protected-behaviors", "[]",
+                )
+                db(
                     "developer", "stage-submit", "--issue-key", "RI-WEB-DESIGN", "--stage-no", "1",
                     "--content", "兼容层完成", "--commit-sha", "web001",
+                    "--diff-summary", "新增兼容读取层",
                     "--test-evidence", json.dumps(["compat: passed"]),
+                    "--code-reference", json.dumps([{"file_path": "compat.py", "line_start": 1}]),
                 )
                 stage_page = client.get("/issues/RI-WEB-DESIGN").get_data(as_text=True)
                 self.assertIn("执行计划", stage_page)
@@ -1601,7 +1908,22 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 self.assertIn("阶段验收通过", stage_page)
                 stage_review = client.post(
                     "/issues/RI-WEB-DESIGN/stages/1/review",
-                    data={"plan_no": "1", "decision": "approved", "content": "兼容回归符合标准"},
+                    data={
+                        "plan_no": "1", "decision": "approved", "content": "兼容回归符合标准",
+                        "review_result": json.dumps({
+                            "findings": {"BLOCKER": [], "MUST": [], "SHOULD": [], "NIT": []},
+                            "historical_regression": {},
+                            "current_acceptance": [
+                                {"criterion": "旧数据可读", "status": "PASS", "evidence": ["compat: passed"]},
+                                {"criterion": "回归通过", "status": "PASS", "evidence": ["regression: passed"]},
+                            ],
+                        }, ensure_ascii=False),
+                        "baseline": json.dumps({
+                            "verified_behaviors": ["旧数据兼容读取"],
+                            "input_output_contracts": [], "business_semantics": ["旧语义不变"],
+                            "tests": ["compat", "regression"],
+                        }, ensure_ascii=False),
+                    },
                     follow_redirects=False,
                 )
                 self.assertEqual(stage_review.status_code, 302)

@@ -24,9 +24,13 @@ Code Inspector 的目标不是让 Developer 无限提交、Inspector 无限驳�
 
 `DESIGN_REQUIRED`、`DESIGN_PENDING_REVIEW`、`REDESIGN_REQUIRED` 期间 Developer 只能阅读、分析、讨论和用 `design-submit` 提交方案，禁止修改业务代码或 `implementation-submit`；只有 `design-review approved` 转为 `IN_PROGRESS` 后才能编码。设计批准只表示基于当时证据允许实现，出现新事实时仍可显式转 `REDESIGN_REQUIRED`。
 
-复杂 Issue 在批准设计前，Inspector 应使用 `stage-plan-create` 把实现拆成少量可独立验收、默认串行的 Stage；每个 Stage 必须明确目标和验收标准。设计批准会激活第一个 Stage。Developer 只能实现当前 `IN_PROGRESS` Stage，并用 `stage-submit` 提交 commit、完成说明、测试与代码证据；提交后停止后续业务代码修改，等待 Inspector 用 `stage-review` 验收。通过后自动激活下一 Stage，驳回只退回当前 Stage；若验收发现整个设计不成立，使用 `stage-review --decision redesign` 进入 `REDESIGN_REQUIRED` 并废弃旧计划的未完成阶段。新设计建立新的 `plan_no`，旧计划和验收活动永久保留。
+复杂 Issue 在批准设计前，Inspector 应使用 `stage-plan-create` 把实现拆成少量可独立验收、默认串行的 Stage；每个 Stage 必须明确目标和验收标准。设计批准会激活第一个 Stage。Developer 修改代码前必须读取 `stage-get` 返回的历史 baseline，并用 `stage-prepare` 声明预计修改的模块/文件/类、修改原因以及不得改变的历史行为。之后只实现当前 `IN_PROGRESS` Stage，用 `stage-submit` 提交 commit、Diff 摘要、当前测试、历史累计回归和代码证据；提交后停止修改，等待 Inspector 验收。通过后自动激活下一 Stage，驳回只退回当前 Stage；若验收发现整个设计不成立，使用 `stage-review --decision redesign` 进入 `REDESIGN_REQUIRED` 并废弃旧计划的未完成阶段。新设计建立新的 `plan_no`，旧计划和验收活动永久保留。
 
-有 active Stage Plan 时，全部 Stage `APPROVED` 前禁止 `implementation-submit`；全部通过后仍必须提交一次整体验证所需的最终实现，阶段验收不能替代最终 `VERIFICATION_PASSED`。Stage 不属于 Issue 状态机，执行期间 Issue 保持 `IN_PROGRESS`。简单 Issue 不创建 Stage Plan，不增加额外流程。Stage 提交和审核不改变 `current_attempt_no`。
+每个 `APPROVED` Stage 都必须建立 `PASSED` baseline，记录已验证行为、输入输出契约、重要业务语义和测试集合；后续 Stage 继承之前全部 baseline。Inspector 每轮必须执行 Historical Stage Regression Check，逐项确认当前 Diff、历史行为、历史测试和 Breaking Change。历史 Stage 失败一律是 `BLOCKER`。有 active Stage Plan 时，全部 Stage `APPROVED` 前禁止 `implementation-submit`；全部通过后仍必须提交一次整体验证所需的最终实现，阶段验收不能替代最终 `VERIFICATION_PASSED`。Stage 不属于 Issue 状态机，执行期间 Issue 保持 `IN_PROGRESS`。简单 Issue 不创建 Stage Plan，不增加额外流程。Stage 规划、提交和审核不改变 `current_attempt_no`。
+
+Inspector 的 Stage finding 只分四级：`BLOCKER` 是功能、数据、安全、运行、核心语义或历史 Stage 破坏；`MUST` 是明确违反需求、批准设计、验收标准或强制规范；两者阻断。`SHOULD` 是可维护性、抽象、潜在性能或非必要重构，`NIT` 是命名、格式与个人偏好；二者只进 Backlog，绝不阻断。第一轮可提出所有等级；第二轮起不得新增 SHOULD/NIT，除非由本轮修复新引入并给出证据。第二轮起新增 BLOCKER/MUST 必须说明为何此前未发现、证据、实际风险和阻断依据。
+
+当 `BLOCKER=0`、`MUST=0`、当前 Stage 验收全部 PASS、历史 Stage 累计回归全部 PASS 时，Inspector 必须输出 `PASS` 并结束审核，不能以“还可优化”“最好重构”“不够优雅”继续循环。输出固定包含 Inspection Result、四级 findings、Historical Regression、Current Stage Acceptance 和 Final Decision；SHOULD/NIT 存入 baseline/Activity Backlog 后继续通过。governance v2 优先使用 `stage-review --decision auto` 让 Runtime 计算最终 Gate；只有整案失效才显式使用 `redesign`。
 
 实现审核失败必须区分两类：方案正确但实现遗漏或有 Bug 时记录 `VERIFICATION_FAILED` 并回 `IN_PROGRESS`；方案方向失效时转 `REDESIGN_REQUIRED`，重新经过设计提交和批准。连续两次实现失败后，Inspector 必须重新判断是实现错误还是设计错误；即便仍属实现错误，也必须给出具体失败原因、必改点和验证标准，禁止机械重复循环。
 

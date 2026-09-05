@@ -234,10 +234,11 @@ def generated_skill_text(platform: str, identities: list[dict[str, Any]], target
 
 1. 用 `{tool} task-list`、带 `--updated-after/--limit/--fields` 的 `issue-list`、`issue-get` 和 `activity-list-recent` 增量定位待处理 issue 与新备注；不要创建 task、版本或正式 issue，不要修改评级或最终确认。
 2. `DESIGN_REQUIRED` 或 `REDESIGN_REQUIRED` 时只阅读、分析和讨论，用 `design-submit` 提交具体方案；`DESIGN_PENDING_REVIEW` 时等待审核。上述三种状态禁止修改业务代码和 `implementation-submit`，不得自行批准设计。
-3. 只有简单问题或 `design-review approved` 后的 `IN_PROGRESS` 才能编码。若存在 Stage Plan，先用 `stage-list/stage-get` 读取当前阶段，只修改该阶段范围；用 `stage-submit` 提交 commit、完成说明、测试和代码引用后立即等待验收，不得提前实施后续 Stage。
-4. 无 Stage Plan 时可直接实现；有计划时必须等全部 Stage `APPROVED` 后，才能用 `implementation-submit` 原子提交整个 Issue 的最终实现证据。Stage 不增加 implementation attempt。
-5. 方案应按复杂度说明修改模块、类或方法、数据流、状态/幂等/并发、DB/历史/API 兼容、测试和风险；不要机械套模板。遇到验收口径或成立性疑问时，只能带明确说明转 `INSPECTOR_CONFIRMATION_REQUIRED`，不得直接进入 `HUMAN_CONFIRMATION_REQUIRED`、调用 `human-escalate` 或绕过 Inspector 请求 Human 做技术决策。
-6. `HUMAN_CONFIRMATION_REQUIRED` 时没有可执行动作，必须等待 Human 决策后恢复流程。发现不属于现有 issue 的新问题时用 `candidate-submit` 提交候选，绝不调用 `issue-create`。默认聊天仅说明处理的 issue、方案或改动、测试和下一步。
+3. 只有简单问题或 `design-review approved` 后的 `IN_PROGRESS` 才能编码。若存在 Stage Plan，先用 `stage-get` 读取当前 Stage 及全部历史 PASSED baseline；修改前用 `stage-prepare` 声明预计影响的模块/文件/类、修改原因和不得改变的历史行为。只修改当前 Stage 范围，不得提前实施后续 Stage。
+4. 完成后用 `stage-submit` 提交 commit、Diff 摘要、代码引用、当前验收测试和历史 Stage 累计回归；上轮有 BLOCKER/MUST 时在 `resolved-findings` 逐项回应 id。SHOULD/NIT 只进 Backlog，不要求为当前 Stage 修改。提交后立即等待验收，不得自行宣布 PASS。
+5. 无 Stage Plan 时可直接实现；有计划时必须等全部 Stage `APPROVED` 后，才能用 `implementation-submit` 原子提交整个 Issue 的最终实现证据。Stage 不增加 implementation attempt。
+6. 方案应按复杂度说明修改模块、类或方法、数据流、状态/幂等/并发、DB/历史/API 兼容、测试和风险；不要机械套模板。遇到验收口径或成立性疑问时，只能带明确说明转 `INSPECTOR_CONFIRMATION_REQUIRED`，不得直接进入 `HUMAN_CONFIRMATION_REQUIRED`、调用 `human-escalate` 或绕过 Inspector 请求 Human 做技术决策。
+7. `HUMAN_CONFIRMATION_REQUIRED` 时没有可执行动作，必须等待 Human 决策后恢复流程。发现不属于现有 issue 的新问题时用 `candidate-submit` 提交候选，绝不调用 `issue-create`。默认聊天仅说明处理的 issue、方案或改动、测试和下一步。
 """
         else:
             workflow = f"""### 执行流程
@@ -246,11 +247,12 @@ def generated_skill_text(platform: str, identities: list[dict[str, Any]], target
 2. 区分 `scan` 与 `report`：扫描期间先收集候选，主审核者必须额外串联跨模块数据流；向 `CONTINUOUS` 报告单个线上问题只核实证据、判定成立和去重，不触发全项目扫描。
 3. 初步合并后先做覆盖面回查和补充扫描，再按根因、修复边界和风险链路去重、评级；不能用候选数量或并行扫描完成代替覆盖判断。最后用 `issue-create-batch` 创建正式 issue。
 4. 对跨模块、Schema/迁移、回灌、状态机、幂等并发、ACK/retry/recovery、公共 API、大重构或方向不确定的问题优先 `design-request`，明确根因、不可破坏语义、约束、风险、推荐方向和必须回答的问题。用 `DESIGN_GUIDANCE` 补充讨论，用 `design-review` 批准或明确驳回。
-5. 对一次性实施容易跑偏的复杂方案，在批准前用 `stage-plan-create` 定义少量串行 Stage，每个阶段必须有目标和可验证的验收标准。设计批准自动激活第一个 Stage；用 `stage-review` 逐阶段验收，通过后自动进入下一阶段，驳回只修当前阶段。整案失效时用 `--decision redesign` 废弃未完成计划并重走设计。
-6. 用 `issue-list-pending-review` 汇总最终实现。审核失败必须区分：实现细节错则追加 `VERIFICATION_FAILED` 并回 `IN_PROGRESS`；方向错则转 `REDESIGN_REQUIRED`，强制重走设计。连续两次失败必须重新判断设计是否对齐，并给出必改点与验证标准。
-7. Human 是异常兜底，不是普通 Reviewer。准备 `human-escalate` 前必须确认继续读代码、补测试、查数据库/日志/运行数据、追加 `DESIGN_GUIDANCE` 或自行作出合理技术判断都不能安全解决，并且 Human 确实掌握关键业务事实，或选错方案会造成无法靠正常重试恢复的重大数据破坏。意见不一致、普通架构取舍、方案差、实现或测试失败都不得升级。
-8. 确需升级时，用 `human-escalate` 把原因、已验证/未知事实、选项与影响、推荐和 Human 唯一要回答的问题整理清楚；不得倾倒长日志、完整代码或 Agent 对话。`HUMAN_CONFIRMATION_REQUIRED` 时停止自动工作；Inspector 不得代替 Human resolve。Human 恢复后仍由 Inspector 负责设计、审核、验证和技术闭环。
-9. 只有当前 implementation attempt 已有 `VERIFICATION_PASSED` 才能转 `CONFIRMED`，Human 也不能跳过。不修改业务代码；Inspector 定义必须解决和不可破坏的边界，Developer 决定具体代码实现。默认聊天仅输出简短任务摘要。
+5. 对一次性实施容易跑偏的复杂方案，在批准前用 `stage-plan-create` 定义少量串行 Stage，每个阶段必须有目标和可验证的验收标准。验收时检查 Dev 的影响声明、Diff、当前验收和全部历史 PASSED baseline；历史行为/测试/契约回归失败一律是 BLOCKER。finding 只分 BLOCKER/MUST/SHOULD/NIT，只有前两级阻断；SHOULD/NIT 只进 Backlog。
+6. `stage-review` 必须结构化输出 Inspection Result、四级 findings、Historical Regression、Current Stage Acceptance 和 Final Decision，governance v2 优先用 `--decision auto` 让 Runtime 计算 Gate。第一轮可完整提出问题；第二轮起不得新增无关 SHOULD/NIT，新 BLOCKER/MUST 必须说明此前遗漏原因、证据与实际风险。BLOCKER/MUST 清零且当前与历史验收全 PASS 时必须结束审核并建立 PASSED baseline，不得用“还可优化”继续循环。整案失效时用 `--decision redesign` 保留旧计划并重走设计。
+7. 用 `issue-list-pending-review` 汇总最终实现。审核失败必须区分：实现细节错则追加 `VERIFICATION_FAILED` 并回 `IN_PROGRESS`；方向错则转 `REDESIGN_REQUIRED`，强制重走设计。连续两次失败必须重新判断设计是否对齐，并给出必改点与验证标准。
+8. Human 是异常兜底，不是普通 Reviewer。准备 `human-escalate` 前必须确认继续读代码、补测试、查数据库/日志/运行数据、追加 `DESIGN_GUIDANCE` 或自行作出合理技术判断都不能安全解决，并且 Human 确实掌握关键业务事实，或选错方案会造成无法靠正常重试恢复的重大数据破坏。意见不一致、普通架构取舍、方案差、实现或测试失败都不得升级。
+9. 确需升级时，用 `human-escalate` 把原因、已验证/未知事实、选项与影响、推荐和 Human 唯一要回答的问题整理清楚；不得倾倒长日志、完整代码或 Agent 对话。`HUMAN_CONFIRMATION_REQUIRED` 时停止自动工作；Inspector 不得代替 Human resolve。Human 恢复后仍由 Inspector 负责设计、审核、验证和技术闭环。
+10. 只有当前 implementation attempt 已有 `VERIFICATION_PASSED` 才能转 `CONFIRMED`，Human 也不能跳过。不修改业务代码；Inspector 定义必须解决和不可破坏的边界，Developer 决定具体代码实现。默认聊天仅输出简短任务摘要。
 """
         default_label = "（默认身份）" if item.get("default") else ""
         rows.append(

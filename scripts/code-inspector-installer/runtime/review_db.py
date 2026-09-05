@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import sys
 import uuid
@@ -97,7 +98,7 @@ ALLOWED_ACTIVITY_BY_AGENT = {
 }
 ATOMIC_ACTIVITY_TYPES = {
     "DESIGN_REQUESTED", "DESIGN_SUBMITTED", "DESIGN_APPROVED", "DESIGN_REJECTED",
-    "STAGE_PLAN_CREATED", "STAGE_SUBMITTED", "STAGE_APPROVED", "STAGE_REJECTED",
+    "STAGE_PLAN_CREATED", "STAGE_SCOPE_DECLARED", "STAGE_SUBMITTED", "STAGE_APPROVED", "STAGE_REJECTED",
     "STAGE_PLAN_SUPERSEDED",
     "HUMAN_CONFIRMATION_REQUESTED", "HUMAN_CONFIRMATION_PROVIDED",
 }
@@ -1155,11 +1156,150 @@ def normalized_acceptance_criteria(value: Any) -> str:
         return "\n".join(f"- {item}" for item in items)
     return str(value or "").strip()
 
+FINDING_LEVELS = ("BLOCKER", "MUST", "SHOULD", "NIT")
+
+def nonempty_evidence(value: Any) -> bool:
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (list, dict)):
+        return bool(value)
+    return value is not None
+
+def acceptance_items(value: str) -> list[str]:
+    return [re.sub(r"^\s*[-*]\s+", "", line).strip() for line in value.splitlines() if line.strip()]
+
+def validate_stage_review_result(
+    conn: sqlite3.Connection,
+    issue_id: int,
+    plan_no: int,
+    stage: sqlite3.Row,
+    raw_result: str,
+) -> tuple[dict[str, Any], bool, int]:
+    try:
+        result = json.loads(raw_result)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("review-result 必须是 JSON 对象") from exc
+    if not isinstance(result, dict):
+        raise ValueError("review-result 必须是 JSON 对象")
+    required = {"findings", "historical_regression", "current_acceptance"}
+    if set(result) != required:
+        raise ValueError("review-result 必须且只能包含 findings、historical_regression、current_acceptance")
+
+    findings = result["findings"]
+    if not isinstance(findings, dict) or set(findings) != set(FINDING_LEVELS):
+        raise ValueError("findings 必须完整包含 BLOCKER、MUST、SHOULD、NIT 四个数组")
+    review_round = int(stage["review_round"]) + 1
+    known_ids: set[str] = set()
+    activity_rows = conn.execute(
+        """SELECT metadata_json FROM issue_activity
+           WHERE issue_id = ? AND activity_type IN ('STAGE_APPROVED', 'STAGE_REJECTED')
+           ORDER BY id""",
+        (issue_id,),
+    ).fetchall()
+    for activity in activity_rows:
+        metadata = loads(activity["metadata_json"], {})
+        if metadata.get("plan_no") != plan_no or metadata.get("stage_no") != stage["stage_no"]:
+            continue
+        old_findings = metadata.get("review_result", {}).get("findings", {})
+        for level in FINDING_LEVELS:
+            for finding in old_findings.get(level, []):
+                if isinstance(finding, dict) and finding.get("id"):
+                    known_ids.add(str(finding["id"]))
+
+    current_ids: set[str] = set()
+    for level in FINDING_LEVELS:
+        items = findings[level]
+        if not isinstance(items, list):
+            raise ValueError(f"findings.{level} 必须是 JSON 数组")
+        for finding in items:
+            if not isinstance(finding, dict):
+                raise ValueError(f"{level} finding 必须是 JSON 对象")
+            finding_id = str(finding.get("id") or "").strip()
+            summary = str(finding.get("summary") or "").strip()
+            if not finding_id or not summary:
+                raise ValueError(f"{level} finding 必须包含非空 id 和 summary")
+            if finding_id in current_ids:
+                raise ValueError(f"同一轮 finding id 不能重复: {finding_id}")
+            current_ids.add(finding_id)
+            is_new = finding_id not in known_ids
+            if level in {"BLOCKER", "MUST"}:
+                if not nonempty_evidence(finding.get("evidence")) or not str(finding.get("risk") or "").strip():
+                    raise ValueError(f"{level} {finding_id} 必须提供 evidence 和实际 risk")
+                if review_round >= 2 and is_new and not str(finding.get("why_not_found_earlier") or "").strip():
+                    raise ValueError(f"第 {review_round} 轮新增 {level} {finding_id} 必须说明 why_not_found_earlier")
+            elif review_round >= 2 and is_new:
+                if finding.get("introduced_by_fix") is not True or not nonempty_evidence(finding.get("evidence")):
+                    raise ValueError(
+                        f"第 {review_round} 轮不得新增无关 {level}；{finding_id} 必须由本轮修复新引入并提供 evidence"
+                    )
+
+    previous = conn.execute(
+        """SELECT stage_no FROM issue_stage
+           WHERE issue_id = ? AND plan_no = ? AND stage_no < ? AND status = 'APPROVED'
+           ORDER BY stage_no""",
+        (issue_id, plan_no, stage["stage_no"]),
+    ).fetchall()
+    expected_history = {str(row["stage_no"]) for row in previous}
+    historical = result["historical_regression"]
+    if not isinstance(historical, dict) or set(historical) != expected_history:
+        raise ValueError(
+            "historical_regression 必须逐项覆盖已批准 Stage: "
+            + (", ".join(sorted(expected_history, key=int)) or "无历史 Stage，应传 {}")
+        )
+    historical_failed = False
+    for stage_no, check in historical.items():
+        if not isinstance(check, dict) or check.get("status") not in {"PASS", "FAIL"}:
+            raise ValueError(f"historical_regression.{stage_no} 必须包含 PASS/FAIL status")
+        if not nonempty_evidence(check.get("evidence")):
+            raise ValueError(f"historical_regression.{stage_no} 必须提供 evidence")
+        historical_failed = historical_failed or check["status"] == "FAIL"
+
+    current = result["current_acceptance"]
+    expected_criteria = acceptance_items(stage["acceptance_criteria"])
+    if not isinstance(current, list) or [item.get("criterion") if isinstance(item, dict) else None for item in current] != expected_criteria:
+        raise ValueError("current_acceptance 必须按原顺序逐项覆盖 Stage acceptance_criteria")
+    current_failed = False
+    for check in current:
+        if check.get("status") not in {"PASS", "FAIL"} or not nonempty_evidence(check.get("evidence")):
+            raise ValueError("每个 current_acceptance 项必须包含 PASS/FAIL status 和 evidence")
+        current_failed = current_failed or check["status"] == "FAIL"
+
+    blocker_count = len(findings["BLOCKER"])
+    must_count = len(findings["MUST"])
+    if historical_failed and blocker_count == 0:
+        raise ValueError("历史 Stage 回归失败必须至少记录一个 BLOCKER")
+    if current_failed and blocker_count + must_count == 0:
+        raise ValueError("当前 Stage 验收失败必须记录对应 BLOCKER 或 MUST")
+    passed = blocker_count == 0 and must_count == 0 and not historical_failed and not current_failed
+    return result, passed, review_round
+
+def validate_stage_baseline(raw_baseline: str, inherited_stage_nos: list[int]) -> dict[str, Any]:
+    try:
+        baseline = json.loads(raw_baseline)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("baseline 必须是 JSON 对象") from exc
+    required = {"verified_behaviors", "input_output_contracts", "business_semantics", "tests"}
+    if not isinstance(baseline, dict) or set(baseline) != required:
+        raise ValueError("baseline 必须且只能包含 verified_behaviors、input_output_contracts、business_semantics、tests")
+    for key in required:
+        if not isinstance(baseline[key], list):
+            raise ValueError(f"baseline.{key} 必须是 JSON 数组")
+    if not baseline["verified_behaviors"] or not baseline["tests"]:
+        raise ValueError("baseline.verified_behaviors 和 baseline.tests 不能为空")
+    return {**baseline, "inherits_stage_nos": inherited_stage_nos, "status": "PASSED"}
+
 def stage_row_json(row: sqlite3.Row) -> dict[str, Any]:
     result = dict(row)
     result["test_evidence"] = loads(result.pop("test_evidence_json", None), [])
     result["code_reference"] = loads(result.pop("code_reference_json", None), [])
     result["submission_metadata"] = loads(result.pop("submission_metadata_json", None), {})
+    result["planned_change_scope"] = loads(result.pop("planned_change_scope_json", None), {})
+    result["protected_behaviors"] = loads(result.pop("protected_behaviors_json", None), [])
+    result["resolved_findings"] = loads(result.pop("resolved_findings_json", None), [])
+    result["review_findings"] = loads(result.pop("review_findings_json", None), {level: [] for level in FINDING_LEVELS})
+    result["historical_regression"] = loads(result.pop("historical_regression_json", None), {})
+    result["current_acceptance"] = loads(result.pop("current_acceptance_json", None), [])
+    result["baseline"] = loads(result.pop("baseline_json", None), {})
     return result
 
 def stage_plan_create(args: argparse.Namespace) -> None:
@@ -1207,8 +1347,9 @@ def stage_plan_create(args: argparse.Namespace) -> None:
         for item in prepared:
             conn.execute(
                 """INSERT INTO issue_stage(
-                    issue_id, plan_no, stage_no, title, objective, acceptance_criteria, status
-                ) VALUES (?, ?, ?, ?, ?, ?, 'PLANNED')""",
+                    issue_id, plan_no, stage_no, title, objective, acceptance_criteria,
+                    status, governance_version
+                ) VALUES (?, ?, ?, ?, ?, ?, 'PLANNED', 2)""",
                 (
                     issue["id"], plan_no, item["stage_no"], item["title"],
                     item["objective"], item["acceptance_criteria"],
@@ -1222,7 +1363,7 @@ def stage_plan_create(args: argparse.Namespace) -> None:
             (
                 issue["id"], issue["current_attempt_no"], operator_type(args.agent), actor_id(args),
                 f"创建 Stage Plan #{plan_no}，共 {len(prepared)} 个阶段",
-                dumps({"plan_no": plan_no, "stages": prepared}),
+                dumps({"plan_no": plan_no, "governance_version": 2, "stages": prepared}),
             ),
         )
         audit(conn, actor_id(args), "stage.plan-create", "review_issue", args.issue_key, True)
@@ -1261,7 +1402,103 @@ def stage_get(args: argparse.Namespace) -> None:
         ).fetchone()
         if not row:
             raise KeyError(f"Stage 不存在: plan={plan_no}, stage={args.stage_no}")
-    print_json(stage_row_json(row))
+        previous = conn.execute(
+            """SELECT stage_no, title, baseline_json, baseline_status, baseline_established_at
+               FROM issue_stage
+               WHERE issue_id = ? AND plan_no = ? AND stage_no < ? AND status = 'APPROVED'
+               ORDER BY stage_no""",
+            (issue["id"], plan_no, args.stage_no),
+        ).fetchall()
+    result = stage_row_json(row)
+    result["historical_baselines"] = [
+        {
+            "stage_no": item["stage_no"], "title": item["title"],
+            "status": item["baseline_status"],
+            "baseline": loads(item["baseline_json"], {}),
+            "established_at": item["baseline_established_at"],
+        }
+        for item in previous
+    ]
+    print_json(result)
+
+def stage_prepare(args: argparse.Namespace) -> None:
+    require_agent(args.agent)
+    if args.agent not in {"developer", "human"}:
+        raise PermissionError("只有 developer 或 human 可以声明 Stage 开发影响范围")
+    reason = (args.change_reason or "").strip()
+    if not reason:
+        raise ValueError("stage-prepare 的 --change-reason 不能为空")
+    try:
+        change_scope = json.loads(args.change_scope)
+        protected_behaviors = json.loads(args.protected_behaviors)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("change-scope 和 protected-behaviors 必须是合法 JSON") from exc
+    if not isinstance(change_scope, (list, dict)) or not change_scope:
+        raise ValueError("change-scope 必须是非空 JSON 数组或对象，说明模块、文件或类")
+    if not isinstance(protected_behaviors, list):
+        raise ValueError("protected-behaviors 必须是 JSON 数组")
+
+    with connect() as conn:
+        issue = issue_row(conn, args.issue_key)
+        if issue["status"] != "IN_PROGRESS":
+            raise RuntimeError(f"Issue 状态 {issue['status']} 不允许准备 Stage")
+        plan_no = active_stage_plan_no(conn, issue["id"])
+        if plan_no is None:
+            raise RuntimeError("当前没有可执行的 Stage Plan")
+        stage = conn.execute(
+            "SELECT * FROM issue_stage WHERE issue_id = ? AND plan_no = ? AND stage_no = ?",
+            (issue["id"], plan_no, args.stage_no),
+        ).fetchone()
+        if not stage:
+            raise KeyError(f"Stage 不存在: plan={plan_no}, stage={args.stage_no}")
+        if stage["status"] != "IN_PROGRESS":
+            raise RuntimeError(f"Stage {args.stage_no} 当前为 {stage['status']}，不能声明开发范围")
+        previous = conn.execute(
+            """SELECT stage_no, title, baseline_json, baseline_status
+               FROM issue_stage
+               WHERE issue_id = ? AND plan_no = ? AND stage_no < ? AND status = 'APPROVED'
+               ORDER BY stage_no""",
+            (issue["id"], plan_no, args.stage_no),
+        ).fetchall()
+        if int(stage["governance_version"]) >= 2:
+            missing_baselines = [item["stage_no"] for item in previous if item["baseline_status"] != "PASSED"]
+            if missing_baselines:
+                raise RuntimeError(f"历史 Stage 缺少 PASSED baseline: {missing_baselines}")
+            if previous and not protected_behaviors:
+                raise ValueError("存在历史 Stage 时 protected-behaviors 不能为空")
+        conn.execute(
+            """UPDATE issue_stage
+               SET planned_change_scope_json = ?, change_reason = ?, protected_behaviors_json = ?,
+                   prepared_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+               WHERE id = ?""",
+            (dumps(change_scope), reason, dumps(protected_behaviors), stage["id"]),
+        )
+        previous_baselines = [
+            {
+                "stage_no": item["stage_no"], "title": item["title"],
+                "status": item["baseline_status"], "baseline": loads(item["baseline_json"], {}),
+            }
+            for item in previous
+        ]
+        conn.execute(
+            """INSERT INTO issue_activity(
+                issue_id, attempt_no, activity_type, operator_type, operator_id,
+                content, result_status, metadata_json
+            ) VALUES (?, ?, 'STAGE_SCOPE_DECLARED', ?, ?, ?, 'IN_PROGRESS', ?)""",
+            (
+                issue["id"], issue["current_attempt_no"], operator_type(args.agent), actor_id(args),
+                reason, dumps({
+                    "plan_no": plan_no, "stage_no": args.stage_no,
+                    "change_scope": change_scope, "protected_behaviors": protected_behaviors,
+                    "historical_baseline_stage_nos": [item["stage_no"] for item in previous],
+                }),
+            ),
+        )
+        audit(conn, actor_id(args), "stage.prepare", "review_issue", args.issue_key, True)
+    print_json({
+        "issue_key": args.issue_key, "plan_no": plan_no, "stage_no": args.stage_no,
+        "status": "IN_PROGRESS", "historical_baselines": previous_baselines,
+    })
 
 def stage_submit(args: argparse.Namespace) -> None:
     require_agent(args.agent)
@@ -1269,17 +1506,21 @@ def stage_submit(args: argparse.Namespace) -> None:
         raise PermissionError("只有 developer 或 human 可以提交 Stage")
     content = (args.content or "").strip()
     commit_sha = (args.commit_sha or "").strip()
+    diff_summary = (args.diff_summary or "").strip()
     if not content or not commit_sha:
         raise ValueError("stage-submit 的 --content 和 --commit-sha 均不能为空")
     code_reference = json.loads(args.code_reference)
     test_evidence = json.loads(args.test_evidence)
     metadata = json.loads(args.metadata)
+    resolved_findings = json.loads(args.resolved_findings)
     if not isinstance(code_reference, list):
         raise ValueError("code-reference 必须是 JSON 数组")
     if not isinstance(test_evidence, (list, dict)):
         raise ValueError("test-evidence 必须是 JSON 数组或对象")
     if not isinstance(metadata, dict):
         raise ValueError("metadata 必须是 JSON 对象")
+    if not isinstance(resolved_findings, list) or any(not isinstance(item, str) for item in resolved_findings):
+        raise ValueError("resolved-findings 必须是 finding id 字符串组成的 JSON 数组")
     with connect() as conn:
         issue = issue_row(conn, args.issue_key)
         if issue["status"] != "IN_PROGRESS":
@@ -1295,16 +1536,39 @@ def stage_submit(args: argparse.Namespace) -> None:
             raise KeyError(f"Stage 不存在: plan={plan_no}, stage={args.stage_no}")
         if stage["status"] != "IN_PROGRESS":
             raise RuntimeError(f"Stage {args.stage_no} 当前为 {stage['status']}，不能提交")
+        if int(stage["governance_version"]) >= 2:
+            if not stage["prepared_at"]:
+                raise RuntimeError("修改业务代码前必须先用 stage-prepare 声明影响范围和历史保护项")
+            if not diff_summary or not code_reference or not test_evidence:
+                raise ValueError("Stage v2 提交必须提供 --diff-summary、非空 --code-reference 和 --test-evidence")
+            previous_findings = loads(stage["review_findings_json"], {level: [] for level in FINDING_LEVELS})
+            blocking_ids = {
+                str(item.get("id"))
+                for level in ("BLOCKER", "MUST")
+                for item in previous_findings.get(level, [])
+                if isinstance(item, dict) and item.get("id")
+            }
+            missing_resolutions = sorted(blocking_ids - set(resolved_findings))
+            if missing_resolutions:
+                raise ValueError(
+                    "再次提交必须在 resolved-findings 中逐项确认已处理 BLOCKER/MUST: "
+                    + ", ".join(missing_resolutions)
+                )
         conn.execute(
             """UPDATE issue_stage
                SET status = 'PENDING_REVIEW', submitted_commit_sha = ?, developer_summary = ?,
-                   test_evidence_json = ?, code_reference_json = ?, submission_metadata_json = ?,
+                   diff_summary = ?, test_evidence_json = ?, code_reference_json = ?,
+                   submission_metadata_json = ?, resolved_findings_json = ?,
                    submitted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
                WHERE id = ?""",
-            (commit_sha, content, dumps(test_evidence), dumps(code_reference), dumps(metadata), stage["id"]),
+            (
+                commit_sha, content, diff_summary or None, dumps(test_evidence), dumps(code_reference),
+                dumps(metadata), dumps(resolved_findings), stage["id"],
+            ),
         )
         activity_metadata = {**metadata, "plan_no": plan_no, "stage_no": args.stage_no,
-                             "commit_sha": commit_sha, "test_evidence": test_evidence}
+                             "commit_sha": commit_sha, "diff_summary": diff_summary,
+                             "test_evidence": test_evidence, "resolved_findings": resolved_findings}
         conn.execute(
             """INSERT INTO issue_activity(
                 issue_id, attempt_no, activity_type, operator_type, operator_id,
@@ -1344,13 +1608,61 @@ def stage_review(args: argparse.Namespace) -> None:
         if stage["status"] != "PENDING_REVIEW":
             raise RuntimeError(f"Stage {args.stage_no} 当前为 {stage['status']}，不能验收")
 
-        activity_type = "STAGE_APPROVED" if args.decision == "approved" else "STAGE_REJECTED"
-        if args.decision == "approved":
+        review_result: dict[str, Any] | None = None
+        baseline: dict[str, Any] | None = None
+        decision = args.decision
+        if int(stage["governance_version"]) >= 2:
+            review_result, passed, review_round = validate_stage_review_result(
+                conn, issue["id"], plan_no, stage, args.review_result,
+            )
+            if decision == "auto":
+                decision = "approved" if passed else "rejected"
+            blockers = review_result["findings"]["BLOCKER"]
+            musts = review_result["findings"]["MUST"]
+            if decision == "approved":
+                if not passed:
+                    raise RuntimeError("存在 BLOCKER/MUST 或验收失败，不能 PASS")
+                inherited = [
+                    row["stage_no"] for row in conn.execute(
+                        """SELECT stage_no FROM issue_stage
+                           WHERE issue_id = ? AND plan_no = ? AND stage_no < ? AND status = 'APPROVED'
+                           ORDER BY stage_no""",
+                        (issue["id"], plan_no, args.stage_no),
+                    ).fetchall()
+                ]
+                baseline = validate_stage_baseline(args.baseline, inherited)
+            else:
+                if passed:
+                    raise RuntimeError("BLOCKER/MUST 已清零且当前验收与历史回归均通过，Inspector 必须 PASS")
+                if decision == "redesign" and not blockers:
+                    raise ValueError("要求重新设计必须记录至少一个说明整案失效的 BLOCKER")
+            findings_json = dumps(review_result["findings"])
+            history_json = dumps(review_result["historical_regression"])
+            acceptance_json = dumps(review_result["current_acceptance"])
+        else:
+            if decision == "auto":
+                raise ValueError("governance v1 历史 Stage 不支持 auto decision")
+            passed = args.decision == "approved"
+            review_round = int(stage["review_round"]) + 1
+            blockers = []
+            musts = []
+            findings_json = stage["review_findings_json"]
+            history_json = stage["historical_regression_json"]
+            acceptance_json = stage["current_acceptance_json"]
+
+        activity_type = "STAGE_APPROVED" if decision == "approved" else "STAGE_REJECTED"
+        if decision == "approved":
             conn.execute(
                 """UPDATE issue_stage
-                   SET status = 'APPROVED', review_comment = ?, approved_at = CURRENT_TIMESTAMP,
+                   SET status = 'APPROVED', review_comment = ?, review_round = ?,
+                       review_findings_json = ?, historical_regression_json = ?,
+                       current_acceptance_json = ?, baseline_json = ?, baseline_status = 'PASSED',
+                       baseline_established_at = CURRENT_TIMESTAMP, approved_at = CURRENT_TIMESTAMP,
                        updated_at = CURRENT_TIMESTAMP WHERE id = ?""",
-                (content, stage["id"]),
+                (
+                    content, review_round, findings_json, history_json, acceptance_json,
+                    dumps(baseline or {}), stage["id"],
+                ),
             )
             next_stage = conn.execute(
                 """SELECT id, stage_no FROM issue_stage
@@ -1364,20 +1676,39 @@ def stage_review(args: argparse.Namespace) -> None:
                     (next_stage["id"],),
                 )
             result_status = "APPROVED"
-        elif args.decision == "rejected":
+        elif decision == "rejected":
             conn.execute(
                 """UPDATE issue_stage
-                   SET status = 'IN_PROGRESS', review_comment = ?, approved_at = NULL,
+                   SET status = 'IN_PROGRESS', review_comment = ?, review_round = ?,
+                       review_findings_json = ?, historical_regression_json = ?,
+                       current_acceptance_json = ?, approved_at = NULL,
                        updated_at = CURRENT_TIMESTAMP WHERE id = ?""",
-                (content, stage["id"]),
+                (content, review_round, findings_json, history_json, acceptance_json, stage["id"]),
             )
             next_stage = None
             result_status = "IN_PROGRESS"
         else:
             # 阶段验收发现整个设计不成立：同一事务中驳回、废弃计划并回到重设计。
+            conn.execute(
+                """UPDATE issue_stage
+                   SET review_comment = ?, review_round = ?, review_findings_json = ?,
+                       historical_regression_json = ?, current_acceptance_json = ?,
+                       updated_at = CURRENT_TIMESTAMP WHERE id = ?""",
+                (content, review_round, findings_json, history_json, acceptance_json, stage["id"]),
+            )
             next_stage = None
             result_status = "REDESIGN_REQUIRED"
 
+        activity_metadata = {
+            "plan_no": plan_no, "stage_no": args.stage_no, "decision": decision,
+            "requested_decision": args.decision,
+            "review_round": review_round, "inspection_result": "PASS" if passed else "FAIL",
+            "final_decision": "PASS" if decision == "approved" else "REJECT",
+        }
+        if review_result is not None:
+            activity_metadata["review_result"] = review_result
+        if baseline is not None:
+            activity_metadata["baseline"] = baseline
         conn.execute(
             """INSERT INTO issue_activity(
                 issue_id, attempt_no, activity_type, operator_type, operator_id,
@@ -1386,10 +1717,10 @@ def stage_review(args: argparse.Namespace) -> None:
             (
                 issue["id"], issue["current_attempt_no"], activity_type,
                 operator_type(args.agent), actor_id(args), content, result_status,
-                dumps({"plan_no": plan_no, "stage_no": args.stage_no, "decision": args.decision}),
+                dumps(activity_metadata),
             ),
         )
-        if args.decision == "redesign":
+        if decision == "redesign":
             supersede_active_stage_plan(conn, args, issue, content)
             conn.execute(
                 "UPDATE review_issue SET status = 'REDESIGN_REQUIRED', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
@@ -1398,7 +1729,11 @@ def stage_review(args: argparse.Namespace) -> None:
         audit(conn, actor_id(args), "stage.review", "review_issue", args.issue_key, True)
     print_json({
         "issue_key": args.issue_key, "plan_no": plan_no, "stage_no": args.stage_no,
-        "decision": args.decision, "status": result_status,
+        "decision": decision, "requested_decision": args.decision, "status": result_status,
+        "inspection_result": "PASS" if passed else "FAIL",
+        "final_decision": "PASS" if decision == "approved" else "REJECT",
+        "review_round": review_round,
+        "blocking_counts": {"BLOCKER": len(blockers), "MUST": len(musts)},
         "next_stage_no": next_stage["stage_no"] if next_stage else None,
     })
 
@@ -1910,13 +2245,23 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--plan-no", type=int)
     p.set_defaults(func=stage_get)
 
+    p = sub.add_parser("stage-prepare")
+    p.add_argument("--issue-key", required=True)
+    p.add_argument("--stage-no", required=True, type=int)
+    p.add_argument("--change-scope", required=True, help="JSON object/list of modules, files or classes")
+    p.add_argument("--change-reason", required=True)
+    p.add_argument("--protected-behaviors", default="[]", help="JSON array of historical behavior contracts")
+    p.set_defaults(func=stage_prepare)
+
     p = sub.add_parser("stage-submit")
     p.add_argument("--issue-key", required=True)
     p.add_argument("--stage-no", required=True, type=int)
     p.add_argument("--content", required=True)
     p.add_argument("--commit-sha", required=True)
+    p.add_argument("--diff-summary")
     p.add_argument("--code-reference", default="[]")
     p.add_argument("--test-evidence", default="[]")
+    p.add_argument("--resolved-findings", default="[]", help="JSON array of resolved BLOCKER/MUST finding ids")
     p.add_argument("--metadata", default="{}")
     p.set_defaults(func=stage_submit)
 
@@ -1924,8 +2269,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--issue-key", required=True)
     p.add_argument("--stage-no", required=True, type=int)
     p.add_argument("--plan-no", type=int)
-    p.add_argument("--decision", required=True, choices=["approved", "rejected", "redesign"])
+    p.add_argument("--decision", required=True, choices=["auto", "approved", "rejected", "redesign"])
     p.add_argument("--content", required=True)
+    p.add_argument("--review-result", default="{}", help="structured findings/regression/acceptance JSON")
+    p.add_argument("--baseline", default="{}", help="approved Stage baseline contract JSON")
     p.set_defaults(func=stage_review)
 
     p = sub.add_parser("human-escalate")

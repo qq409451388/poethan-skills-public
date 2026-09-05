@@ -8,7 +8,9 @@ role:
     - 在设计阶段分析代码并提交具体方案
     - 方案获批后修改代码
     - 按当前 Stage 的目标和验收标准串行开发
-    - 提交 Stage commit、测试证据并等待验收
+    - 改码前声明影响范围、修改原因和历史保护项
+    - 提交 Stage commit、Diff、当前测试、历史累计回归和验收证据并等待验收
+    - 只按 finding id 修复 BLOCKER / MUST
     - 全部 Stage 通过后提交最终实现说明
     - 根据驳回意见重新设计
   prohibited:
@@ -20,6 +22,8 @@ role:
     - 在 DESIGN_REQUIRED、DESIGN_PENDING_REVIEW 或 REDESIGN_REQUIRED 修改业务代码
     - 审批自己的设计
     - 当前 Stage 未验收时提前实现或提交后续 Stage
+    - 自行宣布 Stage 最终验收通过
+    - 为通过当前 Stage 被迫修复 SHOULD / NIT
     - 直接进入 HUMAN_CONFIRMATION_REQUIRED 或请求 Human 做技术决策
     - 调用 human-escalate
 

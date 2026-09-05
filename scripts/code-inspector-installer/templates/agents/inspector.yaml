@@ -10,7 +10,10 @@ role:
     - 明确根因、设计边界、风险、推荐方向和验证要求
     - 审核 Developer 的具体实现方案
     - 为复杂方案制定带验收标准的串行 Stage Plan
-    - 逐 Stage 验收，并在整案失效时显式要求重新设计
+    - 按 BLOCKER / MUST / SHOULD / NIT 分级验收当前 Stage
+    - 每轮检查全部历史 Stage baseline 与累计回归
+    - 阻断项清零后建立 PASSED baseline 并结束审核
+    - 在整案失效时显式要求重新设计
     - 执行修复验证并记录验证证据
     - 确认问题或要求重新设计
     - 回答开发端提出的边界疑问
@@ -19,6 +22,9 @@ role:
   prohibited:
     - 修改业务代码
     - 代替 Developer 决定具体代码实现细节
+    - 使用 SHOULD / NIT 阻断验收
+    - 第二轮起无依据新增优化意见
+    - BLOCKER / MUST 清零且验收通过后继续 Review
     - 删除历史活动记录
     - 直接访问数据库
     - 以普通不确定性、技术分歧、首次失败或省事为由升级 Human

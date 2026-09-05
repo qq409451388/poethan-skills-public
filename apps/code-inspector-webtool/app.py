@@ -75,7 +75,8 @@ LABELS = {
     "ISSUE_CREATED": "创建问题", "COMMENT_ADDED": "补充说明", "EVIDENCE_ADDED": "补充证据",
     "DESIGN_REQUESTED": "要求设计", "DESIGN_GUIDANCE": "设计指导",
     "DESIGN_SUBMITTED": "提交设计", "DESIGN_APPROVED": "设计批准", "DESIGN_REJECTED": "设计驳回",
-    "STAGE_PLAN_CREATED": "创建执行计划", "STAGE_SUBMITTED": "提交阶段实现",
+    "STAGE_PLAN_CREATED": "创建执行计划", "STAGE_SCOPE_DECLARED": "声明阶段影响范围",
+    "STAGE_SUBMITTED": "提交阶段实现",
     "STAGE_APPROVED": "阶段验收通过", "STAGE_REJECTED": "阶段验收驳回",
     "STAGE_PLAN_SUPERSEDED": "执行计划已废弃",
     "HUMAN_CONFIRMATION_REQUESTED": "请求人工最终确认", "HUMAN_CONFIRMATION_PROVIDED": "人工决定已提供",
@@ -219,6 +220,15 @@ def stage_with_json(row: dict) -> dict:
     row["test_evidence"] = parse_json_field(row.get("test_evidence_json"), [])
     row["code_reference"] = parse_json_field(row.get("code_reference_json"), [])
     row["submission_metadata"] = parse_json_field(row.get("submission_metadata_json"), {})
+    row["planned_change_scope"] = parse_json_field(row.get("planned_change_scope_json"), {})
+    row["protected_behaviors"] = parse_json_field(row.get("protected_behaviors_json"), [])
+    row["resolved_findings"] = parse_json_field(row.get("resolved_findings_json"), [])
+    row["review_findings"] = parse_json_field(
+        row.get("review_findings_json"), {level: [] for level in ("BLOCKER", "MUST", "SHOULD", "NIT")},
+    )
+    row["historical_regression"] = parse_json_field(row.get("historical_regression_json"), {})
+    row["current_acceptance"] = parse_json_field(row.get("current_acceptance_json"), [])
+    row["baseline"] = parse_json_field(row.get("baseline_json"), {})
     return row
 
 
@@ -682,6 +692,8 @@ def issue_stage_review(issue_key: str, stage_no: int):
         "--issue-key", issue_key, "--stage-no", str(stage_no),
         "--decision", request.form.get("decision", ""),
         "--content", request.form.get("content", ""),
+        "--review-result", request.form.get("review_result", "{}"),
+        "--baseline", request.form.get("baseline", "{}"),
     ]
     if plan_no := request.form.get("plan_no"):
         args.extend(["--plan-no", plan_no])

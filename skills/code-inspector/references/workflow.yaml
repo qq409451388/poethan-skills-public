@@ -1,4 +1,4 @@
-version: 3.0.0
+version: 3.1.0
 
 task_types:
   REVIEW:
@@ -198,11 +198,14 @@ design_trigger_guidance:
   simple_issue: 可直接 PROPOSED -> IN_PROGRESS -> implementation-submit，不机械增加设计流程。
 
 stage_workflow:
-  principle: Stage 是复杂 Issue 内的串行执行与验收单元，不属于 Issue.status；执行期间 Issue 保持 IN_PROGRESS。
+  principle: Stage 是复杂 Issue 内的串行执行与验收单元，也是递增验收基线；不属于 Issue.status，执行期间 Issue 保持 IN_PROGRESS。
   use_for: [改动范围大, 多模块或多数据流, 一次性实施容易逐渐偏离已批准设计, 阶段边界可独立验收]
   simple_issue: 不创建 Stage Plan，保持原有直接实现路径。
   statuses: [PLANNED, IN_PROGRESS, PENDING_REVIEW, APPROVED, SUPERSEDED]
   identity: [issue_id, plan_no, stage_no]
+  governance_versions:
+    1: migration 前已有 Stage，保留原命令行为以便继续完成，不强制补历史结构化数据。
+    2: 新建 Stage Plan 默认版本，强制开发前声明、结构化审核、累计回归与 baseline gate。
   plan_create:
     atomic_command: stage-plan-create
     roles: [inspector, human]
@@ -212,6 +215,7 @@ stage_workflow:
     activity: STAGE_PLAN_CREATED
     initial_stage_status: PLANNED
     numbering: stage_no 必须从 1 连续递增；新计划 plan_no 使用历史最大值加一。
+    governance_version: 2
   design_approval_effect:
     issue: IN_PROGRESS
     first_stage: PLANNED -> IN_PROGRESS
@@ -220,27 +224,49 @@ stage_workflow:
     - 同一 active plan 同时至多一个 Stage 为 IN_PROGRESS 或 PENDING_REVIEW
     - Developer 只能提交当前 IN_PROGRESS Stage，不能提前实施或提交后续 Stage
     - Stage 提交后停止后续业务代码修改，等待 Inspector 验收
+  prepare:
+    atomic_command: stage-prepare
+    roles: [developer, human]
+    normal_role: developer
+    timing: 修改业务代码前
+    allowed_stage_status: IN_PROGRESS
+    required: [change_scope, change_reason, protected_behaviors]
+    activity: STAGE_SCOPE_DECLARED
+    rules:
+      - change_scope 明确预计修改的模块、文件、类或方法以及原因
+      - Stage 2+ 必须读取所有历史 PASSED baseline，并声明哪些历史行为不得改变
+      - 缺少历史 baseline 或 protected_behaviors 时禁止开始后续 Stage
   submit:
     atomic_command: stage-submit
     roles: [developer, human]
-    required: [issue_key, stage_no, content, commit_sha]
-    optional: [code_reference, test_evidence, metadata]
+    required: [issue_key, stage_no, content, commit_sha, diff_summary, code_reference, test_evidence]
+    optional: [resolved_findings, metadata]
     allowed_stage_status: IN_PROGRESS
     activity: STAGE_SUBMITTED
     transition: IN_PROGRESS -> PENDING_REVIEW
     attempt_effect: none
+    rules:
+      - governance v2 必须已有 stage-prepare
+      - code_reference 与 diff_summary 表达本阶段实际 Diff，test_evidence 同时覆盖当前测试与历史累计回归
+      - 驳回后的再次提交只需修 BLOCKER/MUST，并在 resolved_findings 中逐项列出对应 id
+      - SHOULD/NIT 不要求 Dev 为当前 Stage 修复
   review_approved:
     atomic_command: stage-review --decision approved
     roles: [inspector, human]
     activity: STAGE_APPROVED
     transition: PENDING_REVIEW -> APPROVED
     next_effect: 自动把下一个 PLANNED Stage 转为 IN_PROGRESS；全部通过时 Issue 仍保持 IN_PROGRESS。
+    runtime_gate: BLOCKER=0、MUST=0、全部 current_acceptance PASS、全部 historical_regression PASS 时必须 PASS；SHOULD/NIT 只保存在 Backlog。
+    baseline_required:
+      fields: [verified_behaviors, input_output_contracts, business_semantics, tests]
+      status: PASSED
+      inheritance: 当前 baseline 记录继承的全部历史 stage_no；后续 Stage 必须逐项回归。
   review_rejected:
     atomic_command: stage-review --decision rejected
     roles: [inspector, human]
     activity: STAGE_REJECTED
     transition: PENDING_REVIEW -> IN_PROGRESS
-    rule: 只修正当前阶段，不得偷偷更换整体设计。
+    rule: 只修正当前阶段，不得偷偷更换整体设计；必须存在 BLOCKER/MUST 或明确失败的验收检查，不能因 SHOULD/NIT 驳回。
   design_failure:
     atomic_command: stage-review --decision redesign
     roles: [inspector, human]
@@ -249,7 +275,30 @@ stage_workflow:
     plan_effect: 当前计划 plan_status -> SUPERSEDED；未完成 Stage -> SUPERSEDED，已 APPROVED Stage 保留原状态、时间和验收记录。
     recovery: design-submit -> DESIGN_PENDING_REVIEW -> 新 Stage Plan -> design-review approved。
   final_submission_gate: 有 active Stage Plan 时，全部 Stage APPROVED 后才允许 implementation-submit；最终整体验证不可被阶段验收替代。
-  history: 旧 plan、Stage 主键、提交证据、验收意见和 Activity 均不得删除或覆盖。
+  historical_regression_gate:
+    required_for: Stage 2 及以后每轮验收
+    coverage: 必须逐项覆盖当前 plan 内全部已 APPROVED Stage。
+    checks: [当前 Diff 是否修改历史核心代码, 历史行为和输入输出契约是否仍成立, 历史测试是否全部通过, 是否存在 Breaking Change]
+    failure_level: BLOCKER
+  finding_levels:
+    BLOCKER: 功能、数据、安全、运行失败、核心业务语义错误或历史 Stage 破坏；阻断验收。
+    MUST: 明确违反当前需求、已批准设计、Stage 验收标准或强制工程规范；阻断验收。
+    SHOULD: 可维护性、抽象、潜在性能或非必要重构建议；只进 Backlog，不阻断。
+    NIT: 命名、格式、极小风格或个人偏好；只进 Backlog，不阻断。
+  convergence:
+    first_review: 可提出所有等级问题，每条 finding 使用稳定 id。
+    later_reviews:
+      - 不得新增 SHOULD/NIT，除非由本轮修复 BLOCKER/MUST 新引入，并提供 introduced_by_fix=true 与 evidence
+      - 新增 BLOCKER/MUST 必须提供 why_not_found_earlier、evidence 和实际 risk
+      - 禁止以感觉可更好、最好重构、以后可能有问题、不够优雅或可以继续优化作为阻断理由
+    mandatory_stop: BLOCKER/MUST 清零且当前验收、历史回归全部 PASS 后，Inspector 必须 PASS 并结束当前 Stage。
+  review_output:
+    inspection_result: PASS | FAIL
+    sections: [BLOCKER, MUST, SHOULD, NIT, Historical Regression, Current Stage Acceptance]
+    final_decision: PASS | REJECT
+    invariant: 只有 BLOCKER/MUST 或真实验收失败可以 REJECT；SHOULD/NIT 永远不能改变 PASS。
+    automatic_gate: governance v2 可使用 stage-review --decision auto，由 Runtime 根据上述 invariant 得出 PASS/REJECT；设计整体失效仍需显式 redesign。
+  history: 旧 plan、Stage 主键、开发前声明、提交证据、所有 Review round、验收意见、baseline 和 Activity 均不得删除或覆盖。
 
 implementation_review:
   submission:
@@ -323,7 +372,7 @@ confirmation_protocol:
 
 activity_types:
   design: [DESIGN_REQUESTED, DESIGN_GUIDANCE, DESIGN_SUBMITTED, DESIGN_APPROVED, DESIGN_REJECTED]
-  stage: [STAGE_PLAN_CREATED, STAGE_SUBMITTED, STAGE_APPROVED, STAGE_REJECTED, STAGE_PLAN_SUPERSEDED]
+  stage: [STAGE_PLAN_CREATED, STAGE_SCOPE_DECLARED, STAGE_SUBMITTED, STAGE_APPROVED, STAGE_REJECTED, STAGE_PLAN_SUPERSEDED]
   human_confirmation: [HUMAN_CONFIRMATION_REQUESTED, HUMAN_CONFIRMATION_PROVIDED]
   legacy_read_compatible: [REVIEW_APPROVED, REVIEW_REJECTED, REDESIGN_SUBMITTED]
 

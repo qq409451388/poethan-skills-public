@@ -113,7 +113,7 @@ Inspector 修改 Task 状态时遵守标准状态机。Human 具有 Task 状态�
 
 实现审核失败时，若只是代码未按批准方案正确落地，则记录 `VERIFICATION_FAILED` 并回 `IN_PROGRESS`；若方向本身被新证据推翻，则转 `REDESIGN_REQUIRED`，强制重新走方案审核。连续两次失败后 Inspector 必须主动重新判断失败属于实现还是设计，避免重复阅读与大范围返工。
 
-复杂 Issue 可在设计批准前创建 Stage Plan。Stage 独立于 Issue 状态，按 `PLANNED → IN_PROGRESS → PENDING_REVIEW → APPROVED` 串行推进；Developer 只能提交当前 Stage，Inspector 验收通过后自动激活下一 Stage。驳回只重做当前阶段，若发现整案错误则显式进入 `REDESIGN_REQUIRED`，未完成的旧 Stage 标记 `SUPERSEDED`，新设计创建新的 `plan_no`。所有 Stage 通过后才允许 `implementation-submit`，且仍需最终整体验证。简单 Issue 无需 Stage。
+复杂 Issue 可在设计批准前创建 Stage Plan。Stage 独立于 Issue 状态，按 `PLANNED → IN_PROGRESS → PENDING_REVIEW → APPROVED` 串行推进。Developer 在改码前先用 `stage-prepare` 声明影响范围、原因和历史保护项，完成后通过 `stage-submit` 提交 commit、Diff、当前测试、历史累计回归与代码证据。Inspector 按当前验收标准及所有历史 Stage baseline 复核，使用 BLOCKER/MUST/SHOULD/NIT 四级 finding；只有前两级阻断。通过时建立包含已验证行为、输入输出契约、业务语义和测试集合的 `PASSED` baseline，自动激活下一 Stage。第二轮起不得新增无关 SHOULD/NIT，新 BLOCKER/MUST 必须解释此前遗漏原因和实际风险；阻断项清零且所有验收通过后必须 PASS。若发现整案错误则显式进入 `REDESIGN_REQUIRED`，旧计划完整保留。所有 Stage 通过后才允许 `implementation-submit`，且仍需最终整体验证。简单 Issue 无需 Stage。
 
 ## Human 最终兜底
 

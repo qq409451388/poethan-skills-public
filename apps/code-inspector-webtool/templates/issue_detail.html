@@ -67,12 +67,22 @@
                 <dl class="keybox compact-keybox">
                   <dt>目标</dt><dd><div class="markdown-body">{{ execution_stage.objective|markdown }}</div></dd>
                   <dt>验收标准</dt><dd><div class="markdown-body">{{ execution_stage.acceptance_criteria|markdown }}</div></dd>
+                  <dt>开发影响范围</dt><dd>{% if execution_stage.planned_change_scope %}<pre class="raw-json">{{ execution_stage.planned_change_scope|json_pretty }}</pre>{% else %}<span class="muted">尚未通过 stage-prepare 声明</span>{% endif %}</dd>
+                  <dt>修改原因</dt><dd>{{ execution_stage.change_reason or '—' }}</dd>
+                  <dt>历史保护项</dt><dd>{% if execution_stage.protected_behaviors %}<pre class="raw-json">{{ execution_stage.protected_behaviors|json_pretty }}</pre>{% else %}<span class="muted">首阶段无历史基线，或尚未声明</span>{% endif %}</dd>
                   <dt>Developer 提交</dt><dd>{% if execution_stage.developer_summary %}<div class="markdown-body">{{ execution_stage.developer_summary|markdown }}</div>{% else %}<span class="muted">尚未提交</span>{% endif %}</dd>
+                  <dt>Diff 摘要</dt><dd>{% if execution_stage.diff_summary %}<div class="markdown-body">{{ execution_stage.diff_summary|markdown }}</div>{% else %}<span class="muted">尚未提交</span>{% endif %}</dd>
                   <dt>Commit SHA</dt><dd class="mono">{{ execution_stage.submitted_commit_sha or '—' }}</dd>
                   <dt>提交时间</dt><dd>{{ execution_stage.submitted_at|localtime }}</dd>
                   <dt>验收意见</dt><dd>{% if execution_stage.review_comment %}<div class="markdown-body">{{ execution_stage.review_comment|markdown }}</div>{% else %}<span class="muted">尚未验收</span>{% endif %}</dd>
+                  <dt>审核轮次</dt><dd>{{ execution_stage.review_round or 0 }}</dd>
+                  <dt>基线状态</dt><dd>{% if execution_stage.baseline_status %}<span class="badge badge-green">{{ execution_stage.baseline_status }}</span>{% else %}<span class="muted">尚未建立</span>{% endif %}</dd>
                   <dt>验收时间</dt><dd>{{ execution_stage.approved_at|localtime }}</dd>
                 </dl>
+                {% if execution_stage.review_findings %}<details class="collapsible"><summary>结构化审核结果</summary><pre class="raw-json">{{ execution_stage.review_findings|json_pretty }}</pre></details>{% endif %}
+                {% if execution_stage.historical_regression %}<details class="collapsible"><summary>历史 Stage 回归</summary><pre class="raw-json">{{ execution_stage.historical_regression|json_pretty }}</pre></details>{% endif %}
+                {% if execution_stage.current_acceptance %}<details class="collapsible"><summary>当前 Stage 验收</summary><pre class="raw-json">{{ execution_stage.current_acceptance|json_pretty }}</pre></details>{% endif %}
+                {% if execution_stage.baseline %}<details class="collapsible"><summary>Stage Baseline</summary><pre class="raw-json">{{ execution_stage.baseline|json_pretty }}</pre></details>{% endif %}
                 {% if execution_stage.test_evidence %}<details class="collapsible"><summary>测试结果</summary><pre class="raw-json">{{ execution_stage.test_evidence|json_pretty }}</pre></details>{% endif %}
                 {% if execution_stage.code_reference %}<details class="collapsible"><summary>代码引用</summary><div class="details-body">{{ render_references(execution_stage.code_reference) }}</div></details>{% endif %}
                 {% if execution_stage.submission_metadata %}<details class="collapsible"><summary>提交元数据</summary><pre class="raw-json">{{ execution_stage.submission_metadata|json_pretty }}</pre></details>{% endif %}
@@ -80,6 +90,10 @@
                 <form class="stage-review-form" method="post" action="{{ url_for('issue_stage_review', issue_key=issue.issue_key, stage_no=execution_stage.stage_no) }}">
                   <input type="hidden" name="plan_no" value="{{ plan_no }}">
                   <div class="field"><label>人工验收意见 <span class="required">必填</span></label><textarea name="content" required placeholder="按本阶段验收标准记录通过、驳回或设计失效的依据"></textarea></div>
+                  {% if execution_stage.governance_version >= 2 %}
+                  <div class="field"><label>结构化审核结果 JSON <span class="required">必填</span></label><textarea class="mono" name="review_result" required placeholder='{"findings":{"BLOCKER":[],"MUST":[],"SHOULD":[],"NIT":[]},"historical_regression":{},"current_acceptance":[{"criterion":"逐字复制验收标准","status":"PASS","evidence":["测试或检查证据"]}]}'></textarea></div>
+                  <div class="field"><label>通过后建立的 Baseline JSON</label><textarea class="mono" name="baseline" placeholder='{"verified_behaviors":["已验证行为"],"input_output_contracts":[],"business_semantics":[],"tests":["测试集合"]}'></textarea><span class="form-note">通过时必填；驳回或重新设计时可留空。</span></div>
+                  {% else %}<input type="hidden" name="review_result" value="{}"><input type="hidden" name="baseline" value="{}">{% endif %}
                   <div class="stage-review-actions"><button class="btn btn-primary" name="decision" value="approved">阶段验收通过</button><button class="btn" name="decision" value="rejected">驳回当前阶段</button><button class="btn btn-danger-outline" name="decision" value="redesign">发现设计错误，要求重新设计</button></div>
                   <p class="form-note">这是人工接管入口；正常 Stage 验收应由 Inspector Agent 完成。</p>
                 </form>
