@@ -42,9 +42,9 @@ Dispatch Lock 串行化同一 `(issue_key, role)`；Thread Execution Lock 覆盖
 
 ## CLI 路由
 
-- `scripts/issue_thread.py dispatch|start|resume|status|compact|archive`
-- `scripts/supervisor.py enqueue|dispatch-pending|status`
-- `scripts/capability_probe.py`：本机协议与跨进程/compact 探测
-- `scripts/task_watcher.py`：一个静默 Shell watcher 观察多个显式 WAITING Issue
+- `scripts/issue-thread.py dispatch|start|resume|status|compact|archive`
+- `scripts/code-inspector-supervisor.py enqueue|dispatch-pending|status`
+- `scripts/capability-probe.py`：本机协议与跨进程/compact 探测
+- `scripts/task-watcher.py`：一个静默 Shell watcher 观察多个显式 WAITING Issue
 
 所有子命令只输出最小调度结果。具体 Issue 推理始终留在对应 Issue Thread。

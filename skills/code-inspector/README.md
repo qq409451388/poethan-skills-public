@@ -150,9 +150,9 @@ Human 使用 `human-confirmation-resolve` 记录业务边界或风险决定，�
 启用 Thread Isolation 后，Supervisor 只保存 `(issue_key, role) → thread_id`、状态和事件等轻量调度数据；具体审核、实现、Diff/Evidence/测试分析由独立 Issue Thread 完成。App Server 适配层、Registry CLI、事件调度器、静默多目标 Watcher和兼容性探针位于 `scripts/`，开关集中在 `config/runtime.json`。
 
 ```bash
-python3 scripts/issue_thread.py status
-python3 scripts/supervisor.py status
-python3 scripts/capability_probe.py
+python3 scripts/issue-thread.py status
+python3 scripts/code-inspector-supervisor.py status
+python3 scripts/capability-probe.py
 ```
 
 Developer Thread 只获得 workspace-write 能力，并按项目路径加 Workspace Lock；需要多个 Developer 真正同时改同一仓库时，仍必须先分配独立 worktree/branch。

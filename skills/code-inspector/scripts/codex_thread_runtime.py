@@ -163,6 +163,11 @@ class CodexThreadRuntime:
         self.request("turn/start", {"threadId": thread_id, "input": [{"type": "text", "text": prompt}]})
         return self._wait_turn(thread_id)
 
+    # Public adapter spelling used by the runtime design; Python callers may
+    # use run_turn without depending on JSON-RPC method names.
+    def runTurn(self, thread_id: str, prompt: str) -> dict[str, Any]:  # noqa: N802
+        return self.run_turn(thread_id, prompt)
+
     def resume_and_run(self, thread_id: str, cwd: str, prompt: str) -> dict[str, Any]:
         self.resume(thread_id, cwd)
         return self.run_turn(thread_id, prompt)
