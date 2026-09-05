@@ -232,7 +232,7 @@ def generated_skill_text(platform: str, identities: list[dict[str, Any]], target
         if role == "developer":
             workflow = f"""### 执行流程
 
-1. 用 `{tool} task-list`、带 `--updated-after/--limit/--fields` 的 `issue-list`、`issue-get` 和 `activity-list-recent` 增量定位待处理 issue 与新备注；不要创建 task、版本或正式 issue，不要修改评级或最终确认。
+1. 用 `{tool} task-list`、默认精简的 `issue-list` / `issue-get`、`discussion-list` 和 `activity-list-recent` 增量定位待处理 issue、讨论与里程碑；不要创建 task、版本或正式 issue，不要修改评级或最终确认。
 2. `DESIGN_REQUIRED` 或 `REDESIGN_REQUIRED` 时只阅读、分析和讨论，用 `design-submit` 提交具体方案；`DESIGN_PENDING_REVIEW` 时等待审核。上述三种状态禁止修改业务代码和 `implementation-submit`，不得自行批准设计。
 3. 只有简单问题或 `design-review approved` 后的 `IN_PROGRESS` 才能编码。若存在 Stage Plan，先用 `stage-get` 读取当前 Stage 及全部历史 PASSED baseline；修改前用 `stage-prepare` 声明预计影响的模块/文件/类、修改原因和不得改变的历史行为。只修改当前 Stage 范围，不得提前实施后续 Stage。
 4. 完成后用 `stage-submit` 提交 commit、Diff 摘要、代码引用、当前验收测试和历史 Stage 累计回归；上轮有 BLOCKER/MUST 时在 `resolved-findings` 逐项回应 id。SHOULD/NIT 只进 Backlog，不要求为当前 Stage 修改。提交后立即等待验收，不得自行宣布 PASS。
@@ -246,11 +246,11 @@ def generated_skill_text(platform: str, identities: list[dict[str, Any]], target
 1. 先读取 `references/workflow.yaml` 和 `references/review-levels.yaml`；创建或继续检查时用 `{tool} task-resolve`。`REVIEW` 沿用基线 identity；`CONTINUOUS` 跨基线复用且所有 issue 终结也不自动关闭。
 2. 区分 `scan` 与 `report`：扫描期间先收集候选，主审核者必须额外串联跨模块数据流；向 `CONTINUOUS` 报告单个线上问题只核实证据、判定成立和去重，不触发全项目扫描。
 3. 初步合并后先做覆盖面回查和补充扫描，再按根因、修复边界和风险链路去重、评级；不能用候选数量或并行扫描完成代替覆盖判断。最后用 `issue-create-batch` 创建正式 issue。
-4. 对跨模块、Schema/迁移、回灌、状态机、幂等并发、ACK/retry/recovery、公共 API、大重构或方向不确定的问题优先 `design-request`，明确根因、不可破坏语义、约束、风险、推荐方向和必须回答的问题。用 `DESIGN_GUIDANCE` 补充讨论，用 `design-review` 批准或明确驳回。
+4. 对跨模块、Schema/迁移、回灌、状态机、幂等并发、ACK/retry/recovery、公共 API、大重构或方向不确定的问题优先 `design-request`，明确根因、不可破坏语义、约束、风险、推荐方向和必须回答的问题。用 `discussion-append --topic DESIGN` 补充讨论；达成一致后用 `decision-record` 登记结论，再用 `design-review` 批准或明确驳回。
 5. 对一次性实施容易跑偏的复杂方案，在批准前用 `stage-plan-create` 定义少量串行 Stage，每个阶段必须有目标和可验证的验收标准。验收时检查 Dev 的影响声明、Diff、当前验收和全部历史 PASSED baseline；历史行为/测试/契约回归失败一律是 BLOCKER。finding 只分 BLOCKER/MUST/SHOULD/NIT，只有前两级阻断；SHOULD/NIT 只进 Backlog。
 6. `stage-review` 必须结构化输出 Inspection Result、四级 findings、Historical Regression、Current Stage Acceptance 和 Final Decision，governance v2 优先用 `--decision auto` 让 Runtime 计算 Gate。第一轮可完整提出问题；第二轮起不得新增无关 SHOULD/NIT，新 BLOCKER/MUST 必须说明此前遗漏原因、证据与实际风险。BLOCKER/MUST 清零且当前与历史验收全 PASS 时必须结束审核并建立 PASSED baseline，不得用“还可优化”继续循环。整案失效时用 `--decision redesign` 保留旧计划并重走设计。
 7. 用 `issue-list-pending-review` 汇总最终实现。审核失败必须区分：实现细节错则追加 `VERIFICATION_FAILED` 并回 `IN_PROGRESS`；方向错则转 `REDESIGN_REQUIRED`，强制重走设计。连续两次失败必须重新判断设计是否对齐，并给出必改点与验证标准。
-8. Human 是异常兜底，不是普通 Reviewer。准备 `human-escalate` 前必须确认继续读代码、补测试、查数据库/日志/运行数据、追加 `DESIGN_GUIDANCE` 或自行作出合理技术判断都不能安全解决，并且 Human 确实掌握关键业务事实，或选错方案会造成无法靠正常重试恢复的重大数据破坏。意见不一致、普通架构取舍、方案差、实现或测试失败都不得升级。
+8. Human 是异常兜底，不是普通 Reviewer。准备 `human-escalate` 前必须确认继续读代码、补测试、查数据库/日志/运行数据、追加方案讨论或自行作出合理技术判断都不能安全解决，并且 Human 确实掌握关键业务事实，或选错方案会造成无法靠正常重试恢复的重大数据破坏。意见不一致、普通架构取舍、方案差、实现或测试失败都不得升级。
 9. 确需升级时，用 `human-escalate` 把原因、已验证/未知事实、选项与影响、推荐和 Human 唯一要回答的问题整理清楚；不得倾倒长日志、完整代码或 Agent 对话。`HUMAN_CONFIRMATION_REQUIRED` 时停止自动工作；Inspector 不得代替 Human resolve。Human 恢复后仍由 Inspector 负责设计、审核、验证和技术闭环。
 10. 只有当前 implementation attempt 已有 `VERIFICATION_PASSED` 才能转 `CONFIRMED`，Human 也不能跳过。不修改业务代码；Inspector 定义必须解决和不可破坏的边界，Developer 决定具体代码实现。默认聊天仅输出简短任务摘要。
 """
@@ -262,7 +262,7 @@ def generated_skill_text(platform: str, identities: list[dict[str, Any]], target
             f"职责：{'；'.join(policy['responsibilities'])}。\n\n"
             f"禁止：{', '.join(policy['prohibited'])}。\n\n{workflow}"
         )
-    return "---\nname: code-inspector\ndescription: 已安装的 Code Inspector 角色 Skill。仅在用户明确开启代码检查模式后，按启动时选定的逻辑身份执行。\n---\n\n# Code Inspector\n\n当前平台：`" + platform + "`。仅在用户明确开启后使用本流程；完整规则见 `references/activation.yaml`。\n\n## 会话角色选择\n\n" + activation + "\n\n只使用启动时选定的下列逻辑身份，不得越权。所有状态流转先以 `references/workflow.yaml` 为准；工具参数以 `references/tool-contracts.yaml` 为准；不得直接操作 SQLite。\n\n" + "\n\n".join(rows) + "\n\n需要审核等级时读取 `references/review-levels.yaml`；仅在用户要求导出时读取 `references/report-schema.yaml`。\n\n活动内容格式：短结论使用单行纯文本；多个说明可直接换行；只有代码、命令、真正的列表或复杂层级才使用 Markdown。以清晰可读为准，不为格式而格式。\n"
+    return "---\nname: code-inspector\ndescription: 已安装的 Code Inspector 角色 Skill。仅在用户明确开启代码检查模式后，按启动时选定的逻辑身份执行。\n---\n\n# Code Inspector\n\n当前平台：`" + platform + "`。仅在用户明确开启后使用本流程；完整规则见 `references/activation.yaml`。\n\n## 会话角色选择\n\n" + activation + "\n\n只使用启动时选定的下列逻辑身份，不得越权。所有状态流转先以 `references/workflow.yaml` 为准；工具参数以 `references/tool-contracts.yaml` 为准；不得直接操作 SQLite。\n\n" + "\n\n".join(rows) + "\n\n需要审核等级时读取 `references/review-levels.yaml`；仅在用户要求导出时读取 `references/report-schema.yaml`。\n\nIssue 默认只写标题、短摘要、维度和严重度；按需补完成标准、技术说明、本项目术语和证据。摘要可以使用轻量 Markdown，但不要写推理过程、长日志或完整代码；代码位置优先写文件与符号，行号不能作为唯一定位。通用技术词不解释，只定义项目内或临时创造的词。讨论使用 `discussion-*` 并与处理历史分开；Developer/Inspector 修正自己的讨论时 amend 原消息。讨论达成一致后由 Inspector 用 `decision-record` 录入有效结论。`activity-amend` 仅修订尚未被审核的提交文案，最终结论不得覆盖。\n"
 
 def install_generated_skill(source: Path, target: Path, platform: str, identities: list[dict[str, Any]], home: Path, force: bool) -> None:
     if target.is_symlink():

@@ -104,6 +104,15 @@ ATOMIC_ACTIVITY_TYPES = {
 }
 ALLOWED_ACTIVITY_TYPES = set().union(*ALLOWED_ACTIVITY_BY_AGENT.values(), ATOMIC_ACTIVITY_TYPES)
 
+# 这些活动的 content 是 Agent 提交给其他参与者判断的当前文案。活动身份、结构化证据、
+# 状态和 attempt 均保持不可变；只允许原逻辑身份通过 activity-amend 修正文案。
+AMENDABLE_ACTIVITY_TYPES = {
+    "EVIDENCE_ADDED",
+    "DESIGN_SUBMITTED", "REDESIGN_SUBMITTED",
+    "STAGE_SUBMITTED", "IMPLEMENTATION_SUBMITTED",
+    "VERIFICATION_EVIDENCE_ADDED",
+}
+
 def configured_db_path() -> Path:
     if os.environ.get("AGENT_REVIEW_DB"):
         return DEFAULT_DB_PATH
@@ -284,20 +293,65 @@ def issue_dedupe_key(payload: dict[str, Any]) -> str:
     }
     return hashlib.sha256(json.dumps(basis, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
 
-def validate_issue_payload(payload: dict[str, Any]) -> None:
-    required = {
-        "title", "dimension", "severity", "remediation_benefit", "remediation_cost",
-        "disposition", "confidence", "description", "facts", "rationale",
-    }
-    missing = sorted(required - payload.keys())
-    if missing:
-        raise ValueError(f"问题缺少字段: {', '.join(missing)}")
-    require_choice(payload["dimension"], ALLOWED_DIMENSIONS, "dimension")
-    require_choice(payload["severity"], ALLOWED_SEVERITIES, "severity")
-    require_choice(payload["remediation_benefit"], ALLOWED_BENEFITS, "remediation_benefit")
-    require_choice(payload["remediation_cost"], ALLOWED_COSTS, "remediation_cost")
-    require_choice(payload["disposition"], ALLOWED_DISPOSITIONS, "disposition")
-    require_choice(payload["confidence"], ALLOWED_CONFIDENCE, "confidence")
+def issue_json_value(payload: dict[str, Any], key: str, default: Any) -> Any:
+    value = payload.get(key, default)
+    if value is None:
+        return default
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except ValueError as exc:
+            raise ValueError(f"{key} 必须是合法 JSON") from exc
+    return value
+
+def normalize_issue_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """接受精简 v4 输入，并兼容旧版冗长字段。"""
+    normalized = dict(payload)
+    for field in ("title", "dimension", "severity"):
+        if not str(normalized.get(field) or "").strip():
+            raise ValueError(f"问题缺少字段: {field}")
+    summary = str(
+        normalized.get("summary") or normalized.get("description")
+        or normalized.get("facts") or ""
+    ).strip()
+    if not summary:
+        raise ValueError("问题缺少字段: summary（旧调用可继续提供 description）")
+
+    normalized.update({
+        "summary": summary,
+        "expected_outcome": str(normalized.get("expected_outcome") or "").strip(),
+        "technical_note": str(normalized.get("technical_note") or "").strip(),
+        # 旧列暂时保留数据库兼容，但不再要求 Agent 重复填写。
+        "description": str(normalized.get("description") or summary).strip(),
+        "facts": str(normalized.get("facts") or "").strip(),
+        "rationale": str(normalized.get("rationale") or "").strip(),
+        "remediation_benefit": normalized.get("remediation_benefit") or "medium",
+        "remediation_cost": normalized.get("remediation_cost") or "medium",
+        "disposition": normalized.get("disposition") or "current_iteration",
+        "confidence": normalized.get("confidence") or "high",
+        "trigger_conditions": issue_json_value(normalized, "trigger_conditions", []),
+        "potential_impact": issue_json_value(normalized, "potential_impact", []),
+        "impact_scope": issue_json_value(normalized, "impact_scope", []),
+        "evidence": issue_json_value(normalized, "evidence", []),
+        "estimated_change": issue_json_value(normalized, "estimated_change", {}),
+        "local_terms": issue_json_value(normalized, "local_terms", {}),
+    })
+    require_choice(normalized["dimension"], ALLOWED_DIMENSIONS, "dimension")
+    require_choice(normalized["severity"], ALLOWED_SEVERITIES, "severity")
+    require_choice(normalized["remediation_benefit"], ALLOWED_BENEFITS, "remediation_benefit")
+    require_choice(normalized["remediation_cost"], ALLOWED_COSTS, "remediation_cost")
+    require_choice(normalized["disposition"], ALLOWED_DISPOSITIONS, "disposition")
+    require_choice(normalized["confidence"], ALLOWED_CONFIDENCE, "confidence")
+    if not isinstance(normalized["evidence"], list):
+        raise ValueError("evidence 必须是 JSON 数组")
+    if not isinstance(normalized["local_terms"], dict):
+        raise ValueError("local_terms 必须是 JSON 对象")
+    if not all(
+        isinstance(term, str) and term.strip() and isinstance(meaning, str) and meaning.strip()
+        for term, meaning in normalized["local_terms"].items()
+    ):
+        raise ValueError("local_terms 的术语和解释都必须是非空字符串")
+    return normalized
 
 def task_create(args: argparse.Namespace) -> None:
     require_agent(args.agent)
@@ -571,8 +625,7 @@ def issue_create(args: argparse.Namespace) -> None:
     require_agent(args.agent)
     if args.agent not in {"inspector", "human"}:
         raise PermissionError("只有 inspector 或 human 可以创建问题")
-    payload = vars(args)
-    validate_issue_payload(payload)
+    payload = normalize_issue_payload(vars(args))
 
     with connect() as conn:
         task = conn.execute(
@@ -592,22 +645,19 @@ def issue_create(args: argparse.Namespace) -> None:
                 issue_key, task_id, introduced_version, parent_issue_id, title, dimension,
                 severity, remediation_benefit, remediation_cost, disposition, confidence,
                 status, description, facts, trigger_conditions_json, potential_impact_json,
-                impact_scope_json, rationale, evidence_json, estimated_change_json, dedupe_key
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PROPOSED', ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                impact_scope_json, rationale, evidence_json, estimated_change_json, dedupe_key,
+                summary, expected_outcome, technical_note, local_terms_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PROPOSED', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 issue_key, task["id"], task["current_version"], args.parent_issue_id,
-                args.title, args.dimension, args.severity, args.remediation_benefit,
-                args.remediation_cost, args.disposition, args.confidence,
-                args.description, args.facts,
-                dumps(json.loads(args.trigger_conditions)),
-                dumps(json.loads(args.potential_impact)),
-                dumps(json.loads(args.impact_scope)),
-                args.rationale,
-                dumps(json.loads(args.evidence)),
-                dumps(json.loads(args.estimated_change)),
-                args.dedupe_key or issue_dedupe_key({
-                    "dimension": args.dimension, "title": args.title, "evidence": json.loads(args.evidence),
-                }),
+                payload["title"], payload["dimension"], payload["severity"], payload["remediation_benefit"],
+                payload["remediation_cost"], payload["disposition"], payload["confidence"],
+                payload["description"], payload["facts"], dumps(payload["trigger_conditions"]),
+                dumps(payload["potential_impact"]), dumps(payload["impact_scope"]), payload["rationale"],
+                dumps(payload["evidence"]), dumps(payload["estimated_change"]),
+                payload.get("dedupe_key") or issue_dedupe_key(payload),
+                payload["summary"], payload["expected_outcome"], payload["technical_note"],
+                dumps(payload["local_terms"]),
             ),
         )
         issue_id = conn.execute("SELECT id FROM review_issue WHERE issue_key = ?", (issue_key,)).fetchone()["id"]
@@ -615,7 +665,7 @@ def issue_create(args: argparse.Namespace) -> None:
             """INSERT INTO issue_activity(
                 issue_id, attempt_no, activity_type, operator_type, operator_id, content
             ) VALUES (?, 0, 'ISSUE_CREATED', ?, ?, ?)""",
-            (issue_id, {"inspector": "INSPECTOR_AGENT", "human": "HUMAN"}[args.agent], actor_id(args), args.description),
+            (issue_id, {"inspector": "INSPECTOR_AGENT", "human": "HUMAN"}[args.agent], actor_id(args), payload["summary"]),
         )
         audit(conn, actor_id(args), "issue.create", "review_issue", issue_key, True)
     print_json({"issue_key": issue_key, "version": task["current_version"]})
@@ -627,10 +677,12 @@ def issue_create_batch(args: argparse.Namespace) -> None:
     payloads = json.loads(args.issues)
     if not isinstance(payloads, list) or not payloads:
         raise ValueError("issues 必须是非空 JSON 数组")
+    normalized_payloads = []
     for payload in payloads:
         if not isinstance(payload, dict):
             raise ValueError("issues 中每项必须是对象")
-        validate_issue_payload(payload)
+        normalized_payloads.append(normalize_issue_payload(payload))
+    payloads = normalized_payloads
 
     with connect() as conn:
         task = conn.execute("SELECT id, current_version, status FROM review_task WHERE task_key = ?", (args.task_key,)).fetchone()
@@ -685,8 +737,9 @@ def issue_create_batch(args: argparse.Namespace) -> None:
                     issue_key, task_id, introduced_version, parent_issue_id, title, dimension,
                     severity, remediation_benefit, remediation_cost, disposition, confidence,
                     status, description, facts, trigger_conditions_json, potential_impact_json,
-                    impact_scope_json, rationale, evidence_json, estimated_change_json, dedupe_key
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PROPOSED', ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    impact_scope_json, rationale, evidence_json, estimated_change_json, dedupe_key,
+                    summary, expected_outcome, technical_note, local_terms_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PROPOSED', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     issue_key, task["id"], version, payload.get("parent_issue_id"), payload["title"], payload["dimension"],
                     payload["severity"], payload["remediation_benefit"], payload["remediation_cost"],
@@ -694,13 +747,15 @@ def issue_create_batch(args: argparse.Namespace) -> None:
                     dumps(payload.get("trigger_conditions", [])), dumps(payload.get("potential_impact", [])),
                     dumps(payload.get("impact_scope", [])), payload["rationale"], dumps(payload.get("evidence", [])),
                     dumps(payload.get("estimated_change", {})), dedupe_key,
+                    payload["summary"], payload["expected_outcome"], payload["technical_note"],
+                    dumps(payload["local_terms"]),
                 ),
             )
             issue_id = conn.execute("SELECT id FROM review_issue WHERE issue_key = ?", (issue_key,)).fetchone()["id"]
             conn.execute(
                 """INSERT INTO issue_activity(issue_id, attempt_no, activity_type, operator_type, operator_id, content)
                    VALUES (?, 0, 'ISSUE_CREATED', ?, ?, ?)""",
-                (issue_id, operator_type(args.agent), actor_id(args), payload["description"]),
+                (issue_id, operator_type(args.agent), actor_id(args), payload["summary"]),
             )
             created.append(issue_key)
         audit(conn, actor_id(args), "issue.create-batch", "review_task", args.task_key, True, f"created={len(created)}")
@@ -713,8 +768,20 @@ ISSUE_OUTPUT_FIELDS = {
     "potential_impact_json", "impact_scope_json", "rationale", "evidence_json",
     "estimated_change_json", "current_attempt_no", "confirmed_at", "cancelled_at",
     "created_at", "updated_at", "dedupe_key", "task_key", "project_name",
-    "last_activity_at", "last_comment_at",
+    "summary", "expected_outcome", "technical_note", "local_terms_json",
+    "last_activity_at", "last_comment_at", "last_discussion_at",
 }
+
+ISSUE_LIST_DEFAULT_FIELDS = [
+    "issue_key", "title", "summary", "dimension", "severity", "status",
+    "current_attempt_no", "updated_at", "last_discussion_at",
+]
+
+ISSUE_GET_COMPACT_FIELDS = [
+    "issue_key", "task_key", "project_name", "title", "summary", "expected_outcome",
+    "technical_note", "local_terms_json", "dimension", "severity", "status",
+    "evidence_json", "current_attempt_no", "updated_at", "last_activity_at", "last_discussion_at",
+]
 
 def selected_issue_fields(value: str | None) -> list[str] | None:
     if value is None:
@@ -732,9 +799,12 @@ def selected_issue_fields(value: str | None) -> list[str] | None:
 def issue_query(conn: sqlite3.Connection, args: argparse.Namespace) -> list[dict[str, Any]]:
     sql = """
         SELECT i.*, t.task_key, t.project_name,
-               (SELECT MAX(a.created_at) FROM issue_activity a WHERE a.issue_id = i.id) AS last_activity_at,
-               (SELECT MAX(a.created_at) FROM issue_activity a
-                WHERE a.issue_id = i.id AND a.activity_type = 'COMMENT_ADDED') AS last_comment_at
+               (SELECT MAX(COALESCE(a.amended_at, a.created_at))
+                FROM issue_activity a WHERE a.issue_id = i.id) AS last_activity_at,
+               (SELECT MAX(COALESCE(a.amended_at, a.created_at)) FROM issue_activity a
+                WHERE a.issue_id = i.id AND a.activity_type = 'COMMENT_ADDED') AS last_comment_at,
+               (SELECT MAX(COALESCE(d.amended_at, d.created_at))
+                FROM issue_discussion d WHERE d.issue_id = i.id) AS last_discussion_at
         FROM review_issue i
         JOIN review_task t ON t.id = i.task_id
         WHERE 1=1
@@ -773,16 +843,16 @@ def issue_query(conn: sqlite3.Connection, args: argparse.Namespace) -> list[dict
             raise ValueError("limit 必须在 1 到 1000 之间")
         sql += " LIMIT ?"
         params.append(limit)
-    fields = selected_issue_fields(getattr(args, "fields", None))
+    fields = selected_issue_fields(getattr(args, "fields", None)) or ISSUE_LIST_DEFAULT_FIELDS
     rows = []
     for r in conn.execute(sql, params).fetchall():
         item = dict(r)
         for key in (
             "trigger_conditions_json", "potential_impact_json", "impact_scope_json",
-            "evidence_json", "estimated_change_json"
+            "evidence_json", "estimated_change_json", "local_terms_json"
         ):
-            item[key] = loads(item[key], [] if key != "estimated_change_json" else {})
-        rows.append({field: item[field] for field in fields} if fields else item)
+            item[key] = loads(item[key], {} if key in {"estimated_change_json", "local_terms_json"} else [])
+        rows.append({field: item[field] for field in fields})
     return rows
 
 def issue_list(args: argparse.Namespace) -> None:
@@ -803,9 +873,12 @@ def issue_get(args: argparse.Namespace) -> None:
     with connect() as conn:
         row = conn.execute(
             """SELECT i.*, t.task_key, t.project_name,
-                      (SELECT MAX(a.created_at) FROM issue_activity a WHERE a.issue_id = i.id) AS last_activity_at,
-                      (SELECT MAX(a.created_at) FROM issue_activity a
-                       WHERE a.issue_id = i.id AND a.activity_type = 'COMMENT_ADDED') AS last_comment_at
+                      (SELECT MAX(COALESCE(a.amended_at, a.created_at))
+                       FROM issue_activity a WHERE a.issue_id = i.id) AS last_activity_at,
+                      (SELECT MAX(COALESCE(a.amended_at, a.created_at)) FROM issue_activity a
+                       WHERE a.issue_id = i.id AND a.activity_type = 'COMMENT_ADDED') AS last_comment_at,
+                      (SELECT MAX(COALESCE(d.amended_at, d.created_at))
+                       FROM issue_discussion d WHERE d.issue_id = i.id) AS last_discussion_at
                FROM review_issue i
                JOIN review_task t ON t.id = i.task_id
                WHERE i.issue_key = ?""",
@@ -816,9 +889,11 @@ def issue_get(args: argparse.Namespace) -> None:
         item = dict(row)
         for key in (
             "trigger_conditions_json", "potential_impact_json", "impact_scope_json",
-            "evidence_json", "estimated_change_json"
+            "evidence_json", "estimated_change_json", "local_terms_json"
         ):
-            item[key] = loads(item[key], [] if key != "estimated_change_json" else {})
+            item[key] = loads(item[key], {} if key in {"estimated_change_json", "local_terms_json"} else [])
+        if args.view == "compact":
+            item = {field: item[field] for field in ISSUE_GET_COMPACT_FIELDS}
         audit(conn, actor_id(args), "issue.get", "review_issue", args.issue_key, True)
     print_json(item)
 
@@ -853,11 +928,6 @@ def apply_assessment_update(
         f"UPDATE review_issue SET {', '.join(f'{field} = ?' for field in changed)}, "
         "updated_at = CURRENT_TIMESTAMP WHERE issue_key = ?",
         [*changed.values(), issue_key],
-    )
-    conn.execute(
-        """INSERT INTO issue_activity(issue_id, attempt_no, activity_type, operator_type, operator_id, content, metadata_json)
-           SELECT id, current_attempt_no, 'COMMENT_ADDED', ?, ?, ?, ? FROM review_issue WHERE issue_key = ?""",
-        (operator_type(args.agent), actor_id(args), "更新问题评级", dumps({"assessment": changed}), issue_key),
     )
     audit(conn, actor_id(args), "issue.update-assessment", "review_issue", issue_key, True)
     return changed
@@ -902,10 +972,32 @@ def issue_update_body(args: argparse.Namespace) -> None:
     require_agent(args.agent)
     if args.agent not in {"inspector", "human"}:
         raise PermissionError("只有 inspector 或 human 可以更新问题正文")
-    fields = {name: getattr(args, name) for name in ("title", "description", "facts", "rationale")}
+    fields = {
+        name: getattr(args, name)
+        for name in (
+            "title", "summary", "expected_outcome", "technical_note",
+            "description", "facts", "rationale",
+        )
+    }
     updates = {name: value for name, value in fields.items() if value is not None}
+    if "title" in updates and not updates["title"].strip():
+        raise ValueError("title 不能为空")
+    if "summary" in updates and not updates["summary"].strip():
+        raise ValueError("summary 不能为空")
+    if args.local_terms is not None:
+        local_terms = json.loads(args.local_terms)
+        if not isinstance(local_terms, dict):
+            raise ValueError("local-terms 必须是 JSON 对象")
+        if not all(
+            isinstance(term, str) and term.strip() and isinstance(meaning, str) and meaning.strip()
+            for term, meaning in local_terms.items()
+        ):
+            raise ValueError("local-terms 的术语和解释都必须是非空字符串")
+        updates["local_terms_json"] = dumps(local_terms)
     if not updates:
         raise ValueError("至少提供一个可更新字段")
+    if "summary" in updates and "description" not in updates:
+        updates["description"] = updates["summary"]
     with connect() as conn:
         row = conn.execute("SELECT id, current_attempt_no FROM review_issue WHERE issue_key = ?", (args.issue_key,)).fetchone()
         if not row:
@@ -914,12 +1006,6 @@ def issue_update_body(args: argparse.Namespace) -> None:
         conn.execute(
             f"UPDATE review_issue SET {set_clause}, updated_at = CURRENT_TIMESTAMP WHERE issue_key = ?",
             [*updates.values(), args.issue_key],
-        )
-        conn.execute(
-            """INSERT INTO issue_activity(issue_id, attempt_no, activity_type, operator_type, operator_id, content, metadata_json)
-               VALUES (?, ?, 'COMMENT_ADDED', ?, ?, ?, ?)""",
-            (row["id"], row["current_attempt_no"], operator_type(args.agent), actor_id(args),
-             "更新问题正文", dumps({"body": sorted(updates)})),
         )
         audit(conn, actor_id(args), "issue.update-body", "review_issue", args.issue_key, True, json.dumps(updates, ensure_ascii=False))
     print_json({"issue_key": args.issue_key, "updated": updates})
@@ -1070,7 +1156,7 @@ def apply_design_transition(
         raise RuntimeError(
             f"不允许设计状态流转: {row['status']} -> {target_status} ({args.command})"
         )
-    conn.execute(
+    activity_cursor = conn.execute(
         """INSERT INTO issue_activity(
             issue_id, attempt_no, activity_type, operator_type, operator_id,
             content, result_status, code_reference_json, metadata_json
@@ -1091,6 +1177,7 @@ def apply_design_transition(
         "status": target_status,
         "attempt_no": row["current_attempt_no"],
         "activity_type": activity_type,
+        "activity_id": activity_cursor.lastrowid,
     }
 
 def design_request(args: argparse.Namespace) -> None:
@@ -1132,6 +1219,11 @@ def design_review(args: argparse.Namespace) -> None:
             conn, args, allowed_agents={"inspector", "human"},
             allowed_sources={"DESIGN_PENDING_REVIEW"}, target_status=target_status,
             activity_type=activity_type,
+        )
+        record_issue_decision(
+            conn, args, row, "DESIGN_REVIEW",
+            "APPROVED" if args.decision == "approved" else "REJECTED",
+            args.content, source_activity_id=result["activity_id"],
         )
         plan_no = active_stage_plan_no(conn, row["id"])
         if args.decision == "approved" and plan_no is not None:
@@ -1709,7 +1801,7 @@ def stage_review(args: argparse.Namespace) -> None:
             activity_metadata["review_result"] = review_result
         if baseline is not None:
             activity_metadata["baseline"] = baseline
-        conn.execute(
+        activity_cursor = conn.execute(
             """INSERT INTO issue_activity(
                 issue_id, attempt_no, activity_type, operator_type, operator_id,
                 content, result_status, metadata_json
@@ -1719,6 +1811,12 @@ def stage_review(args: argparse.Namespace) -> None:
                 operator_type(args.agent), actor_id(args), content, result_status,
                 dumps(activity_metadata),
             ),
+        )
+        record_issue_decision(
+            conn, args, issue, "STAGE_REVIEW",
+            "APPROVED" if decision == "approved" else "REJECTED", content,
+            scope_key=f"{plan_no}:{args.stage_no}", source_activity_id=activity_cursor.lastrowid,
+            metadata=activity_metadata,
         )
         if decision == "redesign":
             supersede_active_stage_plan(conn, args, issue, content)
@@ -1819,7 +1917,7 @@ def human_confirmation_resolve(args: argparse.Namespace) -> None:
                 f"只有 HUMAN_CONFIRMATION_REQUIRED 可以提交人工决定，当前为 {row['status']}"
             )
         metadata = {"decision": decision, "next_status": next_status}
-        conn.execute(
+        activity_cursor = conn.execute(
             """INSERT INTO issue_activity(
                 issue_id, attempt_no, activity_type, operator_type, operator_id,
                 content, result_status, metadata_json
@@ -1828,6 +1926,10 @@ def human_confirmation_resolve(args: argparse.Namespace) -> None:
                 row["id"], row["current_attempt_no"], operator_type(args.agent), actor_id(args),
                 content, next_status, dumps(metadata),
             ),
+        )
+        record_issue_decision(
+            conn, args, row, "HUMAN_CONFIRMATION", next_status, content,
+            source_activity_id=activity_cursor.lastrowid, metadata=metadata,
         )
         conn.execute(
             "UPDATE review_issue SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
@@ -1890,10 +1992,209 @@ def implementation_submit(args: argparse.Namespace) -> None:
         audit(conn, actor_id(args), "implementation.submit", "review_issue", args.issue_key, True)
     print_json({**result, "activity_type": "IMPLEMENTATION_SUBMITTED"})
 
+DISCUSSION_TOPICS = {"GENERAL", "DESIGN", "IMPLEMENTATION", "VERIFICATION"}
+
+def record_issue_decision(
+    conn: sqlite3.Connection,
+    args: argparse.Namespace,
+    issue: sqlite3.Row,
+    decision_type: str,
+    outcome: str,
+    content: str,
+    *,
+    scope_key: str = "",
+    source_activity_id: int | None = None,
+    source_discussion_ids: list[int] | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> int:
+    previous = conn.execute(
+        """SELECT id FROM issue_decision
+           WHERE issue_id = ? AND decision_type = ? AND scope_key = ? AND effective = 1
+           ORDER BY created_at DESC, id DESC""",
+        (issue["id"], decision_type, scope_key),
+    ).fetchall()
+    if previous:
+        conn.execute(
+            """UPDATE issue_decision SET effective = 0
+               WHERE issue_id = ? AND decision_type = ? AND scope_key = ? AND effective = 1""",
+            (issue["id"], decision_type, scope_key),
+        )
+    cursor = conn.execute(
+        """INSERT INTO issue_decision(
+               issue_id, attempt_no, decision_type, scope_key, outcome,
+               operator_type, operator_id, content, source_activity_id,
+               source_discussion_ids_json, metadata_json
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            issue["id"], issue["current_attempt_no"], decision_type, scope_key, outcome,
+            operator_type(args.agent), actor_id(args), content, source_activity_id,
+            dumps(source_discussion_ids or []), dumps(metadata or {}),
+        ),
+    )
+    decision_id = int(cursor.lastrowid)
+    if previous:
+        conn.execute(
+            "UPDATE issue_decision SET superseded_by_id = ? WHERE id IN (%s)"
+            % ",".join("?" for _ in previous),
+            [decision_id, *(row["id"] for row in previous)],
+        )
+    return decision_id
+
+def discussion_append(args: argparse.Namespace) -> None:
+    require_agent(args.agent)
+    require_choice(args.topic, DISCUSSION_TOPICS, "topic")
+    content = (args.content or "").strip()
+    if not content:
+        raise ValueError("discussion-append 的 --content 不能为空")
+    with connect() as conn:
+        issue = issue_row(conn, args.issue_key)
+        cursor = conn.execute(
+            """INSERT INTO issue_discussion(
+                   issue_id, topic, operator_type, operator_id, content
+               ) VALUES (?, ?, ?, ?, ?)""",
+            (issue["id"], args.topic, operator_type(args.agent), actor_id(args), content),
+        )
+        conn.execute(
+            "UPDATE review_issue SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (issue["id"],),
+        )
+        audit(
+            conn, actor_id(args), "discussion.append", "issue_discussion", str(cursor.lastrowid), True,
+            dumps({"issue_key": args.issue_key, "topic": args.topic}),
+        )
+    print_json({"issue_key": args.issue_key, "discussion_id": cursor.lastrowid, "topic": args.topic})
+
+def discussion_amend(args: argparse.Namespace) -> None:
+    require_agent(args.agent)
+    content = (args.content or "").strip()
+    if not content:
+        raise ValueError("discussion-amend 的 --content 不能为空")
+    with connect() as conn:
+        row = conn.execute(
+            """SELECT d.*, i.issue_key
+               FROM issue_discussion d JOIN review_issue i ON i.id = d.issue_id
+               WHERE d.id = ? AND i.issue_key = ?""",
+            (args.discussion_id, args.issue_key),
+        ).fetchone()
+        if not row:
+            raise KeyError(f"讨论不存在或不属于问题 {args.issue_key}: {args.discussion_id}")
+        if row["operator_type"] != operator_type(args.agent) or row["operator_id"] != actor_id(args):
+            raise PermissionError("只能修订当前逻辑身份自己的讨论消息")
+        if row["content"] == content:
+            audit(
+                conn, actor_id(args), "discussion.amend", "issue_discussion", str(args.discussion_id), True,
+                dumps({"issue_key": args.issue_key, "unchanged": True}),
+            )
+            print_json({"issue_key": args.issue_key, "discussion_id": args.discussion_id,
+                        "amendment_count": row["amendment_count"], "unchanged": True})
+            return
+        revision_no = int(row["amendment_count"]) + 1
+        conn.execute(
+            """INSERT INTO issue_discussion_revision(
+                   discussion_id, revision_no, previous_content, replacement_content, reason, amended_by
+               ) VALUES (?, ?, ?, ?, ?, ?)""",
+            (args.discussion_id, revision_no, row["content"], content, args.reason, actor_id(args)),
+        )
+        conn.execute(
+            """UPDATE issue_discussion
+               SET content = ?, amended_at = CURRENT_TIMESTAMP, amendment_count = ? WHERE id = ?""",
+            (content, revision_no, args.discussion_id),
+        )
+        conn.execute(
+            "UPDATE review_issue SET updated_at = CURRENT_TIMESTAMP WHERE id = ?", (row["issue_id"],),
+        )
+        audit(conn, actor_id(args), "discussion.amend", "issue_discussion", str(args.discussion_id), True)
+    print_json({"issue_key": args.issue_key, "discussion_id": args.discussion_id,
+                "amendment_count": revision_no, "unchanged": False})
+
+def discussion_list(args: argparse.Namespace) -> None:
+    require_agent(args.agent)
+    if not 1 <= args.limit <= 1000:
+        raise ValueError("limit 必须在 1 到 1000 之间")
+    sql = """SELECT d.*, i.issue_key
+             FROM issue_discussion d JOIN review_issue i ON i.id = d.issue_id
+             WHERE i.issue_key = ?"""
+    params: list[Any] = [args.issue_key]
+    if args.topic:
+        sql += " AND d.topic = ?"
+        params.append(args.topic)
+    if args.since:
+        sql += " AND COALESCE(d.amended_at, d.created_at) >= ?"
+        params.append(normalize_since(args.since))
+    sql += " ORDER BY d.created_at ASC, d.id ASC LIMIT ?"
+    params.append(args.limit)
+    with connect() as conn:
+        rows = conn.execute(sql, params).fetchall()
+        audit(conn, actor_id(args), "discussion.list", "issue_discussion", args.issue_key, True,
+              f"count={len(rows)}")
+    print_json([dict(row) for row in rows])
+
+def decision_record(args: argparse.Namespace) -> None:
+    require_agent(args.agent)
+    if args.agent != "inspector":
+        raise PermissionError("只有 inspector 可以把 Agent 讨论整理为正式结论")
+    decision_type = (args.decision_type or "").strip()
+    outcome = (args.outcome or "").strip()
+    content = (args.content or "").strip()
+    if not decision_type or not outcome:
+        raise ValueError("decision-type 和 outcome 不能为空")
+    if not content:
+        raise ValueError("decision-record 的 --content 不能为空")
+    discussion_ids = json.loads(args.source_discussion_ids)
+    metadata = json.loads(args.metadata)
+    if not isinstance(discussion_ids, list) or not all(isinstance(item, int) for item in discussion_ids):
+        raise ValueError("source-discussion-ids 必须是整数 JSON 数组")
+    if len(discussion_ids) != len(set(discussion_ids)):
+        raise ValueError("source-discussion-ids 不能重复")
+    if not isinstance(metadata, dict):
+        raise ValueError("metadata 必须是 JSON 对象")
+    with connect() as conn:
+        issue = issue_row(conn, args.issue_key)
+        if discussion_ids:
+            placeholders = ",".join("?" for _ in discussion_ids)
+            count = conn.execute(
+                f"SELECT COUNT(*) FROM issue_discussion WHERE issue_id = ? AND id IN ({placeholders})",
+                [issue["id"], *discussion_ids],
+            ).fetchone()[0]
+            if count != len(set(discussion_ids)):
+                raise ValueError("source-discussion-ids 包含不属于当前 Issue 的讨论")
+        decision_id = record_issue_decision(
+            conn, args, issue, decision_type, outcome, content,
+            scope_key=args.scope_key or "", source_discussion_ids=discussion_ids, metadata=metadata,
+        )
+        conn.execute("UPDATE review_issue SET updated_at = CURRENT_TIMESTAMP WHERE id = ?", (issue["id"],))
+        audit(conn, actor_id(args), "decision.record", "issue_decision", str(decision_id), True,
+              dumps({"issue_key": args.issue_key, "decision_type": decision_type}))
+    print_json({"issue_key": args.issue_key, "decision_id": decision_id,
+                "decision_type": decision_type, "outcome": outcome})
+
+def decision_list(args: argparse.Namespace) -> None:
+    require_agent(args.agent)
+    sql = """SELECT d.*, i.issue_key
+             FROM issue_decision d JOIN review_issue i ON i.id = d.issue_id
+             WHERE i.issue_key = ?"""
+    params: list[Any] = [args.issue_key]
+    if not args.include_superseded:
+        sql += " AND d.effective = 1"
+    sql += " ORDER BY d.created_at ASC, d.id ASC"
+    with connect() as conn:
+        rows = conn.execute(sql, params).fetchall()
+        audit(conn, actor_id(args), "decision.list", "issue_decision", args.issue_key, True,
+              f"count={len(rows)}")
+    result = []
+    for row in rows:
+        item = dict(row)
+        item["source_discussion_ids_json"] = loads(item["source_discussion_ids_json"], [])
+        item["metadata_json"] = loads(item["metadata_json"], {})
+        result.append(item)
+    print_json(result)
+
 def activity_append(args: argparse.Namespace) -> None:
     require_agent(args.agent)
     if args.activity_type not in ALLOWED_ACTIVITY_BY_AGENT[args.agent]:
         raise PermissionError(f"agent {args.agent} 无权追加活动 {args.activity_type}")
+    if args.activity_type in {"COMMENT_ADDED", "DESIGN_GUIDANCE"}:
+        raise ValueError("讨论内容必须使用 discussion-append，不再追加到处理历史")
 
     with connect() as conn:
         row = conn.execute(
@@ -1908,7 +2209,7 @@ def activity_append(args: argparse.Namespace) -> None:
         if attempt_no > row["current_attempt_no"]:
             raise ValueError("attempt_no 不能大于当前尝试次数")
 
-        conn.execute(
+        activity_cursor = conn.execute(
             """INSERT INTO issue_activity(
                 issue_id, attempt_no, activity_type, operator_type, operator_id,
                 content, result_status, code_reference_json, metadata_json
@@ -1922,8 +2223,140 @@ def activity_append(args: argparse.Namespace) -> None:
                 dumps(json.loads(args.metadata)),
             ),
         )
+        decision_mapping = {
+            "REVIEW_APPROVED": ("IMPLEMENTATION_REVIEW", "APPROVED"),
+            "REVIEW_REJECTED": ("IMPLEMENTATION_REVIEW", "REJECTED"),
+            "VERIFICATION_PASSED": ("VERIFICATION", "APPROVED"),
+            "VERIFICATION_FAILED": ("VERIFICATION", "REJECTED"),
+            "INSPECTOR_CONFIRMATION_PROVIDED": ("SCOPE_CONFIRMATION", "PROVIDED"),
+        }
+        if args.activity_type in decision_mapping:
+            decision_type, outcome = decision_mapping[args.activity_type]
+            scope_key = f"attempt:{attempt_no}" if decision_type in {"IMPLEMENTATION_REVIEW", "VERIFICATION"} else ""
+            record_issue_decision(
+                conn, args, row, decision_type, outcome, args.content,
+                scope_key=scope_key, source_activity_id=activity_cursor.lastrowid,
+                metadata=json.loads(args.metadata),
+            )
         audit(conn, actor_id(args), "activity.append", "issue_activity", args.issue_key, True)
     print_json({"issue_key": args.issue_key, "activity_type": args.activity_type})
+
+def activity_amend(args: argparse.Namespace) -> None:
+    require_agent(args.agent)
+    if args.agent not in {"inspector", "developer"}:
+        raise PermissionError("只有 inspector 或 developer 可以修订自己的活动文案")
+    content = (args.content or "").strip()
+    if not content:
+        raise ValueError("activity-amend 的 --content 不能为空")
+    if args.activity_id < 1:
+        raise ValueError("activity-id 必须是正整数")
+
+    with connect() as conn:
+        row = conn.execute(
+            """SELECT a.*, i.issue_key, i.status AS issue_status
+               FROM issue_activity a
+               JOIN review_issue i ON i.id = a.issue_id
+               WHERE a.id = ? AND i.issue_key = ?""",
+            (args.activity_id, args.issue_key),
+        ).fetchone()
+        if not row:
+            raise KeyError(f"活动不存在或不属于问题 {args.issue_key}: {args.activity_id}")
+        if row["operator_type"] != operator_type(args.agent) or row["operator_id"] != actor_id(args):
+            raise PermissionError("只能修订当前逻辑身份自己提交的活动文案")
+        if row["activity_type"] not in AMENDABLE_ACTIVITY_TYPES:
+            raise PermissionError(f"活动 {row['activity_type']} 已是正式结论或结构化记录，不能直接修订")
+
+        activity_type = row["activity_type"]
+        if activity_type in {"DESIGN_SUBMITTED", "REDESIGN_SUBMITTED"} and row["issue_status"] != "DESIGN_PENDING_REVIEW":
+            raise RuntimeError("设计提交已被审核或工作流已继续，不能 amend；请提交新版本")
+        if activity_type == "IMPLEMENTATION_SUBMITTED" and row["issue_status"] != "IMPLEMENTED_PENDING_REVIEW":
+            raise RuntimeError("实现提交已被审核或工作流已继续，不能 amend；请提交新 attempt")
+
+        previous = row["content"]
+        if previous == content:
+            audit(
+                conn, actor_id(args), "activity.amend", "issue_activity", str(args.activity_id), True,
+                dumps({"issue_key": args.issue_key, "unchanged": True}),
+            )
+            print_json({
+                "issue_key": args.issue_key, "activity_id": args.activity_id,
+                "activity_type": row["activity_type"], "amendment_count": row["amendment_count"],
+                "unchanged": True,
+            })
+            return
+
+        revision_no = int(row["amendment_count"]) + 1
+        conn.execute(
+            """INSERT INTO issue_activity_revision(
+                   activity_id, revision_no, previous_content, replacement_content, reason, amended_by
+               ) VALUES (?, ?, ?, ?, ?, ?)""",
+            (args.activity_id, revision_no, previous, content, args.reason, actor_id(args)),
+        )
+        conn.execute(
+            """UPDATE issue_activity
+               SET content = ?, amended_at = CURRENT_TIMESTAMP, amendment_count = ?
+               WHERE id = ?""",
+            (content, revision_no, args.activity_id),
+        )
+
+        # Stage 表保存当前提交/验收文案的投影。修订旧 review round 时不能覆盖新结论。
+        metadata = loads(row["metadata_json"], {})
+        if row["activity_type"] == "STAGE_SUBMITTED":
+            stage = conn.execute(
+                """SELECT status, developer_summary FROM issue_stage
+                   WHERE issue_id = ? AND plan_no = ? AND stage_no = ?""",
+                (row["issue_id"], metadata.get("plan_no"), metadata.get("stage_no")),
+            ).fetchone()
+            if not stage or stage["status"] != "PENDING_REVIEW" or stage["developer_summary"] != previous:
+                raise RuntimeError("Stage 提交已被验收或已产生新提交，不能 amend；请提交新一轮 Stage")
+            conn.execute(
+                """UPDATE issue_stage SET developer_summary = ?, updated_at = CURRENT_TIMESTAMP
+                   WHERE issue_id = ? AND plan_no = ? AND stage_no = ?
+                     AND developer_summary = ?""",
+                (content, row["issue_id"], metadata.get("plan_no"), metadata.get("stage_no"), previous),
+            )
+
+        conn.execute(
+            "UPDATE review_issue SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (row["issue_id"],),
+        )
+        audit(
+            conn, actor_id(args), "activity.amend", "issue_activity", str(args.activity_id), True,
+            dumps({
+                "issue_key": args.issue_key,
+                "revision_no": revision_no,
+                "reason": args.reason,
+                "previous_sha256": hashlib.sha256(previous.encode("utf-8")).hexdigest(),
+                "replacement_sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+            }),
+        )
+    print_json({
+        "issue_key": args.issue_key, "activity_id": args.activity_id,
+        "activity_type": row["activity_type"], "amendment_count": revision_no,
+        "unchanged": False,
+    })
+
+def activity_revision_list(args: argparse.Namespace) -> None:
+    require_agent(args.agent)
+    with connect() as conn:
+        activity = conn.execute(
+            """SELECT a.id, i.issue_key
+               FROM issue_activity a
+               JOIN review_issue i ON i.id = a.issue_id
+               WHERE a.id = ? AND i.issue_key = ?""",
+            (args.activity_id, args.issue_key),
+        ).fetchone()
+        if not activity:
+            raise KeyError(f"活动不存在或不属于问题 {args.issue_key}: {args.activity_id}")
+        rows = conn.execute(
+            "SELECT * FROM issue_activity_revision WHERE activity_id = ? ORDER BY revision_no",
+            (args.activity_id,),
+        ).fetchall()
+        audit(
+            conn, actor_id(args), "activity.revision-list", "issue_activity", str(args.activity_id), True,
+            f"count={len(rows)}",
+        )
+    print_json([dict(row) for row in rows])
 
 def activity_list(args: argparse.Namespace) -> None:
     require_agent(args.agent)
@@ -1973,9 +2406,9 @@ def activity_list_recent(args: argparse.Namespace) -> None:
         sql += " AND a.activity_type = ?"
         params.append(args.activity_type)
     if args.since:
-        sql += " AND a.created_at >= ?"
+        sql += " AND COALESCE(a.amended_at, a.created_at) >= ?"
         params.append(normalize_since(args.since))
-    sql += " ORDER BY a.created_at DESC, a.id DESC LIMIT ?"
+    sql += " ORDER BY COALESCE(a.amended_at, a.created_at) DESC, a.id DESC LIMIT ?"
     params.append(args.limit)
     with connect() as conn:
         rows = conn.execute(sql, params).fetchall()
@@ -2151,16 +2584,20 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--title", required=True)
     p.add_argument("--dimension", required=True)
     p.add_argument("--severity", required=True)
-    p.add_argument("--remediation-benefit", required=True)
-    p.add_argument("--remediation-cost", required=True)
-    p.add_argument("--disposition", required=True)
-    p.add_argument("--confidence", required=True)
-    p.add_argument("--description", required=True)
-    p.add_argument("--facts", required=True)
+    p.add_argument("--summary")
+    p.add_argument("--expected-outcome")
+    p.add_argument("--technical-note")
+    p.add_argument("--local-terms", default="{}")
+    p.add_argument("--remediation-benefit")
+    p.add_argument("--remediation-cost")
+    p.add_argument("--disposition")
+    p.add_argument("--confidence")
+    p.add_argument("--description")
+    p.add_argument("--facts")
     p.add_argument("--trigger-conditions", default="[]")
     p.add_argument("--potential-impact", default="[]")
     p.add_argument("--impact-scope", default="[]")
-    p.add_argument("--rationale", required=True)
+    p.add_argument("--rationale")
     p.add_argument("--evidence", default="[]")
     p.add_argument("--estimated-change", default="{}")
     p.add_argument("--dedupe-key")
@@ -2191,6 +2628,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("issue-get")
     p.add_argument("--issue-key", required=True)
+    p.add_argument("--view", choices=["compact", "full"], default="compact")
     p.set_defaults(func=issue_get)
 
     p = sub.add_parser("issue-update-status")
@@ -2310,10 +2748,49 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("issue-update-body")
     p.add_argument("--issue-key", required=True)
     p.add_argument("--title")
+    p.add_argument("--summary")
+    p.add_argument("--expected-outcome")
+    p.add_argument("--technical-note")
+    p.add_argument("--local-terms")
     p.add_argument("--description")
     p.add_argument("--facts")
     p.add_argument("--rationale")
     p.set_defaults(func=issue_update_body)
+
+    p = sub.add_parser("discussion-append")
+    p.add_argument("--issue-key", required=True)
+    p.add_argument("--topic", choices=sorted(DISCUSSION_TOPICS), default="GENERAL")
+    p.add_argument("--content", required=True)
+    p.set_defaults(func=discussion_append)
+
+    p = sub.add_parser("discussion-amend")
+    p.add_argument("--issue-key", required=True)
+    p.add_argument("--discussion-id", required=True, type=int)
+    p.add_argument("--content", required=True)
+    p.add_argument("--reason")
+    p.set_defaults(func=discussion_amend)
+
+    p = sub.add_parser("discussion-list")
+    p.add_argument("--issue-key", required=True)
+    p.add_argument("--topic", choices=sorted(DISCUSSION_TOPICS))
+    p.add_argument("--since")
+    p.add_argument("--limit", type=int, default=200)
+    p.set_defaults(func=discussion_list)
+
+    p = sub.add_parser("decision-record")
+    p.add_argument("--issue-key", required=True)
+    p.add_argument("--decision-type", required=True)
+    p.add_argument("--scope-key")
+    p.add_argument("--outcome", required=True)
+    p.add_argument("--content", required=True)
+    p.add_argument("--source-discussion-ids", default="[]")
+    p.add_argument("--metadata", default="{}")
+    p.set_defaults(func=decision_record)
+
+    p = sub.add_parser("decision-list")
+    p.add_argument("--issue-key", required=True)
+    p.add_argument("--include-superseded", action="store_true")
+    p.set_defaults(func=decision_list)
 
     p = sub.add_parser("activity-append")
     p.add_argument("--issue-key", required=True)
@@ -2324,6 +2801,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--code-reference", default="[]")
     p.add_argument("--metadata", default="{}")
     p.set_defaults(func=activity_append)
+
+    p = sub.add_parser("activity-amend")
+    p.add_argument("--issue-key", required=True)
+    p.add_argument("--activity-id", required=True, type=int)
+    p.add_argument("--content", required=True)
+    p.add_argument("--reason")
+    p.set_defaults(func=activity_amend)
+
+    p = sub.add_parser("activity-revision-list")
+    p.add_argument("--issue-key", required=True)
+    p.add_argument("--activity-id", required=True, type=int)
+    p.set_defaults(func=activity_revision_list)
 
     p = sub.add_parser("activity-list")
     p.add_argument("--issue-key", required=True)

@@ -60,7 +60,7 @@
     }
     const tab = event.target.closest('[data-tab-target]');
     if (tab) {
-      const scope = tab.closest('.modal-backdrop, .implementation-panel');
+      const scope = tab.closest('.modal-backdrop, .implementation-panel, .record-panel');
       activateTab(scope, tab.dataset.tabTarget);
       return;
     }

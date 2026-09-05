@@ -34,8 +34,12 @@ Inspector 的 Stage finding 只分四级：`BLOCKER` 是功能、数据、安全
 
 实现审核失败必须区分两类：方案正确但实现遗漏或有 Bug 时记录 `VERIFICATION_FAILED` 并回 `IN_PROGRESS`；方案方向失效时转 `REDESIGN_REQUIRED`，重新经过设计提交和批准。连续两次实现失败后，Inspector 必须重新判断是实现错误还是设计错误；即便仍属实现错误，也必须给出具体失败原因、必改点和验证标准，禁止机械重复循环。
 
-Human 只作为极低频最终兜底，不是第三个普通 Reviewer。Developer 遇到边界问题只能走 `INSPECTOR_CONFIRMATION_REQUIRED`；只有 Inspector 能在充分读取代码、测试、数据库结构、文档、协议、历史活动和可得运行数据后调用 `human-escalate`。允许升级的原因仅限：关键业务事实/外部约束确实无法由 Agent 获得且直接决定实现方向，或继续自主决策存在重大、不可逆的数据损坏风险。Agent 意见不一致、普通架构取舍、方案质量差、实现或测试失败均不是升级理由，应继续使用证据、`DESIGN_GUIDANCE`、设计驳回或 `REDESIGN_REQUIRED` 自主解决。
+Human 只作为极低频最终兜底，不是第三个普通 Reviewer。Developer 遇到边界问题只能走 `INSPECTOR_CONFIRMATION_REQUIRED`；只有 Inspector 能在充分读取代码、测试、数据库结构、文档、协议、历史活动和可得运行数据后调用 `human-escalate`。允许升级的原因仅限：关键业务事实/外部约束确实无法由 Agent 获得且直接决定实现方向，或继续自主决策存在重大、不可逆的数据损坏风险。Agent 意见不一致、普通架构取舍、方案质量差、实现或测试失败均不是升级理由，应继续使用证据、方案讨论、设计驳回或 `REDESIGN_REQUIRED` 自主解决。
 
 升级前 Inspector 必须确认：继续读代码、补测试、查数据或日志、追加设计指导、作出合理技术判断都不能安全解决；Human 确实掌握 Agent 无法获得的事实，或选错方案确会造成无法靠正常重试恢复的重大破坏。升级内容必须整理为原因、已验证事实、未知事实、选项与影响、推荐选项以及 Human 只需回答的问题，不得直接倾倒长日志、完整代码或 Agent 对话。`HUMAN_CONFIRMATION_REQUIRED` 会暂停 Agent 自动流转；Human 只能用 `human-confirmation-resolve` 给出边界/风险决定并恢复到设计、实现、暂停、受阻或取消，不能直接 `CONFIRMED`。恢复后 Inspector 仍负责设计审核、实现审核、验证和最终技术闭环。
 
-活动内容以清晰可读为准：简短结论使用单行纯文本；多个要点可以直接换行；只有包含代码、命令、结构化列表或复杂层级时才使用 Markdown。不要为了格式化给普通短句添加标题、列表符号或代码块。
+Issue 默认正文只写 `title + summary + dimension + severity`；确有必要时再补 `expected_outcome`、`technical_note`、`local_terms` 和结构化证据。`summary` 用一段短文或 2–5 个要点直说现象、影响和关键原因，可使用轻量 Markdown；不要粘贴推理过程、长日志、完整代码或重复评级。代码位置优先写文件与类/方法/符号，行号只能作为当时快照的辅助提示，不能成为唯一定位依据。通用技术名词无需解释；只对本项目、业务或 Agent 临时定义且可能未对齐的词，在 `local_terms` 中给一句白话定义。
+
+讨论使用 `discussion-append/list/amend`，与处理历史分开。Developer、Inspector 发现自己的讨论消息不准确时，直接 `discussion-amend` 原消息，不追加“更正”或“以此为准”；旧版进入独立 revision。讨论达成一致后，由 Inspector 用 `decision-record` 整理一条短结论并关联来源讨论。后续新结论以相同 `decision_type + scope_key` 覆盖为当前有效结论，旧结论仅留审计。
+
+`activity-amend` 只用于尚未被消费的提交文案和补充证据，例如待审核的设计、Stage 或实现提交。审核、验证、人工决定等最终结论不能 amend；需变化时创建新的正式结论。页面处理历史保留工作流里程碑和结论，默认读取只返回精简 Issue 字段，只有确需兼容旧字段时才用 `issue-get --view full`。

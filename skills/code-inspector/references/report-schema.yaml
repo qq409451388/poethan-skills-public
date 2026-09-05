@@ -1,15 +1,8 @@
-version: 1.3.0
+version: 2.0.0
 
 enums:
-  task_type:
-    - REVIEW
-    - CONTINUOUS
-
-  review_level:
-    - L1
-    - L2
-    - L3
-
+  task_type: [REVIEW, CONTINUOUS]
+  review_level: [L1, L2, L3]
   dimension:
     - functional_correctness
     - data_security
@@ -18,39 +11,7 @@ enums:
     - architecture_extensibility
     - code_quality
     - test_observability
-
-  severity:
-    - critical
-    - high
-    - medium
-    - low
-
-  remediation_benefit:
-    - high
-    - medium
-    - low
-
-  remediation_cost:
-    - low
-    - medium
-    - high
-    - extreme
-
-  disposition:
-    - immediate_fix
-    - current_iteration
-    - near_term_iteration
-    - special_governance
-    - opportunistic_fix
-    - observe
-    - defer
-    - business_confirmation
-
-  confidence:
-    - high
-    - medium
-    - low
-
+  severity: [critical, high, medium, low]
   issue_status:
     - PROPOSED
     - DESIGN_REQUIRED
@@ -65,267 +26,66 @@ enums:
     - CONFIRMED
     - CANCELLED
 
-  stage_status:
-    - PLANNED
-    - IN_PROGRESS
-    - PENDING_REVIEW
-    - APPROVED
-    - SUPERSEDED
-
 report:
-  report_id:
-    type: string
-    required: true
-
-  task_type:
-    type: enum
-    ref: task_type
-    required: false
-    default: REVIEW
-
-  project:
-    type: string
-    required: true
-
-  repository:
-    type: string
-    required: false
-
-  branch:
-    type: string
-    required: false
-
-  commit:
-    type: string
-    required: false
-
-  review_level:
-    type: enum
-    ref: review_level
-    required: true
-
-  review_scope:
-    type: string
-    required: true
-
-  generated_at:
-    type: datetime
-    required: true
-
+  report_id: {type: string, required: true}
+  task_type: {type: enum, ref: task_type, required: false, default: REVIEW}
+  project: {type: string, required: true}
+  review_level: {type: enum, ref: review_level, required: true}
+  review_scope: {type: string, required: true}
+  generated_at: {type: datetime, required: true}
   summary:
     type: object
     required: true
     fields:
-      total:
-        type: integer
-      confirmed:
-        type: integer
-      needs_confirmation:
-        type: integer
-      critical:
-        type: integer
-      high:
-        type: integer
-      medium:
-        type: integer
-      low:
-        type: integer
-
+      total: {type: integer}
+      open: {type: integer}
+      confirmed: {type: integer}
+      critical: {type: integer}
+      high: {type: integer}
   issues:
     type: array
     required: true
     item:
-      issue_id:
-        type: string
-        required: true
-
-      title:
-        type: string
-        required: true
-
-      dimension:
-        type: enum
-        ref: dimension
-        required: true
-
-      secondary_tags:
-        type: array
-        item_type: string
+      issue_id: {type: string, required: true}
+      title: {type: string, required: true}
+      summary: {type: markdown_string, required: true}
+      dimension: {type: enum, ref: dimension, required: true}
+      severity: {type: enum, ref: severity, required: true}
+      status: {type: enum, ref: issue_status, required: true}
+      expected_outcome: {type: markdown_string, required: false}
+      technical_note: {type: markdown_string, required: false}
+      local_terms:
+        type: object
         required: false
-
-      severity:
-        type: enum
-        ref: severity
-        required: true
-
-      remediation_benefit:
-        type: enum
-        ref: remediation_benefit
-        required: true
-
-      remediation_cost:
-        type: enum
-        ref: remediation_cost
-        required: true
-
-      disposition:
-        type: enum
-        ref: disposition
-        required: true
-
-      confidence:
-        type: enum
-        ref: confidence
-        required: true
-
-      status:
-        type: enum
-        ref: issue_status
-        required: true
-
-      facts:
-        type: string
-        required: true
-
-      trigger_conditions:
-        type: array
-        item_type: string
-        required: true
-
-      potential_impact:
-        type: array
-        item_type: string
-        required: true
-
-      impact_scope:
-        type: array
-        item_type: string
-        required: false
-
-      rationale:
-        type: string
-        required: true
-
+        purpose: 只解释项目内、业务内或 Agent 临时定义且人工可能未对齐的词。
       evidence:
         type: array
-        required: true
+        required: false
         item:
-          repository:
-            type: string
-            required: false
-          module:
-            type: string
-            required: false
-          file_path:
-            type: string
-            required: true
-          class_name:
-            type: string
-            required: false
-          method_name:
-            type: string
-            required: false
-          line_start:
-            type: integer
-            required: false
-          line_end:
-            type: integer
-            required: false
-          code_excerpt:
-            type: string
-            required: false
-
-      estimated_change:
-        type: object
-        required: true
-        fields:
-          file_count:
-            type: integer
-            required: false
-          modules:
-            type: array
-            item_type: string
-            required: false
-          change_points:
-            type: integer
-            required: false
-          affects_public_api:
-            type: boolean
-            required: true
-          affects_database:
-            type: boolean
-            required: true
-          requires_data_migration:
-            type: boolean
-            required: true
-          affects_upstream_downstream:
-            type: boolean
-            required: true
-          verification_scope:
-            type: array
-            item_type: string
-            required: false
-
-      stages:
+          file_path: {type: string, required: true}
+          class_name: {type: string, required: false}
+          method_name: {type: string, required: false}
+          symbol: {type: string, required: false}
+          line_start: {type: integer, required: false, note: 仅为创建时快照提示}
+          line_end: {type: integer, required: false, note: 仅为创建时快照提示}
+          code_excerpt: {type: string, required: false}
+      effective_decisions:
         type: array
         required: false
         item:
-          plan_no: {type: integer, required: true}
-          stage_no: {type: integer, required: true}
-          title: {type: string, required: true}
-          objective: {type: string, required: true}
-          acceptance_criteria: {type: string, required: true}
-          status: {type: enum, ref: stage_status, required: true}
-          submitted_commit_sha: {type: string, required: false}
-          developer_summary: {type: string, required: false}
-          test_evidence: {type: object_or_array, required: false}
-          review_comment: {type: string, required: false}
+          decision_type: {type: string, required: true}
+          scope_key: {type: string, required: false}
+          outcome: {type: string, required: true}
+          content: {type: markdown_string, required: true}
+
+content_rules:
+  summary: 一段短文或 2–5 个要点，直指现象、影响和关键原因。
+  markdown: 只使用段落、少量列表、加粗和行内代码；确需展示代码时再用 fenced code block。
+  omit: [Agent 推理过程, 长日志, 完整代码, 重复评级, 空字段]
+  code_location: 文件与类/方法/符号是稳定定位；行号不能作为唯一证据。
 
 sorting:
-  group_by:
-    - severity
-
   order:
-    - field: severity
-      direction: desc
-      weights:
-        critical: 4
-        high: 3
-        medium: 2
-        low: 1
-
-    - field: remediation_benefit
-      direction: desc
-      weights:
-        high: 3
-        medium: 2
-        low: 1
-
-    - field: dimension
-      direction: desc
-      weights:
-        functional_correctness: 7
-        data_security: 6
-        stability_concurrency: 5
-        performance: 4
-        architecture_extensibility: 3
-        code_quality: 2
-        test_observability: 1
-
-    - field: remediation_cost
-      direction: asc
-      weights:
-        low: 1
-        medium: 2
-        high: 3
-        extreme: 4
-
-    - field: confidence
-      direction: desc
-      weights:
-        high: 3
-        medium: 2
-        low: 1
-
-    - field: issue_id
-      direction: asc
+    - {field: severity, direction: desc, weights: {critical: 4, high: 3, medium: 2, low: 1}}
+    - {field: dimension, direction: desc}
+    - {field: issue_id, direction: asc}

@@ -73,14 +73,13 @@
   {% if issues %}
   <div class="table-wrap">
     <table class="issue-table">
-      <thead><tr><th>问题</th><th>标题</th><th>维度</th><th>严重度</th><th>收益 / 成本</th><th>建议处置</th><th>置信度</th><th>状态</th><th>尝试</th><th>更新</th></tr></thead>
+      <thead><tr><th>问题</th><th>问题摘要</th><th>维度</th><th>严重度</th><th>状态</th><th>更新</th></tr></thead>
       <tbody>{% for issue in issues %}
         <tr class="clickable-row" tabindex="0" data-href="{{ url_for('issue_detail', issue_key=issue.issue_key) }}">
           <td class="mono nowrap"><a href="{{ url_for('issue_detail', issue_key=issue.issue_key) }}">{{ issue.issue_key }}</a></td>
-          <td class="issue-title-cell"><strong>{{ issue.title }}</strong><span>{{ issue.status|label }} · 第 {{ issue.current_attempt_no }} 轮</span></td>
+          <td class="issue-title-cell"><strong>{{ issue.title }}</strong><span>{{ issue.summary|truncate(100) }}</span></td>
           <td class="nowrap">{{ issue.dimension|label }}</td><td class="sev-{{ issue.severity }}">{{ issue.severity|label }}</td>
-          <td class="nowrap">{{ issue.remediation_benefit|label }} / {{ issue.remediation_cost|label }}</td><td class="nowrap">{{ issue.disposition|label }}</td><td>{{ issue.confidence|label }}</td>
-          <td><span class="badge badge-status-{{ issue.status }}">{{ issue.status|label }}</span></td><td>{{ issue.current_attempt_no }}</td><td class="mono muted nowrap">{{ issue.updated_at|localtime }}</td>
+          <td><span class="badge badge-status-{{ issue.status }}">{{ issue.status|label }}</span></td><td class="mono muted nowrap">{{ issue.updated_at|localtime }}</td>
         </tr>
       {% endfor %}</tbody>
     </table>

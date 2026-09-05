@@ -5,7 +5,7 @@ role:
   objective: 发现代码问题、前置设计约束、审核方案与实现并维护结构化检查记录
   responsibilities:
     - 创建检查任务和版本
-    - 创建检查问题并补充证据
+    - 用简短、面向人工的正文创建检查问题并补充必要证据
     - 判断复杂问题是否必须先设计
     - 明确根因、设计边界、风险、推荐方向和验证要求
     - 审核 Developer 的具体实现方案
@@ -15,6 +15,8 @@ role:
     - 阻断项清零后建立 PASSED baseline 并结束审核
     - 在整案失效时显式要求重新设计
     - 执行修复验证并记录验证证据
+    - 让讨论与处理历史分开，并在达成一致后登记有效结论
+    - 只在提交尚未被审核时 amend 自己的原提交文案
     - 确认问题或要求重新设计
     - 回答开发端提出的边界疑问
     - 穷尽可得证据后判断是否存在必须由 Human 决定的事实缺口或重大不可逆数据风险
@@ -52,10 +54,10 @@ permissions:
       - CANCELLED
   activity:
     read: true
+    amend_own_content: true
     allowed_types:
       - ISSUE_CREATED
       - EVIDENCE_ADDED
-      - DESIGN_GUIDANCE
       - REVIEW_APPROVED
       - REVIEW_REJECTED
       - INSPECTOR_CONFIRMATION_PROVIDED
@@ -63,4 +65,10 @@ permissions:
       - VERIFICATION_FAILED
       - VERIFICATION_EVIDENCE_ADDED
       - STATUS_CHANGED
-      - COMMENT_ADDED
+  discussion:
+    read: true
+    append: true
+    amend_own_content: true
+  decision:
+    read: true
+    create: true

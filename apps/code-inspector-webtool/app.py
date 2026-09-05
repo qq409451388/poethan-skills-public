@@ -61,6 +61,25 @@ ACTIVITY_TYPES = [
     ("VERIFICATION_PASSED", "验证通过"), ("VERIFICATION_FAILED", "验证失败"),
     ("VERIFICATION_EVIDENCE_ADDED", "补充验证证据"),
 ]
+DISCUSSION_TOPICS = [
+    ("GENERAL", "一般讨论"), ("DESIGN", "方案讨论"),
+    ("IMPLEMENTATION", "实现讨论"), ("VERIFICATION", "验证讨论"),
+]
+HISTORY_MILESTONE_TYPES = {
+    "ISSUE_CREATED", "DESIGN_REQUESTED", "DESIGN_SUBMITTED", "REDESIGN_SUBMITTED",
+    "DESIGN_APPROVED", "DESIGN_REJECTED", "STAGE_PLAN_CREATED", "STAGE_SUBMITTED",
+    "STAGE_APPROVED", "STAGE_REJECTED", "STAGE_PLAN_SUPERSEDED",
+    "IMPLEMENTATION_SUBMITTED", "REVIEW_APPROVED", "REVIEW_REJECTED",
+    "VERIFICATION_PASSED", "VERIFICATION_FAILED", "INSPECTOR_CONFIRMATION_PROVIDED",
+    "HUMAN_CONFIRMATION_REQUESTED", "HUMAN_CONFIRMATION_PROVIDED", "STATUS_CHANGED",
+}
+TOPIC_LABELS = dict(DISCUSSION_TOPICS)
+DECISION_LABELS = {
+    "DESIGN_REVIEW": "设计结论", "STAGE_REVIEW": "阶段验收结论",
+    "IMPLEMENTATION_REVIEW": "实现审核结论", "SCOPE_CONFIRMATION": "边界确认",
+    "HUMAN_CONFIRMATION": "人工决定", "DISCUSSION_CONCLUSION": "讨论结论",
+    "VERIFICATION": "验证结论",
+}
 LABELS = {
     **dict(DIMENSIONS), **dict(SEVERITIES), **dict(BENEFITS), **dict(COSTS),
     **dict(CONFIDENCE), **dict(DISPOSITIONS),
@@ -88,6 +107,9 @@ LABELS = {
     "INSPECTOR_AGENT": "Inspector", "DEVELOPMENT_AGENT": "Developer", "HUMAN": "Human",
     "SYSTEM": "System", "VERIFIER_AGENT": "Verifier",
     "PLANNED": "待开始", "PENDING_REVIEW": "待验收", "APPROVED": "已验收", "SUPERSEDED": "已废弃",
+    "GENERAL": "一般讨论", "DESIGN": "方案讨论", "IMPLEMENTATION": "实现讨论", "VERIFICATION": "验证讨论",
+    **TOPIC_LABELS, **DECISION_LABELS,
+    "APPROVED": "通过", "REJECTED": "未通过", "PROVIDED": "已确认",
 }
 
 STATUS_PRESENTATION = {
@@ -109,6 +131,16 @@ STATUS_PRESENTATION = {
 @app.template_filter("label")
 def label(value: str | None) -> str:
     return LABELS.get(value or "", value or "—")
+
+
+@app.template_filter("topic_label")
+def topic_label(value: str | None) -> str:
+    return TOPIC_LABELS.get(value or "", value or "—")
+
+
+@app.template_filter("decision_label")
+def decision_label(value: str | None) -> str:
+    return DECISION_LABELS.get(value or "", value or "—")
 
 
 @app.template_filter("json_pretty")
@@ -135,7 +167,9 @@ def localtime(value: str | None) -> str:
 
 
 def _inline_markdown(value: str) -> str:
-    return re.sub(r"`([^`\n]+)`", r"<code>\1</code>", escape(value))
+    rendered = escape(value)
+    rendered = re.sub(r"\*\*([^*\n]+)\*\*", r"<strong>\1</strong>", rendered)
+    return re.sub(r"`([^`\n]+)`", r"<code>\1</code>", rendered)
 
 
 def _render_text_block(lines: list[str]) -> str:
@@ -199,7 +233,7 @@ def markdown(value: str | None) -> Markup:
 def issue_with_json(row: dict) -> dict:
     for field, default in (
         ("trigger_conditions", []), ("potential_impact", []), ("impact_scope", []),
-        ("evidence", []), ("estimated_change", {}),
+        ("evidence", []), ("estimated_change", {}), ("local_terms", {}),
     ):
         row[field] = parse_json_field(row.get(f"{field}_json"), default)
     return row
@@ -207,6 +241,12 @@ def issue_with_json(row: dict) -> dict:
 
 def activity_with_json(row: dict) -> dict:
     row["code_reference"] = parse_json_field(row.get("code_reference_json"), [])
+    row["metadata"] = parse_json_field(row.get("metadata_json"), {})
+    return row
+
+
+def decision_with_json(row: dict) -> dict:
+    row["source_discussion_ids"] = parse_json_field(row.get("source_discussion_ids_json"), [])
     row["metadata"] = parse_json_field(row.get("metadata_json"), {})
     return row
 
@@ -260,7 +300,7 @@ def issue_summary_where(extra: str = "", params: tuple = ()) -> dict:
 @app.route("/")
 def inbox():
     base_select = """SELECT i.*, t.task_key, t.title AS task_title, t.project_name,
-        (SELECT MAX(a.created_at) FROM issue_activity a
+        (SELECT MAX(COALESCE(a.amended_at, a.created_at)) FROM issue_activity a
          WHERE a.issue_id = i.id AND a.operator_type = 'DEVELOPMENT_AGENT'
            AND a.activity_type = 'IMPLEMENTATION_SUBMITTED') AS developer_submitted_at,
         (SELECT a.metadata_json FROM issue_activity a
@@ -295,7 +335,7 @@ def inbox():
                   SUM(CASE WHEN i.status = 'IMPLEMENTED_PENDING_REVIEW' THEN 1 ELSE 0 END) AS pending_review_total,
                   SUM(CASE WHEN i.status = 'HUMAN_CONFIRMATION_REQUIRED' THEN 1 ELSE 0 END) AS human_total,
                   (SELECT MAX(i2.updated_at) FROM review_issue i2 WHERE i2.task_id = t.id) AS latest_issue_at,
-                  (SELECT MAX(a.created_at) FROM issue_activity a
+                  (SELECT MAX(COALESCE(a.amended_at, a.created_at)) FROM issue_activity a
                      JOIN review_issue i3 ON i3.id = a.issue_id WHERE i3.task_id = t.id) AS latest_activity_at,
                   (SELECT MAX(c.updated_at) FROM issue_candidate c WHERE c.task_id = t.id) AS latest_candidate_at
            FROM review_task t LEFT JOIN review_issue i ON i.task_id = t.id
@@ -498,8 +538,20 @@ def issue_detail(issue_key: str):
     activities = [activity_with_json(row) for row in query_all(
         "SELECT * FROM issue_activity WHERE issue_id = ? ORDER BY created_at ASC, id ASC", (issue["id"],)
     )]
+    decisions = [decision_with_json(row) for row in query_all(
+        """SELECT * FROM issue_decision
+           WHERE issue_id = ? AND effective = 1 ORDER BY created_at DESC, id DESC""", (issue["id"],)
+    )]
+    discussions = query_all(
+        """SELECT * FROM issue_discussion
+           WHERE issue_id = ? ORDER BY created_at ASC, id ASC""", (issue["id"],)
+    )
+    history_activities = [
+        activity for activity in activities
+        if activity["activity_type"] in HISTORY_MILESTONE_TYPES
+    ]
     grouped: OrderedDict[int, list[dict]] = OrderedDict()
-    for activity in activities:
+    for activity in history_activities:
         grouped.setdefault(activity["attempt_no"], []).append(activity)
     current_activities = [a for a in activities if a["attempt_no"] == issue["current_attempt_no"]]
     implementations = [a for a in current_activities if a["activity_type"] == "IMPLEMENTATION_SUBMITTED"]
@@ -522,14 +574,16 @@ def issue_detail(issue_key: str):
     ), None)
     stage, status_explanation = STATUS_PRESENTATION.get(issue["status"], (1, issue["status"]))
     return render_template(
-        "issue_detail.html", issue=issue, activities=activities, activity_groups=grouped,
+        "issue_detail.html", issue=issue, activities=history_activities, activity_groups=grouped,
+        decisions=decisions, discussions=discussions,
         latest_implementation=latest_implementation, verification_activities=verification_activities,
         latest_human_request=latest_human_request,
         stage_plans=stage_plans, active_stage_plan=active_stage_plan,
         current_execution_stage=current_execution_stage,
         current_stage=stage, status_explanation=status_explanation, dimensions=DIMENSIONS,
         severities=SEVERITIES, benefits=BENEFITS, costs=COSTS, confidence=CONFIDENCE,
-        dispositions=DISPOSITIONS, activity_types=ACTIVITY_TYPES, issue_statuses=ISSUE_STATUSES,
+        dispositions=DISPOSITIONS, activity_types=ACTIVITY_TYPES, discussion_topics=DISCUSSION_TOPICS,
+        issue_statuses=ISSUE_STATUSES,
         task_statuses=TASK_STATUSES,
     )
 
@@ -537,7 +591,7 @@ def issue_detail(issue_key: str):
 @app.route("/issues/<issue_key>/assessment", methods=["POST"])
 def issue_update_assessment(issue_key: str):
     args = ["--issue-key", issue_key]
-    for field in ("dimension", "severity", "remediation_benefit", "remediation_cost", "disposition", "confidence"):
+    for field in ("dimension", "severity"):
         if value := request.form.get(field):
             args.extend([f"--{field.replace('_', '-')}", value])
     try:
@@ -550,9 +604,11 @@ def issue_update_assessment(issue_key: str):
 @app.route("/issues/<issue_key>/body", methods=["POST"])
 def issue_update_body(issue_key: str):
     args = ["--issue-key", issue_key]
-    for field in ("title", "description", "facts", "rationale"):
-        if value := request.form.get(field):
+    for field in ("title", "summary", "expected_outcome", "technical_note"):
+        if (value := request.form.get(field)) is not None:
             args.extend([f"--{field.replace('_', '-')}", value])
+    if (local_terms := request.form.get("local_terms")) is not None:
+        args.extend(["--local-terms", local_terms])
     try:
         run_human_command("issue-update-body", *args)
         return redirect_back("issue_detail", issue_key=issue_key, msg="问题内容已保存")
@@ -722,11 +778,11 @@ def issue_human_confirmation_resolve(issue_key: str):
 def issue_add_activity(issue_key: str):
     try:
         run_human_command(
-            "activity-append", "--issue-key", issue_key,
-            "--activity-type", request.form.get("activity_type", "COMMENT_ADDED"),
+            "discussion-append", "--issue-key", issue_key,
+            "--topic", request.form.get("topic", "GENERAL"),
             "--content", request.form.get("content", ""),
         )
-        return redirect_back("issue_detail", issue_key=issue_key, msg="活动记录已追加")
+        return redirect_back("issue_detail", issue_key=issue_key, msg="讨论内容已追加")
     except Exception as exc:  # noqa: BLE001
         return redirect_back("issue_detail", issue_key=issue_key, err=str(exc))
 

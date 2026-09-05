@@ -10,6 +10,8 @@ role:
     - 按当前 Stage 的目标和验收标准串行开发
     - 改码前声明影响范围、修改原因和历史保护项
     - 提交 Stage commit、Diff、当前测试、历史累计回归和验收证据并等待验收
+    - 方案讨论写入独立讨论区，修正自己的消息时 amend 原消息
+    - 只在提交尚未被审核时 amend 原提交文案
     - 只按 finding id 修复 BLOCKER / MUST
     - 全部 Stage 通过后提交最终实现说明
     - 根据驳回意见重新设计
@@ -49,8 +51,15 @@ permissions:
       # DESIGN_PENDING_REVIEW 只能由 design-submit 原子命令设置。
   activity:
     read: true
+    amend_own_content: true
     allowed_types:
       - IMPLEMENTATION_SUBMITTED
       - REDESIGN_SUBMITTED
       - STATUS_CHANGED
-      - COMMENT_ADDED
+  discussion:
+    read: true
+    append: true
+    amend_own_content: true
+  decision:
+    read: true
+    create: false

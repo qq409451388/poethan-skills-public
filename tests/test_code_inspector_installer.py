@@ -170,8 +170,9 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             self.assertIn("$code-inspector start` 即可启动", trae_skill_text)
             self.assertIn('固定工具：`python "', codex_skill_text)
             self.assertNotIn("modify-business-code", codex_skill_text.split("可执行命令：", 1)[1].split("。", 1)[0])
-            self.assertIn("短结论使用单行纯文本", codex_skill_text)
-            self.assertIn("只有代码、命令", trae_skill_text)
+            self.assertIn("Issue 默认只写标题、短摘要、维度和严重度", codex_skill_text)
+            self.assertIn("讨论达成一致后由 Inspector", codex_skill_text)
+            self.assertIn("摘要可以使用轻量 Markdown", trae_skill_text)
             self.assertIn("主审核者必须额外串联跨模块数据流", trae_skill_text)
             self.assertIn("先做覆盖面回查和补充扫描", trae_skill_text)
             self.assertIn("design-submit", codex_skill_text)
@@ -224,9 +225,15 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             db("inspector", "version-create", "--task-key", "RT-TEST", "--reason", "首次审核")
             db("inspector", "issue-create", "--task-key", "RT-TEST", "--issue-key", "RI-TEST",
                "--title", "问题", "--dimension", "functional_correctness", "--severity", "high",
-               "--remediation-benefit", "high", "--remediation-cost", "low",
-               "--disposition", "current_iteration", "--confidence", "high",
-               "--description", "描述", "--facts", "事实", "--rationale", "依据")
+               "--summary", "**现象**：重复请求会产生重复记录",
+               "--expected-outcome", "重复请求只保留一条记录",
+               "--local-terms", '{"影子记录":"仅用于回放的只读记录"}')
+            compact_issue = db("developer", "issue-get", "--issue-key", "RI-TEST")
+            self.assertEqual(compact_issue["summary"], "**现象**：重复请求会产生重复记录")
+            self.assertNotIn("description", compact_issue)
+            full_issue = db("developer", "issue-get", "--issue-key", "RI-TEST", "--view", "full")
+            self.assertEqual(full_issue["description"], compact_issue["summary"])
+            self.assertEqual(full_issue["remediation_benefit"], "medium")
 
             blocked = subprocess.run(
                 [sys.executable, str(db_tool), "--agent", "inspector", "--operator-id", "trae-inspector", "issue-update-status",
@@ -418,21 +425,17 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             self.assertEqual(db("inspector", "issue-get", "--issue-key", "RI-BATCH-1")["severity"], "low")
 
             db(
-                "human", "activity-append", "--issue-key", "RI-BATCH-1",
-                "--activity-type", "COMMENT_ADDED", "--content", "请重新评估严重度",
+                "human", "discussion-append", "--issue-key", "RI-BATCH-1",
+                "--topic", "GENERAL", "--content", "请重新评估严重度",
             )
-            comments = db(
-                "inspector", "activity-list-recent", "--task-key", task["task_key"],
-                "--activity-type", "COMMENT_ADDED", "--limit", "20",
-            )
-            self.assertEqual(comments[0]["issue_key"], "RI-BATCH-1")
+            comments = db("inspector", "discussion-list", "--issue-key", "RI-BATCH-1")
             self.assertTrue(any(item["content"] == "请重新评估严重度" for item in comments))
 
             detail = db("developer", "issue-get", "--issue-key", "RI-BATCH-1")
-            self.assertEqual(detail["description"], "完整描述 1")
+            self.assertEqual(detail["summary"], "完整描述 1")
             self.assertEqual(detail["evidence_json"][0]["file_path"], "src/1.py")
             self.assertIsNotNone(detail["last_activity_at"])
-            self.assertIsNotNone(detail["last_comment_at"])
+            self.assertIsNotNone(detail["last_discussion_at"])
 
             compact = db(
                 "developer", "issue-list", "--task-key", task["task_key"],
@@ -643,6 +646,133 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             still_open = db("inspector", "task-list", "--task-type", "CONTINUOUS")
             self.assertEqual(still_open[0]["status"], "IN_PROGRESS")
 
+    def test_developer_and_inspector_can_only_amend_their_own_discussion_content(self):
+        with tempfile.TemporaryDirectory() as temp:
+            home = Path(temp)
+            self.run_cmd(home, str(INSTALLER), "install")
+            workspace = home / "project"
+            workspace.mkdir()
+            db_tool = home / ".agent-review" / "bin" / "review-db.py"
+
+            def db(*args: str) -> dict | list:
+                role, *command = args
+                alias = {"inspector": "trae-inspector", "developer": "codex-dev", "human": "human"}[role]
+                return self.run_cmd(
+                    home, str(db_tool), "--agent", role, "--operator-id", alias, *command, cwd=workspace
+                )
+
+            def fails(role: str, *command: str) -> subprocess.CompletedProcess:
+                alias = {"inspector": "trae-inspector", "developer": "codex-dev", "human": "human"}[role]
+                result = self.run_raw(
+                    home, str(db_tool), "--agent", role, "--operator-id", alias, *command, cwd=workspace
+                )
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                return result
+
+            db("inspector", "task-create", "--task-key", "RT-AMEND", "--title", "修订测试", "--objective", "验证文案覆盖")
+            db("inspector", "version-create", "--task-key", "RT-AMEND", "--reason", "首次检查")
+            db(
+                "inspector", "issue-create", "--task-key", "RT-AMEND", "--issue-key", "RI-AMEND",
+                "--title", "文案修订", "--dimension", "code_quality", "--severity", "medium",
+                "--remediation-benefit", "medium", "--remediation-cost", "low",
+                "--disposition", "current_iteration", "--confidence", "high",
+                "--description", "原始问题描述", "--facts", "事实", "--rationale", "依据",
+            )
+            developer_discussion = db(
+                "developer", "discussion-append", "--issue-key", "RI-AMEND",
+                "--topic", "IMPLEMENTATION", "--content", "旧开发说明",
+            )
+            inspector_discussion = db(
+                "inspector", "discussion-append", "--issue-key", "RI-AMEND",
+                "--topic", "DESIGN", "--content", "旧审核约束",
+            )
+            activities = db("developer", "activity-list", "--issue-key", "RI-AMEND")
+            created_activity = next(item for item in activities if item["activity_type"] == "ISSUE_CREATED")
+            self.assertNotIn("旧开发说明", [item["content"] for item in activities])
+
+            amended = db(
+                "developer", "discussion-amend", "--issue-key", "RI-AMEND",
+                "--discussion-id", str(developer_discussion["discussion_id"]), "--content", "最新开发说明",
+                "--reason", "旧说明会误导后续判断",
+            )
+            self.assertEqual((amended["amendment_count"], amended["unchanged"]), (1, False))
+            current = db("inspector", "discussion-list", "--issue-key", "RI-AMEND")
+            amended_discussion = next(item for item in current if item["id"] == developer_discussion["discussion_id"])
+            self.assertEqual(amended_discussion["content"], "最新开发说明")
+            self.assertEqual(amended_discussion["amendment_count"], 1)
+            self.assertIsNotNone(amended_discussion["amended_at"])
+            self.assertNotIn("旧开发说明", [item["content"] for item in current])
+
+            with sqlite3.connect(home / ".agent-review" / "data" / "review.db") as conn:
+                revision = conn.execute(
+                    "SELECT previous_content, replacement_content, amended_by FROM issue_discussion_revision WHERE discussion_id = ?",
+                    (developer_discussion["discussion_id"],),
+                ).fetchone()
+            self.assertEqual(revision, ("旧开发说明", "最新开发说明", "codex-dev"))
+
+            denied = fails(
+                "inspector", "discussion-amend", "--issue-key", "RI-AMEND",
+                "--discussion-id", str(developer_discussion["discussion_id"]), "--content", "越权修改",
+            )
+            self.assertIn("自己的讨论", denied.stderr)
+            denied = fails(
+                "developer", "discussion-amend", "--issue-key", "RI-AMEND",
+                "--discussion-id", str(inspector_discussion["discussion_id"]), "--content", "越权修改",
+            )
+            self.assertIn("自己的讨论", denied.stderr)
+            denied = fails(
+                "inspector", "activity-amend", "--issue-key", "RI-AMEND",
+                "--activity-id", str(created_activity["id"]), "--content", "不得改结构活动",
+            )
+            self.assertIn("正式结论或结构化记录", denied.stderr)
+            denied = fails(
+                "human", "discussion-amend", "--issue-key", "RI-AMEND",
+                "--discussion-id", str(developer_discussion["discussion_id"]), "--content", "Human 也不能改",
+            )
+            self.assertIn("自己的讨论", denied.stderr)
+
+            db(
+                "inspector", "discussion-amend", "--issue-key", "RI-AMEND",
+                "--discussion-id", str(inspector_discussion["discussion_id"]), "--content", "最新审核约束",
+            )
+            recent = db("developer", "discussion-list", "--issue-key", "RI-AMEND")
+            self.assertEqual(recent[-1]["content"], "最新审核约束")
+
+            conclusion = db(
+                "inspector", "decision-record", "--issue-key", "RI-AMEND",
+                "--decision-type", "DISCUSSION_CONCLUSION", "--scope-key", "design-boundary",
+                "--outcome", "AGREED", "--content", "采用最新审核约束",
+                "--source-discussion-ids", json.dumps([
+                    developer_discussion["discussion_id"], inspector_discussion["discussion_id"],
+                ]),
+            )
+            self.assertGreater(conclusion["decision_id"], 0)
+            decisions = db("developer", "decision-list", "--issue-key", "RI-AMEND")
+            self.assertEqual(decisions[0]["content"], "采用最新审核约束")
+            self.assertEqual(
+                decisions[0]["source_discussion_ids_json"],
+                [developer_discussion["discussion_id"], inspector_discussion["discussion_id"]],
+            )
+            replacement = db(
+                "inspector", "decision-record", "--issue-key", "RI-AMEND",
+                "--decision-type", "DISCUSSION_CONCLUSION", "--scope-key", "design-boundary",
+                "--outcome", "AGREED", "--content", "采用修订后的最终约束",
+                "--source-discussion-ids", json.dumps([inspector_discussion["discussion_id"]]),
+            )
+            current_decisions = db("developer", "decision-list", "--issue-key", "RI-AMEND")
+            self.assertEqual([item["content"] for item in current_decisions], ["采用修订后的最终约束"])
+            all_decisions = db(
+                "developer", "decision-list", "--issue-key", "RI-AMEND", "--include-superseded",
+            )
+            self.assertEqual([item["effective"] for item in all_decisions], [0, 1])
+            self.assertEqual(all_decisions[0]["superseded_by_id"], replacement["decision_id"])
+            denied = fails(
+                "developer", "decision-record", "--issue-key", "RI-AMEND",
+                "--decision-type", "DISCUSSION_CONCLUSION", "--outcome", "AGREED",
+                "--content", "Developer 不能登记最终结论",
+            )
+            self.assertIn("只有 inspector", denied.stderr)
+
     def test_v006_database_migrates_without_losing_history(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -715,20 +845,25 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 "V008__human_confirmation_escalation.sql",
                 "V009__issue_stage_plans.sql",
                 "V010__stage_baselines_and_review_gates.sql",
+                "V011__activity_amendments.sql",
+                "V012__lean_issues_discussions_and_decisions.sql",
             ])
             self.assertIsNotNone(upgraded["backup"])
             with sqlite3.connect(database) as conn:
                 conn.row_factory = sqlite3.Row
-                self.assertEqual(conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0], 10)
+                self.assertEqual(conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0], 12)
                 task = conn.execute("SELECT * FROM review_task WHERE id = 41").fetchone()
                 self.assertEqual((task["task_key"], task["task_type"], task["scope_fingerprint"]),
                                  ("RT-OLD", "REVIEW", "old-fingerprint"))
                 issue = conn.execute("SELECT * FROM review_issue WHERE id = 43").fetchone()
                 self.assertEqual((issue["issue_key"], issue["current_attempt_no"], issue["dedupe_key"]),
                                  ("RI-OLD", 2, "old-dedupe"))
+                self.assertEqual(issue["summary"], "旧描述")
                 self.assertEqual(conn.execute("SELECT parent_issue_id FROM review_issue WHERE id = 47").fetchone()[0], 43)
                 activity = conn.execute("SELECT * FROM issue_activity WHERE id = 44").fetchone()
                 self.assertEqual((activity["content"], activity["created_at"] is not None), ("旧活动", True))
+                discussion = conn.execute("SELECT * FROM issue_discussion WHERE source_activity_id = 44").fetchone()
+                self.assertEqual((discussion["topic"], discussion["content"]), ("GENERAL", "旧活动"))
                 self.assertEqual(conn.execute("SELECT source_issue_id FROM review_task_version WHERE id = 42").fetchone()[0], 43)
                 self.assertEqual(conn.execute("SELECT COUNT(*) FROM agent_audit_log WHERE id = 45").fetchone()[0], 1)
                 self.assertEqual(conn.execute("SELECT COUNT(*) FROM issue_candidate WHERE id = 46").fetchone()[0], 1)
@@ -798,7 +933,11 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 conn.commit()
 
             upgraded = INSTALLER_MODULE.migrate(database, root / "backups")
-            self.assertEqual(upgraded["applied"], ["V010__stage_baselines_and_review_gates.sql"])
+            self.assertEqual(upgraded["applied"], [
+                "V010__stage_baselines_and_review_gates.sql",
+                "V011__activity_amendments.sql",
+                "V012__lean_issues_discussions_and_decisions.sql",
+            ])
             with sqlite3.connect(database) as conn:
                 conn.row_factory = sqlite3.Row
                 stage = conn.execute("SELECT * FROM issue_stage WHERE id = 3").fetchone()
@@ -895,8 +1034,8 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             self.assertEqual(len(db("developer", "activity-list", "--issue-key", "RI-DESIGN")), activity_count)
 
             db(
-                "inspector", "activity-append", "--issue-key", "RI-DESIGN",
-                "--activity-type", "DESIGN_GUIDANCE", "--content", "补充：实时消费与回灌不能互相覆盖",
+                "inspector", "discussion-append", "--issue-key", "RI-DESIGN",
+                "--topic", "DESIGN", "--content", "补充：实时消费与回灌不能互相覆盖",
             )
             rejected = db(
                 "inspector", "design-review", "--issue-key", "RI-DESIGN", "--decision", "rejected",
@@ -1123,6 +1262,19 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 "--code-reference", json.dumps([{"file_path": "domain.py", "line_start": 10}]),
             )
             self.assertEqual(submitted["status"], "PENDING_REVIEW")
+            first_stage_submission = next(
+                item for item in db("developer", "activity-list", "--issue-key", "RI-STAGE")
+                if item["activity_type"] == "STAGE_SUBMITTED"
+            )
+            db(
+                "developer", "activity-amend", "--issue-key", "RI-STAGE",
+                "--activity-id", str(first_stage_submission["id"]),
+                "--content", "模型完成并通过单测", "--reason", "补全测试结论",
+            )
+            self.assertEqual(
+                db("developer", "stage-get", "--issue-key", "RI-STAGE", "--stage-no", "1")["developer_summary"],
+                "模型完成并通过单测",
+            )
             self.assertEqual(db("developer", "issue-get", "--issue-key", "RI-STAGE")["current_attempt_no"], 0)
             before_review_activities = len(db("developer", "activity-list", "--issue-key", "RI-STAGE"))
             with sqlite3.connect(database) as conn:
@@ -1214,6 +1366,20 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             )
             self.assertEqual((approved["inspection_result"], approved["final_decision"]), ("PASS", "PASS"))
             self.assertEqual(approved["next_stage_no"], 2)
+            approved_activity = next(
+                item for item in reversed(db("inspector", "activity-list", "--issue-key", "RI-STAGE"))
+                if item["activity_type"] == "STAGE_APPROVED" and item["metadata_json"]["stage_no"] == 1
+            )
+            locked = fails(
+                "inspector", "activity-amend", "--issue-key", "RI-STAGE",
+                "--activity-id", str(approved_activity["id"]),
+                "--content", "模型、兼容测试与累计回归均满足标准",
+            )
+            self.assertIn("正式结论", locked.stderr)
+            self.assertEqual(
+                db("inspector", "stage-get", "--issue-key", "RI-STAGE", "--stage-no", "1")["review_comment"],
+                "模型与兼容测试满足标准",
+            )
             self.assertEqual(
                 [item["status"] for item in db("developer", "stage-list", "--issue-key", "RI-STAGE")],
                 ["APPROVED", "IN_PROGRESS", "PLANNED"],
@@ -1743,7 +1909,11 @@ class CodeInspectorInstallerTest(unittest.TestCase):
 
                 update = client.post(
                     f"/issues/{issue_key}/body",
-                    data={"title": "已由人工补充", "description": "描述", "facts": "事实", "rationale": "依据"},
+                    data={
+                        "title": "已由人工补充", "summary": "**现象**：重复提交会创建两笔订单",
+                        "expected_outcome": "重复提交只创建一笔订单", "technical_note": "检查 `idempotency_key`",
+                        "local_terms": '{"影子单":"回放测试生成的只读订单"}',
+                    },
                     follow_redirects=False,
                 )
                 self.assertEqual(update.status_code, 302)
@@ -1754,23 +1924,18 @@ class CodeInspectorInstallerTest(unittest.TestCase):
 
                 assessment = client.post(
                     f"/issues/{issue_key}/assessment",
-                    data={
-                        "dimension": "functional_correctness", "severity": "critical",
-                        "remediation_benefit": "medium", "remediation_cost": "high",
-                        "disposition": "immediate_fix", "confidence": "medium",
-                    }, follow_redirects=False,
+                    data={"dimension": "functional_correctness", "severity": "critical"},
+                    follow_redirects=False,
                 )
                 self.assertEqual(assessment.status_code, 302)
                 assessed_issue = db("inspector", "issue-list", "--task-key", task["task_key"])[0]
                 self.assertEqual(
-                    tuple(assessed_issue[key] for key in (
-                        "dimension", "severity", "remediation_benefit", "remediation_cost", "disposition", "confidence",
-                    )),
-                    ("functional_correctness", "critical", "medium", "high", "immediate_fix", "medium"),
+                    (assessed_issue["dimension"], assessed_issue["severity"]),
+                    ("functional_correctness", "critical"),
                 )
                 activity = client.post(
                     f"/issues/{issue_key}/activities",
-                    data={"activity_type": "COMMENT_ADDED", "content": "回归项\n\n```python\nassert safe\n```"},
+                    data={"topic": "VERIFICATION", "content": "回归项\n\n```python\nassert safe\n```"},
                     follow_redirects=False,
                 )
                 self.assertEqual(activity.status_code, 302)
@@ -1793,11 +1958,13 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 issue_html = issue_page.get_data(as_text=True)
                 self.assertEqual(issue_page.status_code, 200)
                 self.assertIn("编辑当前 Issue", issue_html)
-                self.assertIn("问题证据", issue_html)
+                self.assertIn("关键证据", issue_html)
+                self.assertIn("讨论 1", issue_html)
                 self.assertIn("处理历史", issue_html)
                 self.assertIn("高级状态", issue_html)
                 self.assertIn("order.py", issue_html)
-                self.assertIn("重复请求回归", issue_html)
+                self.assertIn("重复提交会创建两笔订单", issue_html)
+                self.assertIn("回归项", issue_html)
                 self.assertIn('<code class="language-python">', issue_html)
 
                 candidates = client.get("/candidates")

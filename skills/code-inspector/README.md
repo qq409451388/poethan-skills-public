@@ -107,6 +107,10 @@ Inspector 修改 Task 状态时遵守标准状态机。Human 具有 Task 状态�
 
 默认聊天输出仅包含 task 编号、本轮新增/重复问题数、最高风险和下一步。只有明确要求导出时才输出完整 Markdown 或 JSON 报告。
 
+正式 Issue 默认只需要标题、短摘要、维度和严重度；完成标准、技术补充、本项目术语和证据按需填写。摘要可用轻量 Markdown 拆成少量要点，但不保存 Agent 推理过程、长日志、完整代码和重复评级。代码定位优先使用文件加类/方法/符号，行号只作快照提示。通用技术词不解释，只定义项目内、业务内或 Agent 临时创造且人工可能不知道的词。
+
+讨论使用独立的 `discussion-*` 命令，不再用 `COMMENT_ADDED / DESIGN_GUIDANCE` 塞进处理历史。Developer、Inspector 修正自己的讨论消息时直接 `discussion-amend`；待审核的设计、Stage、实现提交可用 `activity-amend`，一旦被审核就锁定。讨论达成一致后由 Inspector 用 `decision-record` 写入短结论并关联讨论；同一类型和作用域的新结论成为当前有效版本，历史版本只留审计。
+
 ## 设计与实现协作
 
 复杂或高风险 Issue 应在编码前进入设计阶段：Inspector 用 `design-request` 写清根因、约束、不可破坏语义、风险、推荐方向和方案必须回答的问题；Developer 用 `design-submit` 提交具体类、方法、数据流、兼容与测试方案；Inspector 用 `design-review` 明确批准或驳回。设计状态下 Developer 不得修改业务代码或提交实现。

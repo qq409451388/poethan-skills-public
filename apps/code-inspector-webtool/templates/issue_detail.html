@@ -28,21 +28,27 @@
   <div class="maincol">
     <section class="panel">
       <h2>问题摘要</h2>
-      <dl class="keybox"><dt>事实</dt><dd>{{ issue.facts }}</dd><dt>描述</dt><dd>{{ issue.description }}</dd><dt>判断依据</dt><dd>{{ issue.rationale }}</dd></dl>
-      {% if issue.potential_impact %}<div class="callout"><strong>影响结论：</strong>{{ issue.potential_impact|join('；') }}</div>{% endif %}
-      <details class="collapsible"><summary>展开触发条件 / 潜在影响 / 影响范围 / 预计修改</summary>
-        <div class="details-body">
-          <dl class="keybox"><dt>触发条件</dt><dd><ul class="value-list">{% for item in issue.trigger_conditions %}<li>{{ item }}</li>{% else %}<li class="muted">未提供</li>{% endfor %}</ul></dd><dt>潜在影响</dt><dd><ul class="value-list">{% for item in issue.potential_impact %}<li>{{ item }}</li>{% else %}<li class="muted">未提供</li>{% endfor %}</ul></dd><dt>影响范围</dt><dd><ul class="tag-list">{% for item in issue.impact_scope %}<li>{{ item }}</li>{% else %}<li class="muted">未提供</li>{% endfor %}</ul></dd></dl>
-          <div class="estimated-change">
-            <h3>预计修改</h3>
-            <div class="change-grid"><span>文件 <strong>{{ issue.estimated_change.file_count or 0 }}</strong></span><span>改动点 <strong>{{ issue.estimated_change.change_points or 0 }}</strong></span><span>影响数据库 <strong>{{ issue.estimated_change.affects_database|yesno }}</strong></span><span>影响公共接口 <strong>{{ issue.estimated_change.affects_public_api|yesno }}</strong></span><span>需要数据迁移 <strong>{{ issue.estimated_change.requires_data_migration|yesno }}</strong></span><span>影响上下游 <strong>{{ issue.estimated_change.affects_upstream_downstream|yesno }}</strong></span></div>
-            <dl class="keybox compact-keybox"><dt>涉及模块</dt><dd><ul class="tag-list">{% for item in issue.estimated_change.modules or [] %}<li>{{ item }}</li>{% else %}<li class="muted">未提供</li>{% endfor %}</ul></dd><dt>验证范围</dt><dd><ul class="value-list">{% for item in issue.estimated_change.verification_scope or [] %}<li>{{ item }}</li>{% else %}<li class="muted">未提供</li>{% endfor %}</ul></dd></dl>
-          </div>
-        </div>
-      </details>
+      <div class="markdown-body issue-summary">{{ issue.summary|markdown }}</div>
+      {% if issue.expected_outcome %}<div class="outcome-box"><strong>处理到什么程度算完成</strong><div class="markdown-body">{{ issue.expected_outcome|markdown }}</div></div>{% endif %}
+      {% if issue.local_terms %}<dl class="keybox local-terms"><dt>本项目术语</dt><dd><ul class="value-list">{% for term, meaning in issue.local_terms.items() %}<li><strong>{{ term }}</strong>：{{ meaning }}</li>{% endfor %}</ul></dd></dl>{% endif %}
+      {% if issue.technical_note %}<details class="collapsible"><summary>技术补充（需要时再看）</summary><div class="details-body markdown-body">{{ issue.technical_note|markdown }}</div></details>{% endif %}
     </section>
 
-    <section class="panel"><h2>问题证据</h2>{{ render_references(issue.evidence, '未提供结构化证据') }}</section>
+    {% if issue.evidence %}<section class="panel"><h2>关键证据</h2>{{ render_references(issue.evidence) }}</section>{% endif %}
+
+    {% if decisions %}
+    <section class="panel decision-panel">
+      <div class="section-head"><div><h2>当前有效结论</h2><p class="section-sub">这里只保留后续处理仍应遵守的结论。</p></div><span class="badge badge-blue">{{ decisions|length }} 条</span></div>
+      <div class="decision-list">
+      {% for decision in decisions %}
+        <article class="decision-item">
+          <div class="event-head"><div><strong>{{ decision.decision_type|decision_label }}</strong><span class="badge badge-status-{{ decision.outcome }}">{{ decision.outcome|label }}</span>{% if decision.scope_key %}<span class="mono">{{ decision.scope_key }}</span>{% endif %}</div><time class="mono">{{ decision.created_at|localtime }}</time></div>
+          <div class="markdown-body">{{ decision.content|markdown }}</div>
+        </article>
+      {% endfor %}
+      </div>
+    </section>
+    {% endif %}
 
     <section class="panel stage-plan-panel" id="execution-plan">
       <div class="section-head">
@@ -121,23 +127,33 @@
     </section>
     {% endif %}
 
-    <section class="panel history-panel">
-      <div class="section-head"><div><h2>处理历史</h2><p class="section-sub">{{ activities|length }} 条活动，按 attempt_no 分组</p></div></div>
-      {% if activity_groups %}<div class="timeline">
-      {% for attempt_no, group in activity_groups.items() %}
-        <section class="round">
-          <div class="round-head"><strong>{% if attempt_no == 0 %}初始记录{% else %}第 {{ attempt_no }} 轮{% endif %}</strong>{% if attempt_no == issue.current_attempt_no %}<span class="badge badge-blue">当前</span>{% endif %}</div>
-          {% for activity in group %}
-          <article class="event">
-            <div class="event-head"><div><strong>{{ activity.operator_type|label }}</strong><span class="mono">{{ activity.operator_id }}</span><span class="activity-enum">{{ activity.activity_type }}</span>{% if activity.result_status %}<span>→ <span class="badge badge-status-{{ activity.result_status }}">{{ activity.result_status|label }}</span></span>{% endif %}</div><time class="mono">{{ activity.created_at|localtime }}</time></div>
-            <div class="markdown-body">{{ activity.content|markdown }}</div>
-            {% if activity.code_reference %}<details class="collapsible event-details"><summary>代码引用</summary><div class="details-body">{{ render_references(activity.code_reference) }}</div></details>{% endif %}
-            {% if activity.metadata %}<details class="collapsible event-details"><summary>元数据</summary><pre class="raw-json">{{ activity.metadata|json_pretty }}</pre></details>{% endif %}
-          </article>
-          {% endfor %}
-        </section>
-      {% endfor %}
-      </div>{% else %}<div class="empty">暂无活动历史。</div>{% endif %}
+    <section class="panel record-panel">
+      <div class="section-head"><div><h2>协作记录</h2><p class="section-sub">讨论和正式处理记录分开查看。</p></div></div>
+      <div class="tabs" role="tablist"><button type="button" class="tab active" data-tab-target="discussion">讨论 {{ discussions|length }}</button><button type="button" class="tab" data-tab-target="history">处理历史 {{ activities|length }}</button></div>
+      <div class="tab-pane active" data-tab-pane="discussion">
+        {% for discussion in discussions %}
+        <article class="event discussion-item">
+          <div class="event-head"><div><strong>{{ discussion.operator_type|label }}</strong><span class="badge badge-blue">{{ discussion.topic|topic_label }}</span>{% if discussion.amendment_count %}<span class="muted">已修订 {{ discussion.amendment_count }} 次</span>{% endif %}</div><time class="mono">{{ (discussion.amended_at or discussion.created_at)|localtime }}</time></div>
+          <div class="markdown-body">{{ discussion.content|markdown }}</div>
+        </article>
+        {% else %}<div class="empty">暂无讨论内容。</div>{% endfor %}
+      </div>
+      <div class="tab-pane" data-tab-pane="history">
+        {% if activity_groups %}<div class="timeline">
+        {% for attempt_no, group in activity_groups.items() %}
+          <section class="round">
+            <div class="round-head"><strong>{% if attempt_no == 0 %}初始记录{% else %}第 {{ attempt_no }} 轮{% endif %}</strong>{% if attempt_no == issue.current_attempt_no %}<span class="badge badge-blue">当前</span>{% endif %}</div>
+            {% for activity in group %}
+            <article class="event">
+              <div class="event-head"><div><strong>{{ activity.activity_type|label }}</strong>{% if activity.result_status %}<span>→ <span class="badge badge-status-{{ activity.result_status }}">{{ activity.result_status|label }}</span></span>{% endif %}{% if activity.amendment_count %}<span class="muted">已修订 {{ activity.amendment_count }} 次</span>{% endif %}</div><time class="mono">{{ (activity.amended_at or activity.created_at)|localtime }}</time></div>
+              <div class="markdown-body">{{ activity.content|markdown }}</div>
+              {% if activity.code_reference %}<details class="collapsible event-details"><summary>代码引用</summary><div class="details-body">{{ render_references(activity.code_reference) }}</div></details>{% endif %}
+            </article>
+            {% endfor %}
+          </section>
+        {% endfor %}
+        </div>{% else %}<div class="empty">暂无处理历史。</div>{% endif %}
+      </div>
     </section>
   </div>
 
@@ -207,7 +223,7 @@
       {% endif %}
     </section>
 
-    <section class="panel score-panel"><h2>问题评级</h2><div class="score-grid"><div><span>严重度</span><strong class="sev-{{ issue.severity }}">{{ issue.severity|label }}</strong></div><div><span>维度</span><strong>{{ issue.dimension|label }}</strong></div><div><span>改造收益</span><strong>{{ issue.remediation_benefit|label }}</strong></div><div><span>改造成本</span><strong>{{ issue.remediation_cost|label }}</strong></div><div><span>建议处置</span><strong>{{ issue.disposition|label }}</strong></div><div><span>置信度</span><strong>{{ issue.confidence|label }}</strong></div></div></section>
+    <section class="panel score-panel"><h2>问题评级</h2><div class="score-grid"><div><span>严重度</span><strong class="sev-{{ issue.severity }}">{{ issue.severity|label }}</strong></div><div><span>维度</span><strong>{{ issue.dimension|label }}</strong></div></div></section>
   </div></aside>
 </div>
 
@@ -216,12 +232,12 @@
 <div class="modal-backdrop" id="issue-edit-modal" role="dialog" aria-modal="true" aria-labelledby="issue-edit-title">
   <div class="modal-card">
     <div class="modal-head"><div><h2 class="modal-title" id="issue-edit-title">编辑当前 Issue</h2><div class="modal-sub mono">{{ issue.issue_key }}</div></div><button type="button" class="modal-close" data-modal-close aria-label="关闭">×</button></div>
-    <div class="modal-tabs" role="tablist"><button type="button" class="modal-tab active" data-tab-target="body">正文</button><button type="button" class="modal-tab" data-tab-target="assessment">评级</button><button type="button" class="modal-tab" data-tab-target="status">高级状态</button><button type="button" class="modal-tab" data-tab-target="activity">追加活动</button></div>
+    <div class="modal-tabs" role="tablist"><button type="button" class="modal-tab active" data-tab-target="body">正文</button><button type="button" class="modal-tab" data-tab-target="assessment">评级</button><button type="button" class="modal-tab" data-tab-target="status">高级状态</button><button type="button" class="modal-tab" data-tab-target="discussion-form">追加讨论</button></div>
     <div class="modal-body">
-      <section class="modal-pane active" data-tab-pane="body"><form method="post" action="{{ url_for('issue_update_body', issue_key=issue.issue_key) }}"><div class="form-grid"><div class="field form-full"><label>标题</label><input type="text" name="title" value="{{ issue.title }}" required></div><div class="field form-full"><label>描述</label><textarea name="description" required>{{ issue.description }}</textarea></div><div class="field form-full"><label>事实</label><textarea name="facts" required>{{ issue.facts }}</textarea></div><div class="field form-full"><label>判断依据</label><textarea name="rationale" required>{{ issue.rationale }}</textarea></div></div><div class="modal-actions"><button type="button" class="btn" data-modal-close>取消</button><button type="submit" class="btn btn-primary">保存正文</button></div></form></section>
-      <section class="modal-pane" data-tab-pane="assessment"><form method="post" action="{{ url_for('issue_update_assessment', issue_key=issue.issue_key) }}"><div class="form-grid"><div class="field"><label>维度</label><select name="dimension">{% for value, name in dimensions %}<option value="{{ value }}" {% if issue.dimension == value %}selected{% endif %}>{{ name }}</option>{% endfor %}</select></div><div class="field"><label>严重度</label><select name="severity">{% for value, name in severities %}<option value="{{ value }}" {% if issue.severity == value %}selected{% endif %}>{{ name }}</option>{% endfor %}</select></div><div class="field"><label>改造收益</label><select name="remediation_benefit">{% for value, name in benefits %}<option value="{{ value }}" {% if issue.remediation_benefit == value %}selected{% endif %}>{{ name }}</option>{% endfor %}</select></div><div class="field"><label>改造成本</label><select name="remediation_cost">{% for value, name in costs %}<option value="{{ value }}" {% if issue.remediation_cost == value %}selected{% endif %}>{{ name }}</option>{% endfor %}</select></div><div class="field"><label>建议处置</label><select name="disposition">{% for value, name in dispositions %}<option value="{{ value }}" {% if issue.disposition == value %}selected{% endif %}>{{ name }}</option>{% endfor %}</select></div><div class="field"><label>置信度</label><select name="confidence">{% for value, name in confidence %}<option value="{{ value }}" {% if issue.confidence == value %}selected{% endif %}>{{ name }}</option>{% endfor %}</select></div></div><div class="modal-actions"><button type="button" class="btn" data-modal-close>取消</button><button type="submit" class="btn btn-primary">保存评级</button></div></form></section>
+      <section class="modal-pane active" data-tab-pane="body"><form method="post" action="{{ url_for('issue_update_body', issue_key=issue.issue_key) }}"><div class="form-grid"><div class="field form-full"><label>标题</label><input type="text" name="title" value="{{ issue.title }}" required></div><div class="field form-full"><label>问题摘要 <span class="required">必填</span></label><textarea name="summary" required>{{ issue.summary }}</textarea><span class="form-note">直说现象、影响和关键原因；支持轻量 Markdown。</span></div><div class="field form-full"><label>完成标准</label><textarea name="expected_outcome">{{ issue.expected_outcome }}</textarea></div><div class="field form-full"><label>技术补充</label><textarea name="technical_note">{{ issue.technical_note }}</textarea><span class="form-note">只放人工判断确实需要的技术细节。</span></div><div class="field form-full"><label>本项目术语 JSON</label><textarea class="mono" name="local_terms">{{ issue.local_terms|json_pretty }}</textarea><span class="form-note">只解释项目内或 Agent 临时定义的词，例如 {"清算影子单":"本项目用于回放的只读订单"}；通用技术词不用解释。</span></div></div><div class="modal-actions"><button type="button" class="btn" data-modal-close>取消</button><button type="submit" class="btn btn-primary">保存正文</button></div></form></section>
+      <section class="modal-pane" data-tab-pane="assessment"><form method="post" action="{{ url_for('issue_update_assessment', issue_key=issue.issue_key) }}"><div class="form-grid"><div class="field"><label>维度</label><select name="dimension">{% for value, name in dimensions %}<option value="{{ value }}" {% if issue.dimension == value %}selected{% endif %}>{{ name }}</option>{% endfor %}</select></div><div class="field"><label>严重度</label><select name="severity">{% for value, name in severities %}<option value="{{ value }}" {% if issue.severity == value %}selected{% endif %}>{{ name }}</option>{% endfor %}</select></div></div><div class="modal-actions"><button type="button" class="btn" data-modal-close>取消</button><button type="submit" class="btn btn-primary">保存评级</button></div></form></section>
       <section class="modal-pane" data-tab-pane="status"><form method="post" action="{{ url_for('issue_update_status', issue_key=issue.issue_key) }}"><div class="field"><label>目标状态</label><select name="status">{% for status in issue_statuses %}<option value="{{ status }}" {% if issue.status == status %}selected{% endif %}>{{ status|label }}</option>{% endfor %}</select></div><div class="field"><label>说明</label><textarea name="content" placeholder="建议记录人工覆盖原因，便于后续审计"></textarea></div><p class="form-note">Human 可跨普通状态纠错（包括 REDESIGN_REQUIRED → IMPLEMENTED_PENDING_REVIEW）；HUMAN_CONFIRMATION_REQUIRED 必须走专用命令，CONFIRMED 必须已有 VERIFICATION_PASSED。</p><div class="modal-actions"><button type="button" class="btn" data-modal-close>取消</button><button type="submit" class="btn btn-primary">更新状态</button></div></form></section>
-      <section class="modal-pane" data-tab-pane="activity"><form method="post" action="{{ url_for('issue_add_activity', issue_key=issue.issue_key) }}"><div class="field"><label>活动类型</label><select name="activity_type">{% for value, name in activity_types %}<option value="{{ value }}">{{ name }}</option>{% endfor %}</select></div><div class="field"><label>内容</label><textarea name="content" required placeholder="支持换行、列表、inline code 和 fenced code block"></textarea></div><p class="form-note">Markdown 内容会安全渲染；活动由 human 领域命令追加并保留审计。</p><div class="modal-actions"><button type="button" class="btn" data-modal-close>取消</button><button type="submit" class="btn btn-primary">追加活动</button></div></form></section>
+      <section class="modal-pane" data-tab-pane="discussion-form"><form method="post" action="{{ url_for('issue_add_activity', issue_key=issue.issue_key) }}"><div class="field"><label>讨论主题</label><select name="topic">{% for value, name in discussion_topics %}<option value="{{ value }}">{{ name }}</option>{% endfor %}</select></div><div class="field"><label>内容</label><textarea name="content" required placeholder="直说问题、建议或待确认点；可使用列表和行内代码"></textarea></div><p class="form-note">支持轻量 Markdown。讨论不会混入处理历史；达成一致后由 Inspector 另行记录有效结论。</p><div class="modal-actions"><button type="button" class="btn" data-modal-close>取消</button><button type="submit" class="btn btn-primary">追加讨论</button></div></form></section>
     </div>
   </div>
 </div>

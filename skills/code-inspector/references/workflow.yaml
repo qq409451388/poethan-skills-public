@@ -1,4 +1,25 @@
-version: 3.1.0
+version: 4.0.0
+
+issue_content:
+  default_required: [title, summary, dimension, severity]
+  optional_when_useful: [expected_outcome, technical_note, local_terms, evidence]
+  summary: 一段短文或 2–5 个要点，直说现象、影响与关键原因；允许轻量 Markdown。
+  omit: [Agent 推理过程, 长日志, 完整代码, 重复评级, 无助于人工判断的字段]
+  code_location: 优先文件路径加类、方法或符号；行号只作为创建时快照的辅助提示，不能成为唯一定位依据。
+  terminology: 通用技术名词无需解释；只解释项目内、业务内或 Agent 临时定义且人工可能未对齐的词。
+
+collaboration_records:
+  discussion:
+    commands: [discussion-append, discussion-list, discussion-amend]
+    purpose: 保存尚未定论的方案、实现和验证交流；不进入默认处理历史。
+    correction: 原作者必须 amend 原消息，不追加“更正”或“以此为准”。
+  conclusion:
+    command: decision-record
+    normal_role: inspector
+    purpose: 讨论达成一致后，整理为一条短小、可执行、可供后续判断的有效结论。
+    source: 使用 source-discussion-ids 关联讨论依据。
+    supersession: 相同 decision_type + scope_key 的新结论替代旧结论；旧结论仅留审计。
+  processing_history: 默认展示正式结论与工作流里程碑，不混入讨论草稿。
 
 task_types:
   REVIEW:
@@ -188,8 +209,8 @@ design_workflow:
     target: DESIGN_REQUIRED
     content_required: [理解错误, 无效边界, 必须调整点, 下一版建议方向]
   guidance:
-    activity_command: activity-append --activity-type DESIGN_GUIDANCE
-    roles: [inspector, human]
+    discussion_command: discussion-append --topic DESIGN
+    roles: [inspector, developer, human]
     status_effect: none
   coding_prohibited_in: [DESIGN_REQUIRED, DESIGN_PENDING_REVIEW, REDESIGN_REQUIRED]
 
@@ -298,7 +319,7 @@ stage_workflow:
     final_decision: PASS | REJECT
     invariant: 只有 BLOCKER/MUST 或真实验收失败可以 REJECT；SHOULD/NIT 永远不能改变 PASS。
     automatic_gate: governance v2 可使用 stage-review --decision auto，由 Runtime 根据上述 invariant 得出 PASS/REJECT；设计整体失效仍需显式 redesign。
-  history: 旧 plan、Stage 主键、开发前声明、提交证据、所有 Review round、验收意见、baseline 和 Activity 均不得删除或覆盖。
+  history: 旧 plan、Stage 主键、开发前声明、结构化提交证据、所有 Review round、验收结果、baseline 和 Activity 身份均不得删除或覆盖；Developer/Inspector 自己提交的活动正文可用 activity-amend 修订，旧正文转存独立 revision 历史且不再作为当前判断依据。
 
 implementation_review:
   submission:
@@ -346,7 +367,7 @@ human_escalation:
   preflight_questions:
     - 能否通过继续阅读代码解决
     - 能否通过测试、数据库、日志或运行数据验证
-    - 能否通过 DESIGN_GUIDANCE 或 Inspector 的合理技术判断解决
+    - 能否通过方案讨论或 Inspector 的合理技术判断解决
     - 判断错误是否确有重大不可逆风险
     - Human 是否掌握 Agent 无法获得的业务事实
   request_summary_must_include: [为什么必须人工决定, 关键事实, 已验证内容, 无法确认内容, 方案及主要影响, Inspector 推荐, Human 只需回答的问题]
@@ -371,7 +392,8 @@ confirmation_protocol:
     human_override_limit: Human 可纠正状态，但不能绕过最终验证活动直接 CONFIRMED。
 
 activity_types:
-  design: [DESIGN_REQUESTED, DESIGN_GUIDANCE, DESIGN_SUBMITTED, DESIGN_APPROVED, DESIGN_REJECTED]
+  design: [DESIGN_REQUESTED, DESIGN_SUBMITTED, DESIGN_APPROVED, DESIGN_REJECTED]
+  legacy_discussion: [COMMENT_ADDED, DESIGN_GUIDANCE]
   stage: [STAGE_PLAN_CREATED, STAGE_SCOPE_DECLARED, STAGE_SUBMITTED, STAGE_APPROVED, STAGE_REJECTED, STAGE_PLAN_SUPERSEDED]
   human_confirmation: [HUMAN_CONFIRMATION_REQUESTED, HUMAN_CONFIRMATION_PROVIDED]
   legacy_read_compatible: [REVIEW_APPROVED, REVIEW_REJECTED, REDESIGN_SUBMITTED]
