@@ -1289,12 +1289,208 @@ def design_submit(args: argparse.Namespace) -> None:
         )
     print_json(result)
 
+def current_design_submission(
+    conn: sqlite3.Connection, issue_id: int, design_activity_id: int,
+) -> sqlite3.Row:
+    submission = conn.execute(
+        """SELECT id, issue_id, activity_type, attempt_no, created_at, amended_at
+           FROM issue_activity WHERE id = ?""",
+        (design_activity_id,),
+    ).fetchone()
+    if not submission or submission["issue_id"] != issue_id or submission["activity_type"] != "DESIGN_SUBMITTED":
+        raise RuntimeError("design-activity-id 必须属于当前 Issue 的 DESIGN_SUBMITTED")
+    latest = conn.execute(
+        """SELECT id FROM issue_activity
+           WHERE issue_id = ? AND activity_type = 'DESIGN_SUBMITTED'
+           ORDER BY id DESC LIMIT 1""",
+        (issue_id,),
+    ).fetchone()
+    if not latest or latest["id"] != design_activity_id:
+        raise RuntimeError("只能审核当前 Issue 最新的 DESIGN_SUBMITTED")
+    return submission
+
+MATERIAL_DESIGN_IMPACTS = {
+    "new_persistence",
+    "data_migration",
+    "external_behavior",
+    "new_dependency",
+    "scope_expansion",
+    "multiple_solutions",
+}
+
+def design_choice_record(args: argparse.Namespace) -> None:
+    """记录用户在 Inspector CLI 中对当前设计做出的简短选择。"""
+    require_agent(args.agent)
+    if args.agent != "inspector":
+        raise PermissionError("只有 inspector 可以记录当前 CLI 中的用户设计选择")
+    question = (args.question or "").strip()
+    answer = (args.answer or "").strip()
+    summary = (args.summary or "").strip()
+    if not question or not answer or not summary:
+        raise ValueError("question、answer 和 summary 均不能为空")
+    if len(question) > 300:
+        raise ValueError("question 应使用简短白话，不能超过 300 个字符")
+    if len(summary) > 300:
+        raise ValueError("summary 应只保留最终决定，不能超过 300 个字符")
+    impacts = json.loads(args.impacts)
+    if not isinstance(impacts, list) or not impacts:
+        raise ValueError("impacts 必须是非空 JSON 数组")
+    unknown = sorted(set(impacts) - MATERIAL_DESIGN_IMPACTS)
+    if unknown:
+        raise ValueError(f"未知设计影响类型: {', '.join(unknown)}")
+    if len(impacts) != len(set(impacts)):
+        raise ValueError("impacts 不能重复")
+    with connect() as conn:
+        issue = issue_row(conn, args.issue_key)
+        submission = current_design_submission(conn, issue["id"], args.design_activity_id)
+        if issue["status"] != "DESIGN_PENDING_REVIEW":
+            raise RuntimeError("只能为 DESIGN_PENDING_REVIEW 的当前设计记录用户选择")
+        decision_id = record_issue_decision(
+            conn, args, issue, "CLI_DESIGN_CONFIRMATION", "CONFIRMED", summary,
+            scope_key=f"design:{args.design_activity_id}",
+            metadata={
+                "question": question,
+                "answer": answer,
+                "impacts": impacts,
+                "source": "inspector_cli",
+                "design_activity_id": args.design_activity_id,
+                "design_amended_at": submission["amended_at"],
+            },
+        )
+        conn.execute("UPDATE review_issue SET updated_at = CURRENT_TIMESTAMP WHERE id = ?", (issue["id"],))
+        audit(
+            conn, actor_id(args), "design.choice-record", "issue_decision", str(decision_id), True,
+            dumps({"issue_key": args.issue_key, "design_activity_id": args.design_activity_id}),
+        )
+    print_json({
+        "issue_key": args.issue_key,
+        "design_activity_id": args.design_activity_id,
+        "decision_id": decision_id,
+        "summary": summary,
+    })
+
+def validate_design_confirmation(
+    conn: sqlite3.Connection,
+    issue: sqlite3.Row,
+    submission: sqlite3.Row,
+    confirmation: str | None,
+    confirmation_id: int | None,
+) -> int | None:
+    if confirmation not in {"not-needed", "recorded"}:
+        raise ValueError("批准设计必须通过 --confirmation 明确选择 not-needed 或 recorded")
+    if confirmation == "not-needed":
+        if confirmation_id is not None:
+            raise ValueError("confirmation=not-needed 时不得传入 --confirmation-id")
+        return None
+    if confirmation_id is None:
+        raise ValueError("confirmation=recorded 时必须传入 --confirmation-id")
+    decision = conn.execute(
+        """SELECT id, source_activity_id, outcome, effective, created_at, metadata_json
+           FROM issue_decision
+           WHERE id = ? AND issue_id = ? AND decision_type = 'CLI_DESIGN_CONFIRMATION'""",
+        (confirmation_id, issue["id"]),
+    ).fetchone()
+    if not decision or not decision["effective"] or decision["outcome"] != "CONFIRMED":
+        raise RuntimeError("confirmation-id 必须是当前 Issue 有效的 CLI 设计确认记录")
+    metadata = loads(decision["metadata_json"], {})
+    if metadata.get("design_activity_id") != submission["id"]:
+        raise RuntimeError("CLI 设计确认必须绑定当前最新的 DESIGN_SUBMITTED")
+    if submission["amended_at"] and decision["created_at"] < submission["amended_at"]:
+        raise RuntimeError("设计在 CLI 确认后已被修改，需要重新向用户确认")
+    if metadata.get("design_amended_at") != submission["amended_at"]:
+        raise RuntimeError("CLI 设计确认与当前设计版本不一致，需要重新确认")
+    return int(decision["id"])
+
+def prepare_stage_definitions(raw_stages: str) -> list[dict[str, Any]]:
+    stages = json.loads(raw_stages)
+    if not isinstance(stages, list) or not stages:
+        raise ValueError("stages 必须是非空 JSON 数组")
+    prepared: list[dict[str, Any]] = []
+    for item in stages:
+        if not isinstance(item, dict):
+            raise ValueError("每个 Stage 必须是 JSON 对象")
+        unknown = sorted(set(item) - {"stage_no", "title", "objective", "acceptance_criteria"})
+        if unknown:
+            raise ValueError(f"未知 Stage 字段: {', '.join(unknown)}")
+        try:
+            stage_no = int(item.get("stage_no"))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("stage_no 必须是正整数") from exc
+        title = str(item.get("title") or "").strip()
+        objective = str(item.get("objective") or "").strip()
+        acceptance = normalized_acceptance_criteria(item.get("acceptance_criteria"))
+        if stage_no < 1 or not title or not objective or not acceptance:
+            raise ValueError("每个 Stage 都必须包含正整数 stage_no、title、objective、acceptance_criteria")
+        prepared.append({
+            "stage_no": stage_no, "title": title, "objective": objective,
+            "acceptance_criteria": acceptance,
+        })
+    prepared.sort(key=lambda item: item["stage_no"])
+    if [item["stage_no"] for item in prepared] != list(range(1, len(prepared) + 1)):
+        raise ValueError("stage_no 必须从 1 开始连续递增且不能重复")
+    return prepared
+
+def create_stage_plan(
+    conn: sqlite3.Connection, args: argparse.Namespace, row: sqlite3.Row,
+    prepared: list[dict[str, Any]],
+) -> int:
+    latest = conn.execute(
+        "SELECT COALESCE(MAX(plan_no), 0) AS plan_no FROM issue_stage WHERE issue_id = ?",
+        (row["id"],),
+    ).fetchone()
+    plan_no = int(latest["plan_no"]) + 1
+    for item in prepared:
+        conn.execute(
+            """INSERT INTO issue_stage(
+                issue_id, plan_no, stage_no, title, objective, acceptance_criteria,
+                status, governance_version
+            ) VALUES (?, ?, ?, ?, ?, ?, 'PLANNED', 2)""",
+            (
+                row["id"], plan_no, item["stage_no"], item["title"],
+                item["objective"], item["acceptance_criteria"],
+            ),
+        )
+    conn.execute(
+        """INSERT INTO issue_activity(
+            issue_id, attempt_no, activity_type, operator_type, operator_id,
+            content, result_status, metadata_json
+        ) VALUES (?, ?, 'STAGE_PLAN_CREATED', ?, ?, ?, 'PLANNED', ?)""",
+        (
+            row["id"], row["current_attempt_no"], operator_type(args.agent), actor_id(args),
+            f"创建 Stage Plan #{plan_no}，共 {len(prepared)} 个阶段",
+            dumps({"plan_no": plan_no, "governance_version": 2, "stages": prepared}),
+        ),
+    )
+    audit(conn, actor_id(args), "stage.plan-create", "review_issue", args.issue_key, True)
+    return plan_no
+
 def design_review(args: argparse.Namespace) -> None:
     require_agent(args.agent)
     target_status = "IN_PROGRESS" if args.decision == "approved" else "DESIGN_REQUIRED"
     activity_type = "DESIGN_APPROVED" if args.decision == "approved" else "DESIGN_REJECTED"
     with connect() as conn:
         row = issue_row(conn, args.issue_key)
+        submission = current_design_submission(conn, row["id"], args.design_activity_id)
+        plan_no = active_stage_plan_no(conn, row["id"])
+        execution_mode = args.execution_mode
+        if args.decision == "approved":
+            confirmation_id = validate_design_confirmation(
+                conn, row, submission, args.confirmation, args.confirmation_id,
+            )
+            if execution_mode not in {"direct", "staged"}:
+                raise ValueError("批准设计必须通过 --execution-mode 明确选择 direct 或 staged")
+            if execution_mode == "direct":
+                if plan_no is not None:
+                    raise RuntimeError("当前已有 Stage Plan，不能按 direct 批准")
+                if args.stages is not None:
+                    raise ValueError("direct 模式不得传入 --stages")
+            else:
+                if plan_no is None:
+                    if args.stages is None:
+                        raise ValueError("staged 模式必须通过 --stages 提交非空 Stage 定义")
+                    plan_no = create_stage_plan(conn, args, row, prepare_stage_definitions(args.stages))
+                elif args.stages is not None:
+                    raise RuntimeError("当前已有 Stage Plan；兼容旧计划时不得重复传入 --stages")
         result = apply_design_transition(
             conn, args, allowed_agents={"inspector", "human"},
             allowed_sources={"DESIGN_PENDING_REVIEW"}, target_status=target_status,
@@ -1305,7 +1501,6 @@ def design_review(args: argparse.Namespace) -> None:
             "APPROVED" if args.decision == "approved" else "REJECTED",
             args.content, source_activity_id=result["activity_id"],
         )
-        plan_no = active_stage_plan_no(conn, row["id"])
         if args.decision == "approved" and plan_no is not None:
             first = conn.execute(
                 """SELECT id FROM issue_stage
@@ -1320,7 +1515,14 @@ def design_review(args: argparse.Namespace) -> None:
                 )
         elif args.decision == "rejected":
             supersede_active_stage_plan(conn, args, row, args.content)
-    print_json({**result, "decision": args.decision})
+    print_json({
+        **result, "decision": args.decision,
+        "design_activity_id": args.design_activity_id,
+        "execution_mode": execution_mode if args.decision == "approved" else None,
+        "plan_no": plan_no if args.decision == "approved" else None,
+        "confirmation": args.confirmation if args.decision == "approved" else None,
+        "confirmation_id": confirmation_id if args.decision == "approved" else None,
+    })
 
 def normalized_acceptance_criteria(value: Any) -> str:
     if isinstance(value, list):
@@ -1473,73 +1675,6 @@ def stage_row_json(row: sqlite3.Row) -> dict[str, Any]:
     result["current_acceptance"] = loads(result.pop("current_acceptance_json", None), [])
     result["baseline"] = loads(result.pop("baseline_json", None), {})
     return result
-
-def stage_plan_create(args: argparse.Namespace) -> None:
-    require_agent(args.agent)
-    if args.agent not in {"inspector", "human"}:
-        raise PermissionError("只有 inspector 或 human 可以创建 Stage Plan")
-    stages = json.loads(args.stages)
-    if not isinstance(stages, list) or not stages:
-        raise ValueError("stages 必须是非空 JSON 数组")
-    prepared: list[dict[str, Any]] = []
-    for item in stages:
-        if not isinstance(item, dict):
-            raise ValueError("每个 Stage 必须是 JSON 对象")
-        unknown = sorted(set(item) - {"stage_no", "title", "objective", "acceptance_criteria"})
-        if unknown:
-            raise ValueError(f"未知 Stage 字段: {', '.join(unknown)}")
-        try:
-            stage_no = int(item.get("stage_no"))
-        except (TypeError, ValueError) as exc:
-            raise ValueError("stage_no 必须是正整数") from exc
-        title = str(item.get("title") or "").strip()
-        objective = str(item.get("objective") or "").strip()
-        acceptance = normalized_acceptance_criteria(item.get("acceptance_criteria"))
-        if stage_no < 1 or not title or not objective or not acceptance:
-            raise ValueError("每个 Stage 都必须包含正整数 stage_no、title、objective、acceptance_criteria")
-        prepared.append({
-            "stage_no": stage_no, "title": title, "objective": objective,
-            "acceptance_criteria": acceptance,
-        })
-    prepared.sort(key=lambda item: item["stage_no"])
-    if [item["stage_no"] for item in prepared] != list(range(1, len(prepared) + 1)):
-        raise ValueError("stage_no 必须从 1 开始连续递增且不能重复")
-
-    with connect() as conn:
-        issue = issue_row(conn, args.issue_key)
-        if issue["status"] != "DESIGN_PENDING_REVIEW":
-            raise RuntimeError("只有 DESIGN_PENDING_REVIEW 可以创建 Stage Plan")
-        if active_stage_plan_no(conn, issue["id"]) is not None:
-            raise RuntimeError("当前已有未废弃的 Stage Plan")
-        latest = conn.execute(
-            "SELECT COALESCE(MAX(plan_no), 0) AS plan_no FROM issue_stage WHERE issue_id = ?",
-            (issue["id"],),
-        ).fetchone()
-        plan_no = int(latest["plan_no"]) + 1
-        for item in prepared:
-            conn.execute(
-                """INSERT INTO issue_stage(
-                    issue_id, plan_no, stage_no, title, objective, acceptance_criteria,
-                    status, governance_version
-                ) VALUES (?, ?, ?, ?, ?, ?, 'PLANNED', 2)""",
-                (
-                    issue["id"], plan_no, item["stage_no"], item["title"],
-                    item["objective"], item["acceptance_criteria"],
-                ),
-            )
-        conn.execute(
-            """INSERT INTO issue_activity(
-                issue_id, attempt_no, activity_type, operator_type, operator_id,
-                content, result_status, metadata_json
-            ) VALUES (?, ?, 'STAGE_PLAN_CREATED', ?, ?, ?, 'PLANNED', ?)""",
-            (
-                issue["id"], issue["current_attempt_no"], operator_type(args.agent), actor_id(args),
-                f"创建 Stage Plan #{plan_no}，共 {len(prepared)} 个阶段",
-                dumps({"plan_no": plan_no, "governance_version": 2, "stages": prepared}),
-            ),
-        )
-        audit(conn, actor_id(args), "stage.plan-create", "review_issue", args.issue_key, True)
-    print_json({"issue_key": args.issue_key, "plan_no": plan_no, "stages": prepared})
 
 def stage_list(args: argparse.Namespace) -> None:
     require_agent(args.agent)
@@ -2838,13 +2973,22 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("design-review")
     p.add_argument("--issue-key", required=True)
     p.add_argument("--decision", required=True, choices=["approved", "rejected"])
+    p.add_argument("--design-activity-id", required=True, type=int)
+    p.add_argument("--execution-mode", choices=["direct", "staged"])
+    p.add_argument("--confirmation", choices=["not-needed", "recorded"])
+    p.add_argument("--confirmation-id", type=int)
+    p.add_argument("--stages", help="staged 批准时使用的 JSON Stage 定义；已有旧计划时省略")
     p.add_argument("--content", required=True)
     p.set_defaults(func=design_review)
 
-    p = sub.add_parser("stage-plan-create")
+    p = sub.add_parser("design-choice-record")
     p.add_argument("--issue-key", required=True)
-    p.add_argument("--stages", required=True, help="JSON array of ordered Stage definitions")
-    p.set_defaults(func=stage_plan_create)
+    p.add_argument("--design-activity-id", required=True, type=int)
+    p.add_argument("--question", required=True)
+    p.add_argument("--answer", required=True)
+    p.add_argument("--summary", required=True)
+    p.add_argument("--impacts", required=True, help="JSON array of material design impact types")
+    p.set_defaults(func=design_choice_record)
 
     p = sub.add_parser("stage-list")
     p.add_argument("--issue-key", required=True)

@@ -201,10 +201,13 @@
       </form>
       {% elif issue.status == 'DESIGN_PENDING_REVIEW' %}
       <div class="action-head"><div><span>HUMAN · 当前轮到你处理</span><h2>审核设计方案</h2></div><b>需要决策</b></div>
-      {% if not active_stage_plan %}<details class="secondary-actions stage-plan-create"><summary>复杂问题：批准前创建 Stage Plan</summary><form method="post" action="{{ url_for('issue_stage_plan_create', issue_key=issue.issue_key) }}"><div class="field"><label>Stages JSON <span class="required">必填</span></label><textarea class="mono" name="stages" required placeholder='[{"stage_no":1,"title":"模型调整","objective":"建立领域版本模型","acceptance_criteria":["新旧数据兼容","单测通过"]}]'></textarea></div><button class="btn btn-soft btn-block" type="submit">创建执行计划</button></form></details>{% endif %}
       <form method="post" action="{{ url_for('issue_design_review', issue_key=issue.issue_key) }}">
+        <input type="hidden" name="design_activity_id" value="{{ latest_design_submission.id if latest_design_submission else '' }}">
+        <p class="form-note">你正在页面中直接作出决定，因此无需另做 CLI 确认；Inspector Agent 自动审批时仍受 CLI 确认门槛约束。</p>
         <div class="field"><label>审核结论 <span class="required">必填</span></label><textarea name="content" required placeholder="批准时记录关键边界；驳回时说明错误、调整点和建议方向"></textarea></div>
-        <div class="action-list"><button class="action-btn action-primary" name="decision" value="approved"><span class="action-icon">✓</span><span><strong>批准方案并进入实现</strong><small>DESIGN_APPROVED → IN_PROGRESS</small></span><span>›</span></button><button class="action-btn action-danger" name="decision" value="rejected"><span class="action-icon">↻</span><span><strong>驳回方案继续讨论</strong><small>DESIGN_REJECTED → DESIGN_REQUIRED</small></span><span>›</span></button></div>
+        <div class="field"><label>批准后的执行方式</label><select name="execution_mode"><option value="direct"{% if not active_stage_plan %} selected{% endif %}>直接实施（简单问题）</option><option value="staged"{% if active_stage_plan %} selected{% endif %}>分 Stage 实施</option></select></div>
+        {% if active_stage_plan %}<p class="form-note">检测到升级前已创建的 Stage Plan；选择 staged 批准时会复用该计划并默认激活 Stage 1。</p>{% else %}<div class="field"><label>Stages JSON（选择分 Stage 时必填）</label><textarea class="mono" name="stages" placeholder='[{"stage_no":1,"title":"模型调整","objective":"建立领域版本模型","acceptance_criteria":["新旧数据兼容","单测通过"]}]'></textarea></div>{% endif %}
+        <div class="action-list"><button class="action-btn action-primary" name="decision" value="approved"><span class="action-icon">✓</span><span><strong>批准方案并进入实现</strong><small>原子批准；staged 默认激活 Stage 1</small></span><span>›</span></button><button class="action-btn action-danger" name="decision" value="rejected"><span class="action-icon">↻</span><span><strong>驳回方案继续讨论</strong><small>DESIGN_REJECTED → DESIGN_REQUIRED</small></span><span>›</span></button></div>
       </form>
       {% elif issue.status in ('DESIGN_REQUIRED', 'REDESIGN_REQUIRED') %}
       <div class="action-head"><div><span>HUMAN · 设计阶段</span><h2>提交具体设计方案</h2></div><b>禁止直接实现</b></div>

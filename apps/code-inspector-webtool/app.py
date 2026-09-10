@@ -733,6 +733,8 @@ def issue_detail(issue_key: str):
     current_activities = [a for a in activities if a["attempt_no"] == issue["current_attempt_no"]]
     implementations = [a for a in current_activities if a["activity_type"] == "IMPLEMENTATION_SUBMITTED"]
     latest_implementation = implementations[-1] if implementations else None
+    design_submissions = [a for a in activities if a["activity_type"] == "DESIGN_SUBMITTED"]
+    latest_design_submission = design_submissions[-1] if design_submissions else None
     verification_activities = [a for a in current_activities if a["activity_type"].startswith("VERIFICATION_")]
     human_requests = [a for a in activities if a["activity_type"] == "HUMAN_CONFIRMATION_REQUESTED"]
     latest_human_request = human_requests[-1] if human_requests else None
@@ -769,7 +771,8 @@ def issue_detail(issue_key: str):
         "issue_detail.html", issue=issue, activities=history_activities, activity_groups=grouped,
         decisions=decisions, discussions=discussions, discussion_records=discussion_records,
         all_records=all_records,
-        latest_implementation=latest_implementation, verification_activities=verification_activities,
+        latest_implementation=latest_implementation, latest_design_submission=latest_design_submission,
+        verification_activities=verification_activities,
         latest_human_request=latest_human_request,
         stage_plans=stage_plans, active_stage_plan=active_stage_plan,
         current_execution_stage=current_execution_stage,
@@ -991,23 +994,22 @@ def issue_design_submit(issue_key: str):
 @app.route("/issues/<issue_key>/design-review", methods=["POST"])
 def issue_design_review(issue_key: str):
     try:
-        run_human_command(
+        args = [
             "design-review", "--issue-key", issue_key,
             "--decision", request.form.get("decision", ""),
+            "--design-activity-id", request.form.get("design_activity_id", ""),
             "--content", request.form.get("content", ""),
-        )
+        ]
+        if request.form.get("decision") == "approved":
+            args.extend([
+                "--execution-mode", request.form.get("execution_mode", ""),
+                "--confirmation", "not-needed",
+            ])
+            if raw_stages := request.form.get("stages", "").strip():
+                json.loads(raw_stages)
+                args.extend(["--stages", raw_stages])
+        run_human_command(*args)
         return redirect_back("issue_detail", issue_key=issue_key, msg="设计审核结论已记录")
-    except Exception as exc:  # noqa: BLE001
-        return redirect_back("issue_detail", issue_key=issue_key, err=str(exc))
-
-
-@app.route("/issues/<issue_key>/stage-plan", methods=["POST"])
-def issue_stage_plan_create(issue_key: str):
-    try:
-        raw_stages = request.form.get("stages", "")
-        json.loads(raw_stages)
-        run_human_command("stage-plan-create", "--issue-key", issue_key, "--stages", raw_stages)
-        return redirect_back("issue_detail", issue_key=issue_key, msg="Stage 执行计划已创建")
     except Exception as exc:  # noqa: BLE001
         return redirect_back("issue_detail", issue_key=issue_key, err=str(exc))
 

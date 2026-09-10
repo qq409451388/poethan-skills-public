@@ -38,6 +38,22 @@ def test_mutations_require_local_request_marker() -> None:
         assert response.status_code == 200
 
 
+def test_deck_local_host_origin_is_trusted() -> None:
+    with TestClient(app) as web:
+        response = web.get(
+            "/",
+            headers={"Origin": "http://sentinel.poethan.local"},
+        )
+        assert response.status_code == 200
+
+        response = web.get(
+            "/",
+            headers={"Origin": "http://untrusted.local"},
+        )
+        assert response.status_code == 403
+        assert response.json()["detail"] == "请求来源不受信"
+
+
 def test_server_can_be_deleted_without_touching_other_profiles() -> None:
     with client() as web:
         set_demo_mode(web, True)

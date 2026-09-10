@@ -231,7 +231,8 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             self.assertIn("主审核者必须额外串联跨模块数据流", role_text)
             self.assertIn("先做覆盖面回查和补充扫描", role_text)
             self.assertIn("stage-prepare", role_text)
-            self.assertIn("stage-plan-create", role_text)
+            self.assertIn("原子创建计划、批准设计和激活 Stage 1", role_text)
+            self.assertNotIn("stage-plan-create", role_text)
             self.assertIn("连续两次失败必须重新判断设计是否对齐", role_text)
             self.assertIn("默认关闭", watch_text)
             self.assertIn("禁止创建或维持 Codex Goal", watch_text)
@@ -1134,7 +1135,11 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             )
             self.assertEqual((submitted["status"], submitted["attempt_no"]), ("DESIGN_PENDING_REVIEW", 0))
             activity_count = len(db("developer", "activity-list", "--issue-key", "RI-DESIGN"))
-            fails("developer", "design-review", "--issue-key", "RI-DESIGN", "--decision", "approved", "--content", "越权批准")
+            fails(
+                "developer", "design-review", "--issue-key", "RI-DESIGN", "--decision", "approved",
+                "--design-activity-id", str(submitted["activity_id"]), "--execution-mode", "direct",
+                "--content", "越权批准",
+            )
             fails("developer", "implementation-submit", "--issue-key", "RI-DESIGN", "--content", "尚未批准")
             self.assertEqual(len(db("developer", "activity-list", "--issue-key", "RI-DESIGN")), activity_count)
 
@@ -1144,14 +1149,62 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             )
             rejected = db(
                 "inspector", "design-review", "--issue-key", "RI-DESIGN", "--decision", "rejected",
+                "--design-activity-id", str(submitted["activity_id"]),
                 "--content", "历史缺失版本的兼容路径未说明，请补充读取回退规则",
             )
             self.assertEqual((rejected["status"], rejected["attempt_no"]), ("DESIGN_REQUIRED", 0))
-            db("developer", "design-submit", "--issue-key", "RI-DESIGN", "--content", "补充 legacy fallback")
+            resubmitted = db(
+                "developer", "design-submit", "--issue-key", "RI-DESIGN", "--content", "补充 legacy fallback",
+            )
+            stale_design = fails(
+                "inspector", "design-review", "--issue-key", "RI-DESIGN", "--decision", "approved",
+                "--design-activity-id", str(submitted["activity_id"]), "--execution-mode", "direct",
+                "--content", "不得批准旧设计",
+            )
+            self.assertIn("最新的 DESIGN_SUBMITTED", stale_design.stderr)
+            missing_mode = fails(
+                "inspector", "design-review", "--issue-key", "RI-DESIGN", "--decision", "approved",
+                "--design-activity-id", str(resubmitted["activity_id"]),
+                "--confirmation", "not-needed", "--content", "缺少执行方式",
+            )
+            self.assertIn("execution-mode", missing_mode.stderr)
+            missing_confirmation = fails(
+                "inspector", "design-review", "--issue-key", "RI-DESIGN", "--decision", "approved",
+                "--design-activity-id", str(resubmitted["activity_id"]), "--execution-mode", "direct",
+                "--content", "没有声明是否需要用户确认",
+            )
+            self.assertIn("--confirmation", missing_confirmation.stderr)
+            first_choice = db(
+                "inspector", "design-choice-record", "--issue-key", "RI-DESIGN",
+                "--design-activity-id", str(resubmitted["activity_id"]),
+                "--question", "这个改动会增加一张保存同步进度的表，可以吗？",
+                "--answer", "可以。",
+                "--summary", "允许新增同步进度表。",
+                "--impacts", json.dumps(["new_persistence"], ensure_ascii=False),
+            )
+            choice = db(
+                "inspector", "design-choice-record", "--issue-key", "RI-DESIGN",
+                "--design-activity-id", str(resubmitted["activity_id"]),
+                "--question", "表中是否只保存同步控制信息，不保存业务正文？",
+                "--answer", "是，只保存控制信息。",
+                "--summary", "允许新增同步进度表，但只保存控制信息。",
+                "--impacts", json.dumps(["new_persistence"], ensure_ascii=False),
+            )
+            self.assertEqual(choice["summary"], "允许新增同步进度表，但只保存控制信息。")
+            choices = db(
+                "inspector", "decision-list", "--issue-key", "RI-DESIGN", "--include-superseded",
+            )
+            cli_choices = [item for item in choices if item["decision_type"] == "CLI_DESIGN_CONFIRMATION"]
+            self.assertEqual([item["effective"] for item in cli_choices], [0, 1])
+            self.assertEqual(cli_choices[0]["superseded_by_id"], choice["decision_id"])
+            self.assertNotEqual(first_choice["decision_id"], choice["decision_id"])
             approved = db(
                 "inspector", "design-review", "--issue-key", "RI-DESIGN", "--decision", "approved",
+                "--design-activity-id", str(resubmitted["activity_id"]), "--execution-mode", "direct",
+                "--confirmation", "recorded", "--confirmation-id", str(choice["decision_id"]),
                 "--content", "批准；不得改变历史数据读取语义",
             )
+            self.assertEqual(approved["confirmation_id"], choice["decision_id"])
             self.assertEqual((approved["status"], approved["attempt_no"]), ("IN_PROGRESS", 0))
             fails("inspector", "implementation-submit", "--issue-key", "RI-DESIGN", "--content", "Inspector 禁止实现")
 
@@ -1179,9 +1232,13 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             self.assertEqual(redesign["attempt_no"], 2)
             fails("developer", "implementation-submit", "--issue-key", "RI-DESIGN", "--content", "不得继续实现")
             fails("developer", "issue-update-status", "--issue-key", "RI-DESIGN", "--status", "IN_PROGRESS")
-            db("developer", "design-submit", "--issue-key", "RI-DESIGN", "--content", "重做数据流方案")
+            redesigned_submission = db(
+                "developer", "design-submit", "--issue-key", "RI-DESIGN", "--content", "重做数据流方案",
+            )
             db(
                 "inspector", "design-review", "--issue-key", "RI-DESIGN", "--decision", "approved",
+                "--design-activity-id", str(redesigned_submission["activity_id"]),
+                "--execution-mode", "direct", "--confirmation", "not-needed",
                 "--content", "基于新证据批准",
             )
             third_impl = db("developer", "implementation-submit", "--issue-key", "RI-DESIGN", "--content", "重设计后实现")
@@ -1276,7 +1333,10 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 "--reason", "复杂问题", "--issues", json.dumps([issue], ensure_ascii=False),
             )
             db("inspector", "design-request", "--issue-key", "RI-STAGE", "--content", "必须分阶段验收")
-            db("developer", "design-submit", "--issue-key", "RI-STAGE", "--content", "分模型、主链路、回灌三阶段")
+            design_submission = db(
+                "developer", "design-submit", "--issue-key", "RI-STAGE",
+                "--content", "分模型、主链路、回灌三阶段",
+            )
             stages = [
                 {"stage_no": 1, "title": "领域版本模型", "objective": "建立独立版本模型",
                  "acceptance_criteria": ["旧数据可读", "版本单测通过"]},
@@ -1286,10 +1346,18 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                  "acceptance_criteria": "回灌不能覆盖更晚线上事实"},
             ]
 
-            fails(
+            removed_command = fails(
                 "developer", "stage-plan-create", "--issue-key", "RI-STAGE",
                 "--stages", json.dumps(stages, ensure_ascii=False),
             )
+            self.assertIn("invalid choice", removed_command.stderr)
+            missing_stages = fails(
+                "inspector", "design-review", "--issue-key", "RI-STAGE", "--decision", "approved",
+                "--design-activity-id", str(design_submission["activity_id"]),
+                "--execution-mode", "staged", "--confirmation", "not-needed",
+                "--content", "缺少阶段定义",
+            )
+            self.assertIn("--stages", missing_stages.stderr)
             database = home / ".agent-review" / "data" / "review.db"
             with sqlite3.connect(database) as conn:
                 conn.execute(
@@ -1299,24 +1367,28 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                        BEGIN SELECT RAISE(ABORT, 'forced plan rollback'); END"""
                 )
             fails(
-                "inspector", "stage-plan-create", "--issue-key", "RI-STAGE",
+                "inspector", "design-review", "--issue-key", "RI-STAGE", "--decision", "approved",
+                "--design-activity-id", str(design_submission["activity_id"]),
+                "--execution-mode", "staged", "--confirmation", "not-needed",
+                "--content", "验证原子回滚",
                 "--stages", json.dumps(stages, ensure_ascii=False),
             )
             with sqlite3.connect(database) as conn:
                 self.assertEqual(conn.execute("SELECT COUNT(*) FROM issue_stage").fetchone()[0], 0)
+                self.assertEqual(
+                    conn.execute("SELECT status FROM review_issue WHERE issue_key='RI-STAGE'").fetchone()[0],
+                    "DESIGN_PENDING_REVIEW",
+                )
                 conn.execute("DROP TRIGGER force_stage_plan_activity_failure")
 
-            plan = db(
-                "inspector", "stage-plan-create", "--issue-key", "RI-STAGE",
-                "--stages", json.dumps(stages, ensure_ascii=False),
-            )
-            self.assertEqual(plan["plan_no"], 1)
-            self.assertEqual([item["status"] for item in db("developer", "stage-list", "--issue-key", "RI-STAGE")],
-                             ["PLANNED", "PLANNED", "PLANNED"])
-            db(
+            approved_design = db(
                 "inspector", "design-review", "--issue-key", "RI-STAGE", "--decision", "approved",
+                "--design-activity-id", str(design_submission["activity_id"]),
+                "--execution-mode", "staged", "--stages", json.dumps(stages, ensure_ascii=False),
+                "--confirmation", "not-needed",
                 "--content", "按三个 Stage 串行执行",
             )
+            self.assertEqual((approved_design["execution_mode"], approved_design["plan_no"]), ("staged", 1))
             self.assertEqual(
                 [item["status"] for item in db("developer", "stage-list", "--issue-key", "RI-STAGE")],
                 ["IN_PROGRESS", "PLANNED", "PLANNED"],
@@ -1612,11 +1684,13 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 "--issues", json.dumps([redesign_issue], ensure_ascii=False),
             )
             db("inspector", "design-request", "--issue-key", "RI-STAGE-REDESIGN", "--content", "先设计")
-            db("developer", "design-submit", "--issue-key", "RI-STAGE-REDESIGN", "--content", "初版方案")
-            db("inspector", "stage-plan-create", "--issue-key", "RI-STAGE-REDESIGN",
-               "--stages", json.dumps(stages[:2], ensure_ascii=False))
+            first_design = db(
+                "developer", "design-submit", "--issue-key", "RI-STAGE-REDESIGN", "--content", "初版方案",
+            )
             db("inspector", "design-review", "--issue-key", "RI-STAGE-REDESIGN", "--decision", "approved",
-               "--content", "批准初版")
+               "--design-activity-id", str(first_design["activity_id"]), "--execution-mode", "staged",
+               "--stages", json.dumps(stages[:2], ensure_ascii=False),
+               "--confirmation", "not-needed", "--content", "批准初版")
             db(
                 "developer", "stage-prepare", "--issue-key", "RI-STAGE-REDESIGN", "--stage-no", "1",
                 "--change-scope", json.dumps({"files": ["domain.py"]}),
@@ -1646,10 +1720,15 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             old_plan = db("developer", "stage-list", "--issue-key", "RI-STAGE-REDESIGN", "--plan-no", "1")
             self.assertEqual([item["status"] for item in old_plan], ["SUPERSEDED", "SUPERSEDED"])
             fails("developer", "implementation-submit", "--issue-key", "RI-STAGE-REDESIGN", "--content", "不能绕过")
-            db("developer", "design-submit", "--issue-key", "RI-STAGE-REDESIGN", "--content", "新方案")
+            second_design = db(
+                "developer", "design-submit", "--issue-key", "RI-STAGE-REDESIGN", "--content", "新方案",
+            )
             new_plan = db(
-                "inspector", "stage-plan-create", "--issue-key", "RI-STAGE-REDESIGN",
-                "--stages", json.dumps(stages[:1], ensure_ascii=False),
+                "inspector", "design-review", "--issue-key", "RI-STAGE-REDESIGN",
+                "--decision", "approved", "--design-activity-id", str(second_design["activity_id"]),
+                "--execution-mode", "staged", "--stages", json.dumps(stages[:1], ensure_ascii=False),
+                "--confirmation", "not-needed",
+                "--content", "批准新方案并创建新计划",
             )
             self.assertEqual(new_plan["plan_no"], 2)
             all_history = db("developer", "stage-list", "--issue-key", "RI-STAGE-REDESIGN")
@@ -1822,9 +1901,14 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 (resolved["status"], resolved["activity_type"], resolved["attempt_no"]),
                 ("DESIGN_REQUIRED", "HUMAN_CONFIRMATION_PROVIDED", 0),
             )
-            db("developer", "design-submit", "--issue-key", "RI-HUMAN", "--content", "按 Human 边界重做冲突合并方案")
+            human_boundary_design = db(
+                "developer", "design-submit", "--issue-key", "RI-HUMAN",
+                "--content", "按 Human 边界重做冲突合并方案",
+            )
             db(
                 "inspector", "design-review", "--issue-key", "RI-HUMAN", "--decision", "approved",
+                "--design-activity-id", str(human_boundary_design["activity_id"]),
+                "--execution-mode", "direct", "--confirmation", "not-needed",
                 "--content", "方案符合 ledger 最终事实源边界，允许实现",
             )
             implementation = db(
@@ -2161,19 +2245,20 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 )[1].split('data-tab-pane="history"', 1)[0]
                 self.assertIn('data-activity-type="DESIGN_SUBMITTED"', design_discussion)
                 self.assertIn("Human 代为补充具体方案", design_discussion)
-                self.assertEqual(
-                    client.post(
-                        "/issues/RI-WEB-DESIGN/stage-plan",
-                        data={"stages": json.dumps([{
-                            "stage_no": 1, "title": "兼容边界", "objective": "先完成兼容层",
-                            "acceptance_criteria": ["旧数据可读", "回归通过"],
-                        }], ensure_ascii=False)}, follow_redirects=False,
-                    ).status_code,
-                    302,
+                web_design_activity = next(
+                    item for item in reversed(db("inspector", "activity-list", "--issue-key", "RI-WEB-DESIGN"))
+                    if item["activity_type"] == "DESIGN_SUBMITTED"
                 )
                 client.post(
                     "/issues/RI-WEB-DESIGN/design-review",
-                    data={"decision": "approved", "content": "方案边界明确，可以实现"},
+                    data={
+                        "decision": "approved", "design_activity_id": str(web_design_activity["id"]),
+                        "execution_mode": "staged", "content": "方案边界明确，可以实现",
+                        "stages": json.dumps([{
+                            "stage_no": 1, "title": "兼容边界", "objective": "先完成兼容层",
+                            "acceptance_criteria": ["旧数据可读", "回归通过"],
+                        }], ensure_ascii=False),
+                    },
                     follow_redirects=False,
                 )
                 self.assertEqual(db("inspector", "issue-get", "--issue-key", "RI-WEB-DESIGN")["status"], "IN_PROGRESS")

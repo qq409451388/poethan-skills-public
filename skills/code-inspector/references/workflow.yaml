@@ -3,7 +3,8 @@ version: 4.0.0
 issue_content:
   default_required: [title, summary, dimension, severity]
   optional_when_useful: [expected_outcome, technical_note, local_terms, evidence]
-  summary: 一段短文或 2–5 个要点，直说现象、影响与关键原因；允许轻量 Markdown。
+  summary: 一段短文或最多 3 个要点，只保留现象、影响和结论；用户不需要依靠它完成当前决策。
+  technical_note: 只保存回看所需的关键证据和代码位置；完整 Agent 方案与争论留在讨论/活动历史，不复制进正文。
   omit: [Agent 推理过程, 长日志, 完整代码, 重复评级, 无助于人工判断的字段]
   code_location: 优先文件路径加类、方法或符号；行号只作为创建时快照的辅助提示，不能成为唯一定位依据。
   terminology: 通用技术名词无需解释；只解释项目内、业务内或 Agent 临时定义且人工可能未对齐的词。
@@ -223,11 +224,22 @@ design_workflow:
     target: DESIGN_PENDING_REVIEW
     attempt_effect: none
   review_approved:
-    atomic_command: design-review --decision approved
+    atomic_command: design-review --decision approved --design-activity-id <id> --execution-mode <direct|staged> --confirmation <not-needed|recorded>
     roles: [inspector, human]
     allowed_from: [DESIGN_PENDING_REVIEW]
     activity: DESIGN_APPROVED
     target: IN_PROGRESS
+    execution_modes:
+      direct: 禁止存在或提交 Stage Plan，直接进入实现。
+      staged: 必须提交 stages，或兼容使用升级前已存在的 active plan；原子创建计划、批准设计并激活 Stage 1。
+    design_binding: design_activity_id 必须属于当前 Issue 最新的 DESIGN_SUBMITTED。
+    cli_confirmation:
+      primary_surface: 当前 Inspector CLI 对话；Issue 仅自动留档，用户无需打开 Web 阅读。
+      not_needed: 明确 Bug、唯一合理实现、普通代码细节，或用户已明确允许该变化。
+      must_record: [新增持久化或基础设施, 数据迁移或补写删除, 改变对外接口或可见行为, 新增外部依赖, 扩大需求范围, 多个影响明显不同的合理方案]
+      record_command: design-choice-record
+      wording: 使用日常中文说明变化、原因、主要影响、选项和推荐；专业术语必须紧接通俗解释。
+      binding: recorded 必须通过 confirmation-id 绑定当前设计；设计修订后旧确认失效。
     meaning: 仅表示基于当前证据允许开始实现，不保证方案永久正确。
   review_rejected:
     atomic_command: design-review --decision rejected
@@ -256,12 +268,12 @@ stage_workflow:
     1: migration 前已有 Stage，保留原命令行为以便继续完成，不强制补历史结构化数据。
     2: 新建 Stage Plan 默认版本，强制开发前声明、结构化审核、累计回归与 baseline gate。
   plan_create:
-    atomic_command: stage-plan-create
+    atomic_command: design-review --decision approved --execution-mode staged --confirmation <not-needed|recorded> --stages <json>
     roles: [inspector, human]
     normal_role: inspector
     allowed_from_issue_status: DESIGN_PENDING_REVIEW
     required_stage_fields: [stage_no, title, objective, acceptance_criteria]
-    activity: STAGE_PLAN_CREATED
+    activity: STAGE_PLAN_CREATED 与 DESIGN_APPROVED 同事务写入
     initial_stage_status: PLANNED
     numbering: stage_no 必须从 1 连续递增；新计划 plan_no 使用历史最大值加一。
     governance_version: 2
@@ -322,7 +334,7 @@ stage_workflow:
     activities: [STAGE_REJECTED, STAGE_PLAN_SUPERSEDED]
     issue_transition: IN_PROGRESS -> REDESIGN_REQUIRED
     plan_effect: 当前计划 plan_status -> SUPERSEDED；未完成 Stage -> SUPERSEDED，已 APPROVED Stage 保留原状态、时间和验收记录。
-    recovery: design-submit -> DESIGN_PENDING_REVIEW -> 新 Stage Plan -> design-review approved。
+    recovery: design-submit -> DESIGN_PENDING_REVIEW -> design-review approved --execution-mode staged --stages <json>。
   final_submission_gate: 有 active Stage Plan 时，全部 Stage APPROVED 后才允许 implementation-submit；最终整体验证不可被阶段验收替代。
   historical_regression_gate:
     required_for: Stage 2 及以后每轮验收

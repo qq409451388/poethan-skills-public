@@ -12,11 +12,17 @@ Task 与普通 Issue 状态由 Inspector/Developer 按标准状态机维护；Hu
 
 ## 设计与 Stage
 
-Code Inspector 的目标不是让 Developer 无限提交、Inspector 无限驳回。简单问题可直接实现；跨模块、Schema/迁移、历史回灌、状态机、幂等并发、ACK/retry/recovery、公共 API、大重构或方向不确定的问题，Inspector 应在编码前使用 `design-request`，主动写清根因、不可破坏语义、设计约束、风险、推荐方向和必须回答的问题。Inspector 决定“必须解决什么、不能破坏什么、推荐往哪里做”，Developer 决定“具体代码怎么实现”。
+Code Inspector 的目标不是让 Developer 无限提交、Inspector 无限驳回。简单问题可直接实现；跨模块、数据库结构或数据迁移、历史数据补处理、状态流转、重复执行与并发、消息确认和失败恢复、公共 API、大重构或方向不确定的问题，Inspector 应在编码前使用 `design-request`，主动写清根因、不可破坏语义、设计约束、风险、推荐方向和必须回答的问题。Inspector 决定“必须解决什么、不能破坏什么、推荐往哪里做”，Developer 决定“具体代码怎么实现”。
 
 `DESIGN_REQUIRED`、`DESIGN_PENDING_REVIEW`、`REDESIGN_REQUIRED` 期间 Developer 只能阅读、分析、讨论和用 `design-submit` 提交方案，禁止修改业务代码或 `implementation-submit`；只有 `design-review approved` 转为 `IN_PROGRESS` 后才能编码。设计批准只表示基于当时证据允许实现，出现新事实时仍可显式转 `REDESIGN_REQUIRED`。
 
-复杂 Issue 在批准设计前，Inspector 应使用 `stage-plan-create` 把实现拆成少量可独立验收、默认串行的 Stage；每个 Stage 必须明确目标和验收标准。设计批准会激活第一个 Stage。Developer 修改代码前必须读取 `stage-get` 返回的历史 baseline，并用 `stage-prepare` 声明预计修改的模块/文件/类、修改原因以及不得改变的历史行为。之后只实现当前 `IN_PROGRESS` Stage，用 `stage-submit` 提交 commit、Diff 摘要、当前测试、历史累计回归和代码证据；提交后停止修改，等待 Inspector 验收。
+批准设计时，Inspector 必须在同一次 `design-review` 中明确选择执行模式：简单问题使用 `direct`；复杂 Issue 使用 `staged` 并提交少量可独立验收、默认串行的 Stage。`staged` 审批会在一个事务中创建 Stage Plan、批准设计并激活第一个 Stage；任何一步失败都整体回滚。每个 Stage 必须明确目标和验收标准。不再提供独立的计划创建命令，Developer 也不承担 Stage Plan 制定责任。
+
+`design-review` 必须绑定当前 Issue 最新的 `DESIGN_SUBMITTED` activity，禁止审核旧设计或其他 Issue 的设计。只有原子审批成功、Issue 进入 `IN_PROGRESS` 后，Developer 才开始实现；staged 模式先执行 `stage-get -> stage-prepare -> 实现 -> stage-submit`，direct 模式走无 Stage Plan 的直接实现路径。
+
+用户沟通以当前 Inspector CLI 为主，Issue 是自动生成的回看记录，不是用户必须通读的审批页面。批准前，Inspector 必须显式选择 `--confirmation not-needed|recorded`。明确 Bug、唯一合理实现，或用户已经明确允许的变化使用 `not-needed`；出现以下任一未明确授权的变化时，必须先在当前 CLI 询问，再用 `design-choice-record` 原样记录问题、用户回答和一句最终结论，最后以 `recorded + confirmation-id` 批准：新增持久化存储或基础设施、迁移/补写/删除数据、改变对外接口或可见行为、增加外部依赖、扩大需求范围、存在多个影响明显不同的合理方案。设计在确认后被修改，旧确认自动失效。
+
+CLI 提问使用日常中文，先说“准备改变什么”和“会带来什么影响”，再给选项和推荐；内部表名、类名、缩写、英文机制名只作为补充，不能代替解释。一次最多集中询问三个相关决定，能用一句话问清时不要展开成长方案。用户回复后继续当前流程，不要求切换到 Web。普通实现细节，例如内部方法拆分、局部变量、已有方案内的字段命名，不询问用户。
 
 通过后自动激活下一 Stage，驳回只退回当前 Stage；若验收发现整个设计不成立，使用 `stage-review --decision redesign` 进入 `REDESIGN_REQUIRED` 并废弃旧计划的未完成阶段。新设计建立新的 `plan_no`，旧计划和验收活动永久保留。
 

@@ -127,9 +127,11 @@ Inspector 修改 Task 状态时遵守标准状态机。Human 具有 Task 状态�
 
 讨论消息使用独立的 `discussion-*` 命令，不再用 `COMMENT_ADDED / DESIGN_GUIDANCE` 塞进处理历史。页面“讨论”视图还会只读投影设计、Stage 和实现正式提交；这些提交仍以 Activity 作为唯一数据源并保留在处理历史，“全部”视图去重后按最新优先展示。Developer、Inspector 修正自己的讨论消息时直接 `discussion-amend`；待审核的设计、Stage、实现提交可用 `activity-amend`，一旦被审核就锁定。讨论达成一致后由 Inspector 用 `decision-record` 写入短结论并关联讨论；同一类型和作用域的新结论成为当前有效版本，历史版本只留审计。
 
+用户与 Inspector 的当前 CLI 对话是需求澄清和关键设计确认入口，Issue/Web 只用于自动留档、回看和管理纠错。明确 Bug、唯一合理实现、普通代码细节或用户已明确允许的变化无需重复询问；新增持久化或基础设施、数据变更、对外行为变化、新依赖、范围扩大或多种影响不同的方案，必须先由 Inspector 在 CLI 用日常中文简短询问。用户回答后用 `design-choice-record` 绑定当前设计，`design-review` 再以 `--confirmation recorded --confirmation-id <id>` 批准；设计修订后旧确认失效。其余设计明确使用 `--confirmation not-needed`。
+
 ## 设计与实现协作
 
-复杂或高风险 Issue 应在编码前进入设计阶段：Inspector 用 `design-request` 写清根因、约束、不可破坏语义、风险、推荐方向和方案必须回答的问题；Developer 用 `design-submit` 提交具体类、方法、数据流、兼容与测试方案；Inspector 用 `design-review` 明确批准或驳回。设计状态下 Developer 不得修改业务代码或提交实现。
+复杂或高风险 Issue 应在编码前进入设计阶段：Inspector 用 `design-request` 写清根因、约束、不可破坏语义、风险、推荐方向和方案必须回答的问题；Developer 用 `design-submit` 提交具体类、方法、数据流、兼容与测试方案；Inspector 用 `design-review` 绑定当前设计提交并明确批准或驳回。批准时必须选择 `direct` 或 `staged`；staged 会在同一事务中创建 Stage Plan、批准设计并默认激活 Stage 1。设计状态下 Developer 不得修改业务代码或提交实现。
 
 实现审核失败时，若只是代码未按批准方案正确落地，则记录 `VERIFICATION_FAILED` 并回 `IN_PROGRESS`；若方向本身被新证据推翻，则转 `REDESIGN_REQUIRED`，强制重新走方案审核。连续两次失败后 Inspector 必须主动重新判断失败属于实现还是设计，避免重复阅读与大范围返工。
 

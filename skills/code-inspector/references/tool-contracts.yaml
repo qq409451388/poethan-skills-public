@@ -128,22 +128,35 @@ commands:
     attempt_effect: none
   design-review:
     roles: [inspector, human]
-    purpose: 原子记录明确的设计批准或驳回结论。
-    required: [--issue-key, --decision, --content]
+    purpose: 绑定当前设计提交并原子记录审核结论；staged 批准同时创建并激活 Stage Plan。
+    required: [--issue-key, --decision, --design-activity-id, --content]
+    conditional_required: {approved: [--execution-mode, --confirmation], staged: [--stages（无升级前 active plan 时）], confirmation_recorded: [--confirmation-id]}
     enum: {decision: [approved, rejected]}
+    enum_execution_mode: [direct, staged]
+    enum_confirmation: [not-needed, recorded]
     allowed_from: [DESIGN_PENDING_REVIEW]
+    constraints:
+      - design-activity-id 必须属于当前 Issue 最新的 DESIGN_SUBMITTED
+      - recorded 必须绑定当前设计有效且未因设计修订而失效的 CLI 确认记录
+      - not-needed 只用于明确 Bug、唯一合理实现、普通代码细节或用户已明确允许的变化
+      - direct 禁止 active plan 和 --stages
+      - staged 原子创建 Stage Plan；升级前已有 active plan 时复用且禁止重复传 --stages
     effects:
-      approved: [追加 DESIGN_APPROVED, 转为 IN_PROGRESS]
+      approved_direct: [追加 DESIGN_APPROVED, 转为 IN_PROGRESS]
+      approved_staged: [插入 PLANNED Stage, 追加 STAGE_PLAN_CREATED, 追加 DESIGN_APPROVED, 转为 IN_PROGRESS, Stage 1 转为 IN_PROGRESS]
       rejected: [追加 DESIGN_REJECTED, 转为 DESIGN_REQUIRED]
-  stage-plan-create:
-    roles: [inspector, human]
-    purpose: 在设计待审核时原子创建一个新的、串行的 Stage Plan；不会修改 Issue 状态或 implementation attempt。
-    required: [--issue-key, --stages]
-    json_arguments: [--stages]
-    allowed_from: [DESIGN_PENDING_REVIEW]
-    stage_item_required: [stage_no, title, objective, acceptance_criteria]
-    constraints: [stage_no 从 1 连续递增, 同一 issue 同一 plan 不能重复, 已有 active plan 时拒绝]
-    effects: [以 governance_version=2 插入 PLANNED Stage, 追加 STAGE_PLAN_CREATED]
+  design-choice-record:
+    roles: [inspector]
+    purpose: 用户在当前 Inspector CLI 回答后，把白话问题、原回答和最终决定绑定到当前设计；Issue 仅作回看记录。
+    required: [--issue-key, --design-activity-id, --question, --answer, --summary, --impacts]
+    json_arguments: [--impacts]
+    impact_values: [new_persistence, data_migration, external_behavior, new_dependency, scope_expansion, multiple_solutions]
+    constraints:
+      - 只能绑定当前 Issue 最新的 DESIGN_SUBMITTED，且状态必须为 DESIGN_PENDING_REVIEW
+      - question 和 summary 不超过 300 字，必须使用用户能直接理解的日常中文
+      - 不能要求用户打开 Web、阅读 Issue 或理解未解释的技术术语
+      - 设计提交在确认后修订时，确认自动失效
+    effects: [写入 CLI_DESIGN_CONFIRMATION 决策, 保存问题与回答, 返回 confirmation decision id]
   stage-list:
     roles: [inspector, developer, human]
     required: [--issue-key]

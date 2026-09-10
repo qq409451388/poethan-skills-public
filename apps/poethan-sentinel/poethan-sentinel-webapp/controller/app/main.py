@@ -32,6 +32,13 @@ from .tools import diagnostic_tool_service
 
 SESSION_TOKEN = random_secrets.token_urlsafe(32)
 app = FastAPI(title="Poethan Sentinel Controller", version="0.1.0-beta.1", docs_url="/api/docs", openapi_url="/api/openapi.json")
+ALLOWED_LOCAL_ORIGINS = {
+    "http://127.0.0.1:4173",
+    "http://127.0.0.1:8765",
+    "http://localhost:4173",
+    "http://localhost:8765",
+    "http://sentinel.poethan.local",
+}
 
 
 def require_session(poethan_session: Annotated[str | None, Cookie(alias="poethan_session")] = None) -> None:
@@ -53,7 +60,7 @@ async def local_only(request: Request, call_next):
     if client not in {"127.0.0.1", "::1", "testclient"}:
         return JSONResponse(status_code=403, content={"detail": "Controller 只接受本机连接"})
     origin = request.headers.get("origin")
-    if origin and origin not in {"http://127.0.0.1:4173", "http://127.0.0.1:8765", "http://localhost:4173", "http://localhost:8765"}:
+    if origin and origin not in ALLOWED_LOCAL_ORIGINS:
         return JSONResponse(status_code=403, content={"detail": "请求来源不受信"})
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
