@@ -2616,6 +2616,30 @@ def activity_list(args: argparse.Namespace) -> None:
         result.append(item)
     print_json(result)
 
+def activity_get(args: argparse.Namespace) -> None:
+    require_agent(args.agent)
+    if args.activity_id < 1:
+        raise ValueError("activity-id 必须是正整数")
+    with connect() as conn:
+        row = conn.execute(
+            """SELECT a.*, i.issue_key, t.task_key
+               FROM issue_activity a
+               JOIN review_issue i ON i.id = a.issue_id
+               JOIN review_task t ON t.id = i.task_id
+               WHERE a.id = ?""",
+            (args.activity_id,),
+        ).fetchone()
+        if not row:
+            raise KeyError(f"活动不存在: {args.activity_id}")
+        audit(
+            conn, actor_id(args), "activity.get", "issue_activity", str(args.activity_id), True,
+            f"issue_key={row['issue_key']}",
+        )
+    result = dict(row)
+    result["code_reference_json"] = loads(result["code_reference_json"], [])
+    result["metadata_json"] = loads(result["metadata_json"], {})
+    print_json(result)
+
 def watch_probe(args: argparse.Namespace) -> None:
     """Return the smallest watch state without producing read-audit traffic."""
     require_agent(args.agent)
@@ -2701,7 +2725,17 @@ def activity_list_recent(args: argparse.Namespace) -> None:
     if not 1 <= args.limit <= 1000:
         raise ValueError("limit 必须在 1 到 1000 之间")
     sql = """
-        SELECT a.*, i.issue_key, i.title AS issue_title, i.status AS issue_status, t.task_key
+        SELECT
+            a.id,
+            i.issue_key,
+            a.activity_type AS type,
+            a.attempt_no AS attempt,
+            COALESCE(a.amended_at, a.created_at) AS time,
+            CASE
+                WHEN length(trim(a.content)) > 160
+                    THEN substr(trim(replace(replace(replace(a.content, char(13), ' '), char(10), ' '), char(9), ' ')), 1, 157) || '...'
+                ELSE trim(replace(replace(replace(a.content, char(13), ' '), char(10), ' '), char(9), ' '))
+            END AS summary
         FROM issue_activity a
         JOIN review_issue i ON i.id = a.issue_id
         JOIN review_task t ON t.id = i.task_id
@@ -2722,13 +2756,7 @@ def activity_list_recent(args: argparse.Namespace) -> None:
     with connect() as conn:
         rows = conn.execute(sql, params).fetchall()
         audit(conn, actor_id(args), "activity.list-recent", "issue_activity", args.task_key, True, f"count={len(rows)}")
-    result = []
-    for row in rows:
-        item = dict(row)
-        item["code_reference_json"] = loads(item["code_reference_json"], [])
-        item["metadata_json"] = loads(item["metadata_json"], {})
-        result.append(item)
-    print_json(result)
+    print_json([dict(row) for row in rows])
 
 CANDIDATE_STATUSES = {"SUBMITTED", "UNDER_REVIEW", "ACCEPTED", "REJECTED"}
 CANDIDATE_TRANSITIONS = {
@@ -3135,6 +3163,10 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("activity-list")
     p.add_argument("--issue-key", required=True)
     p.set_defaults(func=activity_list)
+
+    p = sub.add_parser("activity-get")
+    p.add_argument("activity_id", type=int)
+    p.set_defaults(func=activity_get)
 
     p = sub.add_parser("watch-probe")
     p.add_argument(

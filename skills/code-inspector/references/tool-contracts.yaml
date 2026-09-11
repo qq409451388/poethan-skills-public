@@ -276,6 +276,11 @@ commands:
   activity-list:
     roles: [inspector, developer, human]
     required: [--issue-key]
+  activity-get:
+    roles: [inspector, developer, human]
+    required: [activity-id]
+    purpose: 按 id 读取单条活动的完整正文、metadata 和 code reference；只在精简列表中的活动需要进一步处理时调用。
+    returns: [完整 Activity 字段, issue_key, task_key]
   watch-probe:
     roles: [inspector, developer, human]
     purpose: Watcher 专用的最小只读状态探针；不写 agent_audit_log，不得用于正常上下文读取。
@@ -288,13 +293,16 @@ commands:
     output: 只返回目标状态或首个匹配的新 Activity，不返回 Issue、Stage 或 Activity 正文。
   activity-list-recent:
     roles: [inspector, developer, human]
-    purpose: 跨 issue 查询近期活动，避免逐条遍历 issue。
+    purpose: 跨 issue 查询近期活动摘要，避免逐条遍历 issue；需要正文或结构化证据时再调用 activity-get。
     optional: [--task-key, --activity-type, --since, --limit]
     defaults: {limit: 100}
     constraints: {limit: 1..1000, since: ISO-8601}
+    returns: [id, issue_key, type, attempt, time, summary]
+    excludes: [content, metadata, code_reference]
     examples:
       - activity-list-recent --task-key RT-TEST --activity-type VERIFICATION_PASSED
       - activity-list-recent --since 2026-07-22T09:00:00+08:00 --limit 200
+      - activity-get 123
   discussion-append:
     roles: [inspector, developer, human]
     required: [--issue-key, --content]

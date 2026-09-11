@@ -197,6 +197,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             self.assertIn("$code-inspector start insp", codex_skill_text)
             self.assertIn("references/core-workflow.md", codex_skill_text)
             self.assertIn("references/role-workflows.md", codex_skill_text)
+            self.assertIn("activity-get", codex_skill_text)
             self.assertIn("Issue、讨论、阶段提交、审核、验证和报告默认使用简明中文", codex_skill_text)
             self.assertIn("让测试人员和项目负责人", codex_skill_text)
             self.assertIn("新写代码注释默认用中文", codex_skill_text)
@@ -2532,6 +2533,65 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                     os.environ.pop("AGENT_REVIEW_DB", None)
                 else:
                     os.environ["AGENT_REVIEW_DB"] = old_db
+
+    def test_recent_activity_list_is_compact_and_activity_get_returns_full_record(self):
+        with tempfile.TemporaryDirectory() as temp:
+            home = Path(temp)
+            self.run_cmd(home, str(INSTALLER), "install")
+            workspace = home / "project"
+            workspace.mkdir()
+            db_tool = home / ".agent-review" / "bin" / "review-db.py"
+
+            def db(*command: str) -> dict | list:
+                return self.run_cmd(
+                    home, str(db_tool), "--agent", "inspector", "--operator-id", "codex-insp",
+                    *command, cwd=workspace,
+                )
+
+            db(
+                "task-create", "--task-key", "RT-ACTIVITY-COMPACT",
+                "--title", "活动精简查询", "--objective", "验证按需读取活动正文",
+            )
+            db("version-create", "--task-key", "RT-ACTIVITY-COMPACT", "--reason", "首次检查")
+            db(
+                "issue-create", "--task-key", "RT-ACTIVITY-COMPACT",
+                "--issue-key", "RI-ACTIVITY-COMPACT", "--title", "活动内容过长",
+                "--dimension", "code_quality", "--severity", "low",
+                "--remediation-benefit", "medium", "--remediation-cost", "low",
+                "--disposition", "current_iteration", "--confidence", "high",
+                "--description", "活动列表不应返回完整正文", "--facts", "正文很长",
+                "--rationale", "减少上下文消耗",
+            )
+            full_content = "第一行活动摘要\n" + "完整证据" * 100
+            code_reference = [{"file_path": "src/Example.java", "line_start": 12}]
+            metadata = {"tests": ["ExampleTest"]}
+            db(
+                "activity-append", "--issue-key", "RI-ACTIVITY-COMPACT",
+                "--activity-type", "EVIDENCE_ADDED", "--content", full_content,
+                "--code-reference", json.dumps(code_reference),
+                "--metadata", json.dumps(metadata),
+            )
+
+            recent = db(
+                "activity-list-recent", "--task-key", "RT-ACTIVITY-COMPACT",
+                "--activity-type", "EVIDENCE_ADDED",
+            )
+            self.assertEqual(len(recent), 1)
+            self.assertEqual(
+                set(recent[0]), {"id", "issue_key", "type", "attempt", "time", "summary"},
+            )
+            self.assertEqual(recent[0]["issue_key"], "RI-ACTIVITY-COMPACT")
+            self.assertEqual(recent[0]["type"], "EVIDENCE_ADDED")
+            self.assertNotIn("\n", recent[0]["summary"])
+            self.assertLessEqual(len(recent[0]["summary"]), 160)
+            self.assertTrue(recent[0]["summary"].endswith("..."))
+
+            activity = db("activity-get", str(recent[0]["id"]))
+            self.assertEqual(activity["content"], full_content)
+            self.assertEqual(activity["code_reference_json"], code_reference)
+            self.assertEqual(activity["metadata_json"], metadata)
+            self.assertEqual(activity["issue_key"], "RI-ACTIVITY-COMPACT")
+            self.assertEqual(activity["task_key"], "RT-ACTIVITY-COMPACT")
 
 
 if __name__ == "__main__":
