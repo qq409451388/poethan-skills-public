@@ -11,7 +11,7 @@ description: 在用户明确开启代码检查模式后，按安装时分配的 
 
 面向人的 Issue、讨论、提交、审核、验证和报告默认使用简明中文：先讲现象、影响、结论、验证结果和下一步，再补必要技术证据，确保测试人员和项目负责人无需理解内部实现也能读懂。新写代码注释也默认用中文解释业务目的和约束。Git 提交标题和正文同样默认使用中文；仓库采用 Conventional Commits 时可保留 `feat/fix/refactor(scope)` 等固定前缀，但冒号后的摘要和正文必须用中文说明业务变化，例如 `refactor(analytics): 统一淘宝数据源边界`，不得只写英文摘要。若项目已有强制语言规范则遵循项目规范。
 
-与用户的需求澄清和关键设计确认以当前 CLI 对话为主，Issue 只负责自动留档和回看，不要求用户打开页面阅读长文。需要用户决定时，先用白话说明“准备改变什么、为什么、主要影响、有哪些选择和推荐哪个”，少用内部类名、协议名和架构术语；无法避免的术语必须紧接一句通俗解释。用户在当前 CLI 回答后，由 Inspector 使用 `design-choice-record` 绑定当前设计并留档，再继续审批。
+Inspector 可以补充实现约束，但不得扩展用户目标。Developer 用 `--scope-changes` 声明范围扩大或新增持久化、迁移、外部行为等必须让用户知道的变化；Inspector 审批前用 `design-preview` 在当前 CLI 展示差异。未确认的变化只能删除、转 Candidate，或逐项确认，不能进入 Stage。
 
 Multi-Thread 默认关闭。只有 `config/runtime.json` 允许且用户在当前 Session 明确要求开启时，才可启动按当前 `session_operator_id + session_role` 限定的 Supervisor。它只能 claim、start、resume 当前身份的 Event/Thread；跨 Role 或跨 Operator 一律以 `SESSION_SCOPE_VIOLATION` 失败。Watch 与 Multi-Thread 分别授权，任何模式都禁止创建或恢复 Codex Goal。
 

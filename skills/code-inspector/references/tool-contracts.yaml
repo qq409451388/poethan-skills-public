@@ -1,4 +1,4 @@
-version: 4.0.0
+version: 4.1.0
 
 command: review-db.py
 identity:
@@ -121,25 +121,32 @@ commands:
   design-submit:
     roles: [developer, human]
     purpose: 原子追加 DESIGN_SUBMITTED 并将问题转为 DESIGN_PENDING_REVIEW。
-    required: [--issue-key, --summary, --content]
+    required: [--issue-key, --summary, --content, --scope-changes（Developer）]
     optional: [--code-reference, --metadata]
-    json_arguments: [--code-reference, --metadata]
+    json_arguments: [--scope-changes, --code-reference, --metadata]
     allowed_from: [DESIGN_REQUIRED, REDESIGN_REQUIRED]
     attempt_effect: none
     summary_rule: --summary 用 1 至 3 句日常中文说明改哪里、大概怎么改、有什么影响；最多 180 字，不写代码块。完整技术方案继续放 --content。
+    scope_changes_schema: [{id: SC-简短标识, summary: 白话描述, impacts: [影响类型]}]
+    scope_rule: 声明范围扩大或新增持久化、迁移、外部行为等需确认变化；没有则传 []。旁支问题不得偷偷并入当前方案。
+  design-preview:
+    roles: [inspector, developer, human]
+    required: [--issue-key, --design-activity-id]
+    returns: [user_goal, design_summary, scope_changes, approval_ready]
+    note: Inspector 审批前必须把该短对比展示在当前 CLI；不返回完整设计正文。
   design-review:
     roles: [inspector, human]
     purpose: 绑定当前设计提交并原子记录审核结论；staged 批准同时创建并激活 Stage Plan。
     required: [--issue-key, --decision, --design-activity-id, --content]
-    conditional_required: {approved: [--execution-mode, --confirmation], staged: [--stages（无升级前 active plan 时）], confirmation_recorded: [--confirmation-id]}
+    conditional_required: {approved: [--execution-mode, --confirmation], staged: [--stages（无升级前 active plan 时）], confirmation_recorded: [--confirmation-ids]}
     enum: {decision: [approved, rejected]}
     enum_execution_mode: [direct, staged]
     enum_confirmation: [not-needed, recorded]
     allowed_from: [DESIGN_PENDING_REVIEW]
     constraints:
       - design-activity-id 必须属于当前 Issue 最新的 DESIGN_SUBMITTED
-      - recorded 必须绑定当前设计有效且未因设计修订而失效的 CLI 确认记录
-      - not-needed 只用于明确 Bug、唯一合理实现、普通代码细节或用户已明确允许的变化
+      - recorded 必须完整覆盖当前设计的全部 scope change id
+      - not-needed 仅允许 scope_changes 为空
       - direct 禁止 active plan 和 --stages
       - staged 原子创建 Stage Plan；升级前已有 active plan 时复用且禁止重复传 --stages
     effects:
@@ -149,11 +156,12 @@ commands:
   design-choice-record:
     roles: [inspector]
     purpose: 用户在当前 Inspector CLI 回答后，把白话问题、原回答和最终决定绑定到当前设计；Issue 仅作回看记录。
-    required: [--issue-key, --design-activity-id, --question, --answer, --summary, --impacts]
-    json_arguments: [--impacts]
+    required: [--issue-key, --design-activity-id, --question, --answer, --summary, --impacts, --change-ids]
+    json_arguments: [--impacts, --change-ids]
     impact_values: [new_persistence, data_migration, external_behavior, new_dependency, scope_expansion, multiple_solutions]
     constraints:
       - 只能绑定当前 Issue 最新的 DESIGN_SUBMITTED，且状态必须为 DESIGN_PENDING_REVIEW
+      - change-ids 必须来自当前设计的 scope_changes，impacts 必须与这些变化完全一致
       - question 和 summary 不超过 300 字，必须使用用户能直接理解的日常中文
       - 不能要求用户打开 Web、阅读 Issue 或理解未解释的技术术语
       - 设计提交在确认后修订时，确认自动失效

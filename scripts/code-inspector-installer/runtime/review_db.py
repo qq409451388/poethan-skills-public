@@ -1296,7 +1296,10 @@ def design_submit(args: argparse.Namespace) -> None:
         raise ValueError("code-reference 必须是 JSON 数组")
     if not isinstance(metadata, dict):
         raise ValueError("metadata 必须是 JSON 对象")
-    metadata = {**metadata, "human_summary": human_summary}
+    if args.scope_changes is None and args.agent == "developer":
+        raise ValueError("Developer 提交设计必须通过 --scope-changes 明确声明需确认变化；没有则传 []")
+    scope_changes = validate_scope_changes(args.scope_changes or "[]")
+    metadata = {**metadata, "human_summary": human_summary, "scope_changes": scope_changes}
     with connect() as conn:
         result = apply_design_transition(
             conn, args, allowed_agents={"developer", "human"},
@@ -1310,7 +1313,7 @@ def current_design_submission(
     conn: sqlite3.Connection, issue_id: int, design_activity_id: int,
 ) -> sqlite3.Row:
     submission = conn.execute(
-        """SELECT id, issue_id, activity_type, attempt_no, created_at, amended_at
+        """SELECT id, issue_id, activity_type, attempt_no, created_at, amended_at, metadata_json
            FROM issue_activity WHERE id = ?""",
         (design_activity_id,),
     ).fetchone()
@@ -1334,6 +1337,73 @@ MATERIAL_DESIGN_IMPACTS = {
     "scope_expansion",
     "multiple_solutions",
 }
+
+def validate_scope_changes(raw: str) -> list[dict[str, Any]]:
+    """校验设计主动声明的需确认变化，供 CLI 预览和审批门禁复用。"""
+    try:
+        changes = json.loads(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("scope-changes 必须是 JSON 数组") from exc
+    if not isinstance(changes, list):
+        raise ValueError("scope-changes 必须是 JSON 数组")
+    if len(changes) > 10:
+        raise ValueError("scope-changes 最多包含 10 项；请把无关问题拆成独立 Issue")
+    prepared: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in changes:
+        if not isinstance(item, dict) or set(item) != {"id", "summary", "impacts"}:
+            raise ValueError("每项 scope change 必须且只能包含 id、summary、impacts")
+        change_id = str(item["id"] or "").strip()
+        summary = validate_human_record(item["summary"], f"scope change {change_id or '<empty>'} 的 summary")
+        impacts = item["impacts"]
+        if not re.fullmatch(r"SC-[A-Z0-9][A-Z0-9_-]{0,27}", change_id):
+            raise ValueError("scope change id 必须使用 SC- 开头的简短大写标识")
+        if change_id in seen:
+            raise ValueError(f"scope change id 不能重复: {change_id}")
+        if not isinstance(impacts, list) or not impacts:
+            raise ValueError(f"scope change {change_id} 的 impacts 必须是非空数组")
+        unknown = sorted(set(impacts) - MATERIAL_DESIGN_IMPACTS)
+        if unknown:
+            raise ValueError(f"scope change {change_id} 包含未知影响类型: {', '.join(unknown)}")
+        if len(impacts) != len(set(impacts)):
+            raise ValueError(f"scope change {change_id} 的 impacts 不能重复")
+        seen.add(change_id)
+        prepared.append({"id": change_id, "summary": summary, "impacts": impacts})
+    return prepared
+
+
+def submission_scope_changes(submission: sqlite3.Row) -> list[dict[str, Any]]:
+    metadata = loads(submission["metadata_json"], {})
+    return validate_scope_changes(dumps(metadata.get("scope_changes", [])))
+
+
+def parse_change_ids(raw: str | None, field: str) -> list[str]:
+    try:
+        values = json.loads(raw or "[]")
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field} 必须是 JSON 数组") from exc
+    if not isinstance(values, list) or any(not isinstance(value, str) or not value.strip() for value in values):
+        raise ValueError(f"{field} 必须是非空字符串组成的 JSON 数组")
+    normalized = [value.strip() for value in values]
+    if len(normalized) != len(set(normalized)):
+        raise ValueError(f"{field} 不能重复")
+    return normalized
+
+
+def parse_confirmation_ids(raw: str | None) -> list[int]:
+    try:
+        values = json.loads(raw or "[]")
+    except (TypeError, ValueError) as exc:
+        raise ValueError("confirmation-ids 必须是 JSON 数组") from exc
+    if not isinstance(values, list) or any(isinstance(value, bool) for value in values):
+        raise ValueError("confirmation-ids 必须是整数 ID 组成的 JSON 数组")
+    try:
+        normalized = [int(value) for value in values]
+    except (TypeError, ValueError) as exc:
+        raise ValueError("confirmation-ids 必须是整数 ID 组成的 JSON 数组") from exc
+    if any(value <= 0 for value in normalized) or len(normalized) != len(set(normalized)):
+        raise ValueError("confirmation-ids 必须是互不重复的正整数")
+    return normalized
 
 def design_choice_record(args: argparse.Namespace) -> None:
     """记录用户在 Inspector CLI 中对当前设计做出的简短选择。"""
@@ -1360,15 +1430,29 @@ def design_choice_record(args: argparse.Namespace) -> None:
     with connect() as conn:
         issue = issue_row(conn, args.issue_key)
         submission = current_design_submission(conn, issue["id"], args.design_activity_id)
+        changes = submission_scope_changes(submission)
+        change_ids = parse_change_ids(args.change_ids, "change-ids")
+        known_ids = {item["id"] for item in changes}
+        if not change_ids:
+            raise ValueError("design-choice-record 必须通过 --change-ids 指明本次确认覆盖的变化")
+        unknown_change_ids = sorted(set(change_ids) - known_ids)
+        if unknown_change_ids:
+            raise ValueError(f"确认引用了设计中不存在的变化: {', '.join(unknown_change_ids)}")
+        declared_impacts = {
+            impact for item in changes if item["id"] in change_ids for impact in item["impacts"]
+        }
+        if set(impacts) != declared_impacts:
+            raise ValueError("impacts 必须与 change-ids 对应范围变化的影响类型完全一致")
         if issue["status"] != "DESIGN_PENDING_REVIEW":
             raise RuntimeError("只能为 DESIGN_PENDING_REVIEW 的当前设计记录用户选择")
         decision_id = record_issue_decision(
             conn, args, issue, "CLI_DESIGN_CONFIRMATION", "CONFIRMED", summary,
-            scope_key=f"design:{args.design_activity_id}",
+            scope_key=f"design:{args.design_activity_id}:{','.join(sorted(change_ids))}",
             metadata={
                 "question": question,
                 "answer": answer,
                 "impacts": impacts,
+                "change_ids": change_ids,
                 "source": "inspector_cli",
                 "design_activity_id": args.design_activity_id,
                 "design_amended_at": submission["amended_at"],
@@ -1392,33 +1476,86 @@ def validate_design_confirmation(
     submission: sqlite3.Row,
     confirmation: str | None,
     confirmation_id: int | None,
-) -> int | None:
+    confirmation_ids_raw: str | None,
+) -> list[int]:
+    scope_changes = submission_scope_changes(submission)
+    required_change_ids = {item["id"] for item in scope_changes}
     if confirmation not in {"not-needed", "recorded"}:
         raise ValueError("批准设计必须通过 --confirmation 明确选择 not-needed 或 recorded")
     if confirmation == "not-needed":
-        if confirmation_id is not None:
-            raise ValueError("confirmation=not-needed 时不得传入 --confirmation-id")
-        return None
-    if confirmation_id is None:
-        raise ValueError("confirmation=recorded 时必须传入 --confirmation-id")
-    decision = conn.execute(
-        """SELECT id, source_activity_id, outcome, effective, created_at, metadata_json
-           FROM issue_decision
-           WHERE id = ? AND issue_id = ? AND decision_type = 'CLI_DESIGN_CONFIRMATION'""",
-        (confirmation_id, issue["id"]),
-    ).fetchone()
-    if not decision or not decision["effective"] or decision["outcome"] != "CONFIRMED":
-        raise RuntimeError("confirmation-id 必须是当前 Issue 有效的 CLI 设计确认记录")
-    metadata = loads(decision["metadata_json"], {})
-    if metadata.get("design_activity_id") != submission["id"]:
-        raise RuntimeError("CLI 设计确认必须绑定当前最新的 DESIGN_SUBMITTED")
-    if submission["amended_at"] and decision["created_at"] < submission["amended_at"]:
-        raise RuntimeError("设计在 CLI 确认后已被修改，需要重新向用户确认")
-    if metadata.get("design_amended_at") != submission["amended_at"]:
-        raise RuntimeError("CLI 设计确认与当前设计版本不一致，需要重新确认")
-    return int(decision["id"])
+        if confirmation_id is not None or confirmation_ids_raw is not None:
+            raise ValueError("confirmation=not-needed 时不得传入 confirmation id")
+        if required_change_ids:
+            raise RuntimeError("设计存在需确认变化，必须先在 CLI 展示并逐项确认")
+        return []
+    confirmation_ids = parse_confirmation_ids(confirmation_ids_raw)
+    if confirmation_id is not None:
+        confirmation_ids.append(confirmation_id)
+    if not confirmation_ids:
+        raise ValueError("confirmation=recorded 时必须传入 --confirmation-ids")
+    if len(confirmation_ids) != len(set(confirmation_ids)):
+        raise ValueError("confirmation ids 不能重复")
+    covered: set[str] = set()
+    resolved_ids: list[int] = []
+    for decision_id in confirmation_ids:
+        decision = conn.execute(
+            """SELECT id, outcome, effective, created_at, metadata_json
+               FROM issue_decision
+               WHERE id = ? AND issue_id = ? AND decision_type = 'CLI_DESIGN_CONFIRMATION'""",
+            (decision_id, issue["id"]),
+        ).fetchone()
+        if not decision or not decision["effective"] or decision["outcome"] != "CONFIRMED":
+            raise RuntimeError(f"确认记录 {decision_id} 不是当前 Issue 的有效 CLI 设计确认")
+        metadata = loads(decision["metadata_json"], {})
+        if metadata.get("design_activity_id") != submission["id"]:
+            raise RuntimeError(f"确认记录 {decision_id} 未绑定当前最新设计")
+        if submission["amended_at"] and decision["created_at"] < submission["amended_at"]:
+            raise RuntimeError("设计在 CLI 确认后已被修改，需要重新向用户确认")
+        if metadata.get("design_amended_at") != submission["amended_at"]:
+            raise RuntimeError("CLI 设计确认与当前设计版本不一致，需要重新确认")
+        covered.update(metadata.get("change_ids", []))
+        resolved_ids.append(decision_id)
+    missing = sorted(required_change_ids - covered)
+    if missing:
+        raise RuntimeError(f"以下设计变化尚未获得 CLI 确认: {', '.join(missing)}")
+    return resolved_ids
 
-def prepare_stage_definitions(raw_stages: str) -> list[dict[str, Any]]:
+def design_preview(args: argparse.Namespace) -> None:
+    """返回给当前 CLI 展示的短范围对比，不展开完整设计正文。"""
+    require_agent(args.agent)
+    with connect() as conn:
+        issue = issue_row(conn, args.issue_key)
+        issue_content = conn.execute(
+            "SELECT summary, description FROM review_issue WHERE id = ?", (issue["id"],),
+        ).fetchone()
+        submission = current_design_submission(conn, issue["id"], args.design_activity_id)
+        metadata = loads(submission["metadata_json"], {})
+        confirmations = conn.execute(
+            """SELECT id, metadata_json FROM issue_decision
+               WHERE issue_id = ? AND decision_type = 'CLI_DESIGN_CONFIRMATION'
+                 AND effective = 1 AND outcome = 'CONFIRMED'""",
+            (issue["id"],),
+        ).fetchall()
+        covered: set[str] = set()
+        for decision in confirmations:
+            decision_metadata = loads(decision["metadata_json"], {})
+            if decision_metadata.get("design_activity_id") == submission["id"]:
+                covered.update(decision_metadata.get("change_ids", []))
+        changes = submission_scope_changes(submission)
+    print_json({
+        "issue_key": args.issue_key,
+        "user_goal": issue_content["summary"] or issue_content["description"],
+        "design_summary": metadata.get("human_summary", ""),
+        "scope_changes": [
+            {**item, "confirmed": item["id"] in covered} for item in changes
+        ],
+        "approval_ready": all(item["id"] in covered for item in changes),
+    })
+
+
+def prepare_stage_definitions(
+    raw_stages: str, known_scope_change_ids: set[str] | None = None,
+) -> list[dict[str, Any]]:
     stages = json.loads(raw_stages)
     if not isinstance(stages, list) or not stages:
         raise ValueError("stages 必须是非空 JSON 数组")
@@ -1426,7 +1563,9 @@ def prepare_stage_definitions(raw_stages: str) -> list[dict[str, Any]]:
     for item in stages:
         if not isinstance(item, dict):
             raise ValueError("每个 Stage 必须是 JSON 对象")
-        unknown = sorted(set(item) - {"stage_no", "title", "objective", "acceptance_criteria"})
+        unknown = sorted(set(item) - {
+            "stage_no", "title", "objective", "acceptance_criteria", "scope_change_ids",
+        })
         if unknown:
             raise ValueError(f"未知 Stage 字段: {', '.join(unknown)}")
         try:
@@ -1436,15 +1575,30 @@ def prepare_stage_definitions(raw_stages: str) -> list[dict[str, Any]]:
         title = str(item.get("title") or "").strip()
         objective = str(item.get("objective") or "").strip()
         acceptance = normalized_acceptance_criteria(item.get("acceptance_criteria"))
+        scope_change_ids = item.get("scope_change_ids", [])
+        if not isinstance(scope_change_ids, list) or any(
+            not isinstance(value, str) or not value.strip() for value in scope_change_ids
+        ):
+            raise ValueError("scope_change_ids 必须是字符串组成的 JSON 数组")
+        scope_change_ids = [value.strip() for value in scope_change_ids]
+        if len(scope_change_ids) != len(set(scope_change_ids)):
+            raise ValueError(f"Stage {stage_no} 的 scope_change_ids 不能重复")
+        unknown_scope_changes = sorted(set(scope_change_ids) - (known_scope_change_ids or set()))
+        if unknown_scope_changes:
+            raise ValueError(f"Stage {stage_no} 引用了未知设计变化: {', '.join(unknown_scope_changes)}")
         if stage_no < 1 or not title or not objective or not acceptance:
             raise ValueError("每个 Stage 都必须包含正整数 stage_no、title、objective、acceptance_criteria")
         prepared.append({
             "stage_no": stage_no, "title": title, "objective": objective,
-            "acceptance_criteria": acceptance,
+            "acceptance_criteria": acceptance, "scope_change_ids": scope_change_ids,
         })
     prepared.sort(key=lambda item: item["stage_no"])
     if [item["stage_no"] for item in prepared] != list(range(1, len(prepared) + 1)):
         raise ValueError("stage_no 必须从 1 开始连续递增且不能重复")
+    assigned = {change_id for item in prepared for change_id in item["scope_change_ids"]}
+    missing = sorted((known_scope_change_ids or set()) - assigned)
+    if missing:
+        raise ValueError(f"需确认变化必须明确归属 Stage: {', '.join(missing)}")
     return prepared
 
 def create_stage_plan(
@@ -1491,9 +1645,7 @@ def design_review(args: argparse.Namespace) -> None:
         plan_no = active_stage_plan_no(conn, row["id"])
         execution_mode = args.execution_mode
         if args.decision == "approved":
-            confirmation_id = validate_design_confirmation(
-                conn, row, submission, args.confirmation, args.confirmation_id,
-            )
+            scope_change_ids = {item["id"] for item in submission_scope_changes(submission)}
             if execution_mode not in {"direct", "staged"}:
                 raise ValueError("批准设计必须通过 --execution-mode 明确选择 direct 或 staged")
             if execution_mode == "direct":
@@ -1502,12 +1654,20 @@ def design_review(args: argparse.Namespace) -> None:
                 if args.stages is not None:
                     raise ValueError("direct 模式不得传入 --stages")
             else:
-                if plan_no is None:
-                    if args.stages is None:
-                        raise ValueError("staged 模式必须通过 --stages 提交非空 Stage 定义")
-                    plan_no = create_stage_plan(conn, args, row, prepare_stage_definitions(args.stages))
-                elif args.stages is not None:
+                if plan_no is None and args.stages is None:
+                    raise ValueError("staged 模式必须通过 --stages 提交非空 Stage 定义")
+                if plan_no is not None and args.stages is not None:
                     raise RuntimeError("当前已有 Stage Plan；兼容旧计划时不得重复传入 --stages")
+            confirmation_ids = validate_design_confirmation(
+                conn, row, submission, args.confirmation, args.confirmation_id,
+                args.confirmation_ids,
+            )
+            if execution_mode == "staged":
+                if plan_no is None:
+                    plan_no = create_stage_plan(
+                        conn, args, row,
+                        prepare_stage_definitions(args.stages, scope_change_ids),
+                    )
         result = apply_design_transition(
             conn, args, allowed_agents={"inspector", "human"},
             allowed_sources={"DESIGN_PENDING_REVIEW"}, target_status=target_status,
@@ -1538,7 +1698,8 @@ def design_review(args: argparse.Namespace) -> None:
         "execution_mode": execution_mode if args.decision == "approved" else None,
         "plan_no": plan_no if args.decision == "approved" else None,
         "confirmation": args.confirmation if args.decision == "approved" else None,
-        "confirmation_id": confirmation_id if args.decision == "approved" else None,
+        "confirmation_ids": confirmation_ids if args.decision == "approved" else [],
+        "confirmation_id": confirmation_ids[0] if args.decision == "approved" and len(confirmation_ids) == 1 else None,
     })
 
 def normalized_acceptance_criteria(value: Any) -> str:
@@ -3013,6 +3174,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--issue-key", required=True)
     p.add_argument("--summary", required=True)
     p.add_argument("--content", required=True)
+    p.add_argument("--scope-changes", help="JSON array；Developer 必填，没有范围外变化时传 []")
     p.add_argument("--code-reference", default="[]")
     p.add_argument("--metadata", default="{}")
     p.set_defaults(func=design_submit)
@@ -3024,6 +3186,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--execution-mode", choices=["direct", "staged"])
     p.add_argument("--confirmation", choices=["not-needed", "recorded"])
     p.add_argument("--confirmation-id", type=int)
+    p.add_argument("--confirmation-ids", help="JSON array of CLI confirmation decision ids")
     p.add_argument("--stages", help="staged 批准时使用的 JSON Stage 定义；已有旧计划时省略")
     p.add_argument("--content", required=True)
     p.set_defaults(func=design_review)
@@ -3035,7 +3198,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--answer", required=True)
     p.add_argument("--summary", required=True)
     p.add_argument("--impacts", required=True, help="JSON array of material design impact types")
+    p.add_argument("--change-ids", required=True, help="JSON array of scope change ids covered by this answer")
     p.set_defaults(func=design_choice_record)
+
+    p = sub.add_parser("design-preview")
+    p.add_argument("--issue-key", required=True)
+    p.add_argument("--design-activity-id", required=True, type=int)
+    p.set_defaults(func=design_preview)
 
     p = sub.add_parser("stage-list")
     p.add_argument("--issue-key", required=True)

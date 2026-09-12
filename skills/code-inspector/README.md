@@ -33,9 +33,7 @@ python scripts/code-inspector-installer/install.py install
 python scripts/code-inspector-installer/install.py verify
 ```
 
-支持 macOS、Linux 和 Windows。安装器会优先使用软链接，使仓库更新立即生效；如果
-Windows 未启用开发者模式或当前用户无创建软链接权限，则自动复制对应文件或目录，
-无需管理员权限。
+支持 macOS、Linux 和 Windows。安装器先把完整内容复制到目标目录旁的临时路径，准备完成后再替换旧版本；失败时恢复旧版本。Agent 目录不使用软链接，仓库中的半成品修改不会立即影响正在使用的 Skill。
 
 安装器会创建：
 
@@ -43,11 +41,11 @@ Windows 未启用开发者模式或当前用户无创建软链接权限，则自
 ~/.codex/skills/code-inspector/       # 为 Codex 生成的角色 Skill
 ~/.trae-cn/skills/code-inspector/     # 为 Trae-CN 生成的角色 Skill
 
-以上目录中的 references/ 链接或复制自：
+以上目录中的 references/ 复制自：
 <repository>/skills/code-inspector/references
 
 ~/.agent-review/bin/review-db.py
-  -> 链接或复制自 <repository>/scripts/code-inspector-installer/runtime/review_db.py
+  -> 复制自 <repository>/scripts/code-inspector-installer/runtime/review_db.py
 ```
 
 运行数据位于 `~/.agent-review/`，包括数据库、日志、导出内容和安装后的有效配置；这些数据不进入 Git。
@@ -66,7 +64,7 @@ references/thread-runtime.md
 config/runtime.json
 ```
 
-使用软链接的安装环境修改这些 reference 后立即生效；软链接不可用而回退为复制的环境需要重新执行安装，但不再需要同步修改安装器中的 Skill 文案。
+修改这些源文件后重新执行安装，安装器会一次性替换 Agent 使用的完整副本，不需要同步修改生成器中的 Skill 文案。
 
 如果目标路径已有旧版普通文件，安装器会拒绝覆盖。确认该目录是旧安装器内容后可使用：
 
@@ -145,7 +143,7 @@ Human 使用 `human-confirmation-resolve` 记录业务边界或风险决定，�
 
 ## Git 更新后的行为
 
-参考规则和数据库工具优先通过软链接安装，因此执行 `git pull` 后，链接安装的内容会立即更新。Windows 因权限限制回退为复制时，拉取更新后需要重新执行 `install`；如果源文件已经变化，使用 `--force install`。平台目录中的 `SKILL.md` 是根据角色配置生成的固化入口，不是软链接。
+执行 `git pull` 或修改本地源文件不会直接改变 Agent 当前使用的版本。验证源码后执行 `python3 scripts/code-inspector-installer/install.py --force install`，安装器才会复制并替换平台目录中的完整 Skill 和运行工具。
 
 ## 多 Issue Runtime
 

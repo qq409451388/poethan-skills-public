@@ -43,7 +43,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             text=True, capture_output=True,
         )
 
-    def test_symlink_failure_falls_back_to_copy(self):
+    def test_install_path_uses_copy_and_replaces_atomically(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             source_file = root / "source.py"
@@ -52,11 +52,10 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             source_dir.mkdir()
             (source_dir / "rule.yaml").write_text("enabled: true\n", encoding="utf-8")
 
-            with mock.patch.object(Path, "symlink_to", side_effect=OSError("symlink denied")):
-                copied_file = root / "targets" / "tool.py"
-                copied_dir = root / "targets" / "references"
-                INSTALLER_MODULE.create_skill_link(source_file, copied_file, force=False)
-                INSTALLER_MODULE.create_skill_link(source_dir, copied_dir, force=False)
+            copied_file = root / "targets" / "tool.py"
+            copied_dir = root / "targets" / "references"
+            INSTALLER_MODULE.atomic_copy_path(source_file, copied_file, force=False)
+            INSTALLER_MODULE.atomic_copy_path(source_dir, copied_dir, force=False)
 
             self.assertFalse(copied_file.is_symlink())
             self.assertEqual(copied_file.read_text(encoding="utf-8"), "print('copied')\n")
@@ -65,6 +64,10 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 (copied_dir / "rule.yaml").read_text(encoding="utf-8"),
                 "enabled: true\n",
             )
+            source_file.write_text("print('updated')\n", encoding="utf-8")
+            INSTALLER_MODULE.atomic_copy_path(source_file, copied_file, force=True)
+            self.assertEqual(copied_file.read_text(encoding="utf-8"), "print('updated')\n")
+            self.assertFalse(any(path.name.startswith(".tool.py.") for path in copied_file.parent.iterdir()))
 
     def test_home_placeholder_uses_platform_home_directory(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -95,21 +98,22 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 json.dumps(runtime_config), encoding="utf-8",
             )
 
-            with mock.patch.object(Path, "symlink_to", side_effect=OSError("symlink denied")):
-                INSTALLER_MODULE.link_runtime(review_home, skill_config, force=False, skill_source=source)
-                INSTALLER_MODULE.install_role_skills(
-                    tools_config,
-                    skill_config,
-                    source,
-                    review_home,
-                    force=False,
-                )
+            INSTALLER_MODULE.link_runtime(review_home, skill_config, force=False, skill_source=source)
+            INSTALLER_MODULE.install_role_skills(
+                tools_config,
+                skill_config,
+                source,
+                review_home,
+                force=False,
+            )
 
             copied_tool = (
                 root / ".codex" / "skills" / "code-inspector"
                 / "tools" / "review-db-codex-dev.py"
             )
             self.assertFalse(copied_tool.is_symlink())
+            installed_skill = root / ".codex" / "skills" / "code-inspector"
+            self.assertFalse(any(path.is_symlink() for path in installed_skill.rglob("*")))
             result = subprocess.run(
                 [sys.executable, str(copied_tool), "task-list"],
                 cwd=root,
@@ -1133,6 +1137,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 "developer", "design-submit", "--issue-key", "RI-DESIGN",
                 "--summary", "调整版本保存方式，同时保证旧数据仍可读取。",
                 "--content", "按 Domain 拆分版本并兼容历史",
+                "--scope-changes", "[]",
                 "--code-reference", json.dumps([{"file_path": "writer.py", "line_start": 20}]),
                 "--metadata", json.dumps({"tests": ["backfill", "concurrency"]}),
             )
@@ -1175,7 +1180,20 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 "developer", "design-submit", "--issue-key", "RI-DESIGN",
                 "--summary", "补充旧版本数据的读取兼容，不改变现有新数据流程。",
                 "--content", "补充 legacy fallback",
+                "--scope-changes", json.dumps([{
+                    "id": "SC-PROGRESS", "summary": "新增一张表保存同步进度。",
+                    "impacts": ["new_persistence"],
+                }, {
+                    "id": "SC-ROLLOUT", "summary": "改为分两次发布。",
+                    "impacts": ["external_behavior"],
+                }], ensure_ascii=False),
             )
+            preview = db(
+                "inspector", "design-preview", "--issue-key", "RI-DESIGN",
+                "--design-activity-id", str(resubmitted["activity_id"]),
+            )
+            self.assertEqual(preview["scope_changes"][0]["id"], "SC-PROGRESS")
+            self.assertFalse(preview["approval_ready"])
             stale_design = fails(
                 "inspector", "design-review", "--issue-key", "RI-DESIGN", "--decision", "approved",
                 "--design-activity-id", str(submitted["activity_id"]), "--execution-mode", "direct",
@@ -1194,6 +1212,12 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 "--content", "没有声明是否需要用户确认",
             )
             self.assertIn("--confirmation", missing_confirmation.stderr)
+            uncovered_change = fails(
+                "inspector", "design-review", "--issue-key", "RI-DESIGN", "--decision", "approved",
+                "--design-activity-id", str(resubmitted["activity_id"]), "--execution-mode", "direct",
+                "--confirmation", "not-needed", "--content", "错误跳过范围确认",
+            )
+            self.assertIn("需确认变化", uncovered_change.stderr)
             first_choice = db(
                 "inspector", "design-choice-record", "--issue-key", "RI-DESIGN",
                 "--design-activity-id", str(resubmitted["activity_id"]),
@@ -1201,6 +1225,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 "--answer", "可以。",
                 "--summary", "允许新增同步进度表。",
                 "--impacts", json.dumps(["new_persistence"], ensure_ascii=False),
+                "--change-ids", json.dumps(["SC-PROGRESS"]),
             )
             choice = db(
                 "inspector", "design-choice-record", "--issue-key", "RI-DESIGN",
@@ -1209,6 +1234,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 "--answer", "是，只保存控制信息。",
                 "--summary", "允许新增同步进度表，但只保存控制信息。",
                 "--impacts", json.dumps(["new_persistence"], ensure_ascii=False),
+                "--change-ids", json.dumps(["SC-PROGRESS"]),
             )
             self.assertEqual(choice["summary"], "允许新增同步进度表，但只保存控制信息。")
             choices = db(
@@ -1218,13 +1244,56 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             self.assertEqual([item["effective"] for item in cli_choices], [0, 1])
             self.assertEqual(cli_choices[0]["superseded_by_id"], choice["decision_id"])
             self.assertNotEqual(first_choice["decision_id"], choice["decision_id"])
-            approved = db(
+            preview = db(
+                "inspector", "design-preview", "--issue-key", "RI-DESIGN",
+                "--design-activity-id", str(resubmitted["activity_id"]),
+            )
+            self.assertFalse(preview["approval_ready"])
+            partial_confirmation = fails(
                 "inspector", "design-review", "--issue-key", "RI-DESIGN", "--decision", "approved",
                 "--design-activity-id", str(resubmitted["activity_id"]), "--execution-mode", "direct",
                 "--confirmation", "recorded", "--confirmation-id", str(choice["decision_id"]),
+                "--content", "错误地用一个确认覆盖全部设计",
+            )
+            self.assertIn("SC-ROLLOUT", partial_confirmation.stderr)
+            rollout_choice = db(
+                "inspector", "design-choice-record", "--issue-key", "RI-DESIGN",
+                "--design-activity-id", str(resubmitted["activity_id"]),
+                "--question", "是否接受分两次发布？", "--answer", "接受。",
+                "--summary", "采用两次发布。",
+                "--impacts", json.dumps(["external_behavior"]),
+                "--change-ids", json.dumps(["SC-ROLLOUT"]),
+            )
+            preview = db(
+                "inspector", "design-preview", "--issue-key", "RI-DESIGN",
+                "--design-activity-id", str(resubmitted["activity_id"]),
+            )
+            self.assertTrue(preview["approval_ready"])
+            unmapped_stage = fails(
+                "inspector", "design-review", "--issue-key", "RI-DESIGN", "--decision", "approved",
+                "--design-activity-id", str(resubmitted["activity_id"]), "--execution-mode", "staged",
+                "--confirmation", "recorded", "--confirmation-ids", json.dumps([
+                    choice["decision_id"], rollout_choice["decision_id"],
+                ]),
+                "--stages", json.dumps([{
+                    "stage_no": 1, "title": "兼容", "objective": "实现兼容",
+                    "acceptance_criteria": ["验证通过"],
+                }], ensure_ascii=False),
+                "--content", "错误遗漏变化归属",
+            )
+            self.assertIn("必须明确归属 Stage", unmapped_stage.stderr)
+            approved = db(
+                "inspector", "design-review", "--issue-key", "RI-DESIGN", "--decision", "approved",
+                "--design-activity-id", str(resubmitted["activity_id"]), "--execution-mode", "direct",
+                "--confirmation", "recorded", "--confirmation-ids", json.dumps([
+                    choice["decision_id"], rollout_choice["decision_id"],
+                ]),
                 "--content", "批准；不得改变历史数据读取语义",
             )
-            self.assertEqual(approved["confirmation_id"], choice["decision_id"])
+            self.assertEqual(
+                approved["confirmation_ids"],
+                [choice["decision_id"], rollout_choice["decision_id"]],
+            )
             self.assertEqual((approved["status"], approved["attempt_no"]), ("IN_PROGRESS", 0))
             fails("inspector", "implementation-submit", "--issue-key", "RI-DESIGN", "--content", "Inspector 禁止实现")
 
@@ -1256,6 +1325,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 "developer", "design-submit", "--issue-key", "RI-DESIGN",
                 "--summary", "重新调整数据处理顺序，避免旧数据被错误覆盖。",
                 "--content", "重做数据流方案",
+                "--scope-changes", "[]",
             )
             db(
                 "inspector", "design-review", "--issue-key", "RI-DESIGN", "--decision", "approved",
@@ -1359,6 +1429,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 "developer", "design-submit", "--issue-key", "RI-STAGE",
                 "--summary", "分三步完成版本模型、实时写入和历史数据处理，每步单独验收。",
                 "--content", "分模型、主链路、回灌三阶段",
+                "--scope-changes", "[]",
             )
             stages = [
                 {"stage_no": 1, "title": "领域版本模型", "objective": "建立独立版本模型",
@@ -1710,6 +1781,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             first_design = db(
                 "developer", "design-submit", "--issue-key", "RI-STAGE-REDESIGN",
                 "--summary", "先建立基础模型，再接入主要处理流程。", "--content", "初版方案",
+                "--scope-changes", "[]",
             )
             db("inspector", "design-review", "--issue-key", "RI-STAGE-REDESIGN", "--decision", "approved",
                "--design-activity-id", str(first_design["activity_id"]), "--execution-mode", "staged",
@@ -1747,6 +1819,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             second_design = db(
                 "developer", "design-submit", "--issue-key", "RI-STAGE-REDESIGN",
                 "--summary", "按新边界缩小修改范围，只保留一个可独立验收的阶段。", "--content", "新方案",
+                "--scope-changes", "[]",
             )
             new_plan = db(
                 "inspector", "design-review", "--issue-key", "RI-STAGE-REDESIGN",
@@ -1930,6 +2003,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 "developer", "design-submit", "--issue-key", "RI-HUMAN",
                 "--summary", "按人工确认的数据边界调整冲突合并，保持原有对外结果不变。",
                 "--content", "按 Human 边界重做冲突合并方案",
+                "--scope-changes", "[]",
             )
             db(
                 "inspector", "design-review", "--issue-key", "RI-HUMAN", "--decision", "approved",

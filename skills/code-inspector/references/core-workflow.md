@@ -20,9 +20,9 @@ Code Inspector 的目标不是让 Developer 无限提交、Inspector 无限驳�
 
 `design-review` 必须绑定当前 Issue 最新的 `DESIGN_SUBMITTED` activity，禁止审核旧设计或其他 Issue 的设计。只有原子审批成功、Issue 进入 `IN_PROGRESS` 后，Developer 才开始实现；staged 模式先执行 `stage-get -> stage-prepare -> 实现 -> stage-submit`，direct 模式走无 Stage Plan 的直接实现路径。
 
-用户沟通以当前 Inspector CLI 为主，Issue 是自动生成的回看记录，不是用户必须通读的审批页面。批准前，Inspector 必须显式选择 `--confirmation not-needed|recorded`。明确 Bug、唯一合理实现，或用户已经明确允许的变化使用 `not-needed`；出现以下任一未明确授权的变化时，必须先在当前 CLI 询问，再用 `design-choice-record` 原样记录问题、用户回答和一句最终结论，最后以 `recorded + confirmation-id` 批准：新增持久化存储或基础设施、迁移/补写/删除数据、改变对外接口或可见行为、增加外部依赖、扩大需求范围、存在多个影响明显不同的合理方案。设计在确认后被修改，旧确认自动失效。
+Inspector 可以收紧实现约束，但不能把旁支问题变成当前需求。Developer 必须用 `--scope-changes` 列出范围扩大或新增持久化、迁移、外部行为等需确认变化；Inspector 审批前用 `design-preview` 在 CLI 展示“原目标、方案概要、额外变化”。这些变化只能删除、转 Candidate，或经 `design-choice-record --change-ids` 确认；staged 计划中的 `scope_change_ids` 必须逐项对应。Runtime 拒绝未覆盖确认的变化，设计修订后旧确认失效。
 
-CLI 提问使用日常中文，先说“准备改变什么”和“会带来什么影响”，再给选项和推荐；内部表名、类名、缩写、英文机制名只作为补充，不能代替解释。一次最多集中询问三个相关决定，能用一句话问清时不要展开成长方案。用户回复后继续当前流程，不要求切换到 Web。普通实现细节，例如内部方法拆分、局部变量、已有方案内的字段命名，不询问用户。
+CLI 只用日常中文说明变化、影响、选项和推荐，一次最多三个相关决定。普通方法拆分、局部命名等实现细节不询问用户；Issue/Web 仅留档，不要求用户通读。
 
 通过后自动激活下一 Stage，驳回只退回当前 Stage；若验收发现整个设计不成立，使用 `stage-review --decision redesign` 进入 `REDESIGN_REQUIRED` 并废弃旧计划的未完成阶段。新设计建立新的 `plan_no`，旧计划和验收活动永久保留。
 

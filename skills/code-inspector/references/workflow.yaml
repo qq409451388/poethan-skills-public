@@ -223,6 +223,11 @@ design_workflow:
     activity: DESIGN_SUBMITTED
     target: DESIGN_PENDING_REVIEW
     attempt_effect: none
+    scope_changes:
+      argument: --scope-changes
+      developer_required: true
+      item_fields: [id, summary, impacts]
+      meaning: 列出范围扩大或新增持久化、迁移、外部行为等需确认变化；没有则传空数组，旁支问题优先转 Candidate。
   review_approved:
     atomic_command: design-review --decision approved --design-activity-id <id> --execution-mode <direct|staged> --confirmation <not-needed|recorded>
     roles: [inspector, human]
@@ -235,9 +240,11 @@ design_workflow:
     design_binding: design_activity_id 必须属于当前 Issue 最新的 DESIGN_SUBMITTED。
     cli_confirmation:
       primary_surface: 当前 Inspector CLI 对话；Issue 仅自动留档，用户无需打开 Web 阅读。
-      not_needed: 明确 Bug、唯一合理实现、普通代码细节，或用户已明确允许该变化。
+      preview_command: design-preview
+      not_needed: 当前设计没有 scope_changes。
       must_record: [新增持久化或基础设施, 数据迁移或补写删除, 改变对外接口或可见行为, 新增外部依赖, 扩大需求范围, 多个影响明显不同的合理方案]
       record_command: design-choice-record
+      coverage: 每个 scope change id 必须由确认记录覆盖；一个无关确认不能批准整份设计。
       wording: 使用日常中文说明变化、原因、主要影响、选项和推荐；专业术语必须紧接通俗解释。
       binding: recorded 必须通过 confirmation-id 绑定当前设计；设计修订后旧确认失效。
     meaning: 仅表示基于当前证据允许开始实现，不保证方案永久正确。
@@ -273,6 +280,7 @@ stage_workflow:
     normal_role: inspector
     allowed_from_issue_status: DESIGN_PENDING_REVIEW
     required_stage_fields: [stage_no, title, objective, acceptance_criteria]
+    conditional_stage_field: 设计存在 scope_changes 时，相关 Stage 必须填写 scope_change_ids，且全部变化都要分配；未知或遗漏引用时原子审批失败。
     activity: STAGE_PLAN_CREATED 与 DESIGN_APPROVED 同事务写入
     initial_stage_status: PLANNED
     numbering: stage_no 必须从 1 连续递增；新计划 plan_no 使用历史最大值加一。

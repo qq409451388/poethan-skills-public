@@ -10,6 +10,7 @@ import os
 import shutil
 import sqlite3
 import sys
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -154,53 +155,93 @@ def migrate(db_path: Path, backup_dir: Path | None = None) -> dict[str, Any]:
 def link_runtime(home: Path, skill_config: dict[str, Any], force: bool, skill_source: Path | None = None) -> None:
     src = SCRIPT_DIR / "runtime" / "review_db.py"
     dst = home / "bin" / "review-db.py"
-    create_skill_link(src, dst, force)
+    atomic_copy_path(src, dst, force)
     if skill_source:
         for name in (
             "code-inspector-supervisor.py", "supervisor.py", "issue_thread.py",
             "codex_thread_runtime.py", "runtime_identity.py", "runtime_capabilities.py",
             "review_repository.py", "session_scope.py",
         ):
-            create_skill_link(skill_source / "scripts" / name, home / "bin" / name, force)
+            atomic_copy_path(skill_source / "scripts" / name, home / "bin" / name, force)
     for role, assignments in skill_config["bindings"].items():
         for assignment in assignments:
             alias = assignment["alias"]
             runtime_role = "inspector" if role == "inspector" else role
             wrapper = home / "bin" / f"review-db-{alias}.py"
-            wrapper.write_text(
+            atomic_write_text(
+                wrapper,
                 "#!/usr/bin/env python3\n"
                 "import os, sys\n"
                 "from pathlib import Path\n"
                 f"tool = Path({str(dst)!r})\n"
                 f"os.execv(sys.executable, [sys.executable, str(tool), '--agent', {runtime_role!r}, '--operator-id', {alias!r}, *sys.argv[1:]])\n",
-                encoding="utf-8",
+                executable=os.name != "nt",
             )
-            if os.name != "nt":
-                wrapper.chmod(0o755)
 
-def create_skill_link(source: Path, target: Path, force: bool) -> None:
-    """优先创建软链接；平台不允许软链接时复制源文件或目录。"""
+def remove_path(path: Path) -> None:
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+    elif path.exists():
+        shutil.rmtree(path)
+
+
+def replace_staged_path(staged: Path, target: Path) -> None:
+    """用已准备完成的路径替换目标；失败时恢复旧版本。"""
+    backup = target.parent / f".{target.name}.backup-{uuid.uuid4().hex}"
+    had_target = target.exists() or target.is_symlink()
+    if had_target:
+        os.replace(target, backup)
+    try:
+        os.replace(staged, target)
+    except Exception:
+        if had_target and backup.exists():
+            os.replace(backup, target)
+        raise
+    if had_target:
+        remove_path(backup)
+
+
+def atomic_write_text(target: Path, content: str, executable: bool = False) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
-    if target.is_symlink():
-        if target.resolve() == source.resolve():
-            return
-        target.unlink()
-    elif target.exists():
+    staged = target.parent / f".{target.name}.installing-{uuid.uuid4().hex}"
+    try:
+        staged.write_text(content, encoding="utf-8")
+        if executable:
+            staged.chmod(0o755)
+        replace_staged_path(staged, target)
+    finally:
+        if staged.exists():
+            remove_path(staged)
+
+
+def atomic_copy_path(source: Path, target: Path, force: bool) -> None:
+    """先复制到同目录临时路径，再以可回滚替换安装；从不创建软链接。"""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    legacy_symlink = target.is_symlink()
+    if target.exists() and not legacy_symlink:
         if source.is_file() and target.is_file() and filecmp.cmp(source, target, shallow=False):
             return
         if not force:
             raise FileExistsError(f"目标已存在: {target}，如需替换请使用 --force")
-        shutil.rmtree(target) if target.is_dir() else target.unlink()
+
+    staged = target.parent / f".{target.name}.installing-{uuid.uuid4().hex}"
     try:
-        target.symlink_to(source, target_is_directory=source.is_dir())
-    except OSError as exc:
-        if target.exists() or target.is_symlink():
-            shutil.rmtree(target) if target.is_dir() and not target.is_symlink() else target.unlink()
         if source.is_dir():
-            shutil.copytree(source, target)
+            shutil.copytree(
+                source, staged, symlinks=False,
+                ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".DS_Store"),
+            )
         else:
-            shutil.copy2(source, target)
-        print(f"[links] 无法创建软链接，已复制 {source} -> {target}: {exc}", file=sys.stderr)
+            shutil.copy2(source, staged)
+        replace_staged_path(staged, target)
+    finally:
+        if staged.exists() or staged.is_symlink():
+            remove_path(staged)
+
+
+def create_skill_link(source: Path, target: Path, force: bool) -> None:
+    """兼容旧调用名；安装策略固定为原子复制。"""
+    atomic_copy_path(source, target, force)
 
 def generated_skill_text(platform: str, identities: list[dict[str, Any]], target: Path) -> str:
     roles: dict[str, dict[str, Any]] = {}
@@ -278,32 +319,31 @@ def generated_skill_text(platform: str, identities: list[dict[str, Any]], target
     )
 
 def install_generated_skill(source: Path, target: Path, platform: str, identities: list[dict[str, Any]], home: Path, force: bool) -> None:
-    if target.is_symlink():
-        target.unlink()
-    elif target.exists() and not (target / ".code-inspector-generated").exists():
+    if target.exists() and not target.is_symlink() and not (target / ".code-inspector-generated").exists():
         if not force:
             raise FileExistsError(f"目标已存在且不是本安装器生成: {target}，如需替换请使用 --force")
-        shutil.rmtree(target)
-    target.mkdir(parents=True, exist_ok=True)
-    (target / ".code-inspector-generated").write_text("generated\n", encoding="utf-8")
-    (target / "SKILL.md").write_text(generated_skill_text(platform, identities, target), encoding="utf-8")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    staged = target.parent / f".{target.name}.installing-{uuid.uuid4().hex}"
+    staged.mkdir()
+    (staged / ".code-inspector-generated").write_text("generated\n", encoding="utf-8")
+    (staged / "SKILL.md").write_text(generated_skill_text(platform, identities, target), encoding="utf-8")
     for name in ("references", "scripts", "config"):
-        link = target / name
-        if link.exists() or link.is_symlink():
-            link.unlink() if link.is_symlink() else shutil.rmtree(link)
-        create_skill_link(source / name, link, force=True)
-    agents_dir = target / "agents"
-    if agents_dir.is_symlink():
-        agents_dir.unlink()
+        shutil.copytree(
+            source / name, staged / name, symlinks=False,
+            ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".DS_Store"),
+        )
+    agents_dir = staged / "agents"
     agents_dir.mkdir(exist_ok=True)
     shutil.copy2(source / "agents" / "openai.yaml", agents_dir / "openai.yaml")
-    tools_dir = target / "tools"
+    tools_dir = staged / "tools"
     tools_dir.mkdir(exist_ok=True)
     for item in identities:
-        tool_link = tools_dir / f"review-db-{item['alias']}.py"
-        if tool_link.exists() or tool_link.is_symlink():
-            tool_link.unlink() if tool_link.is_symlink() or tool_link.is_file() else shutil.rmtree(tool_link)
-        create_skill_link(home / "bin" / f"review-db-{item['alias']}.py", tool_link, force=True)
+        shutil.copy2(home / "bin" / f"review-db-{item['alias']}.py", tools_dir / f"review-db-{item['alias']}.py")
+    try:
+        replace_staged_path(staged, target)
+    finally:
+        if staged.exists():
+            remove_path(staged)
 
 def install_role_skills(
     tools_config: dict[str, Any], skill_config: dict[str, Any], source: Path, home: Path, force: bool

@@ -1033,6 +1033,7 @@ def issue_design_submit(issue_key: str):
             "design-submit", "--issue-key", issue_key,
             "--summary", request.form.get("summary", ""),
             "--content", request.form.get("content", ""),
+            "--scope-changes", "[]",
         )
         return redirect_back("issue_detail", issue_key=issue_key, msg="设计方案已提交审核")
     except Exception as exc:  # noqa: BLE001
