@@ -1137,6 +1137,14 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 "--metadata", json.dumps({"tests": ["backfill", "concurrency"]}),
             )
             self.assertEqual((submitted["status"], submitted["attempt_no"]), ("DESIGN_PENDING_REVIEW", 0))
+            submitted_activity = next(
+                item for item in db("developer", "activity-list", "--issue-key", "RI-DESIGN")
+                if item["id"] == submitted["activity_id"]
+            )
+            self.assertEqual(
+                submitted_activity["metadata_json"]["human_summary"],
+                "调整版本保存方式，同时保证旧数据仍可读取。",
+            )
             activity_count = len(db("developer", "activity-list", "--issue-key", "RI-DESIGN"))
             fails(
                 "developer", "design-review", "--issue-key", "RI-DESIGN", "--decision", "approved",
@@ -1144,6 +1152,13 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 "--content", "越权批准",
             )
             fails("developer", "implementation-submit", "--issue-key", "RI-DESIGN", "--content", "尚未批准")
+            self.assertEqual(len(db("developer", "activity-list", "--issue-key", "RI-DESIGN")), activity_count)
+
+            too_long_decision = fails(
+                "inspector", "design-review", "--issue-key", "RI-DESIGN", "--decision", "rejected",
+                "--design-activity-id", str(submitted["activity_id"]), "--content", "结论" * 91,
+            )
+            self.assertIn("180", too_long_decision.stderr)
             self.assertEqual(len(db("developer", "activity-list", "--issue-key", "RI-DESIGN")), activity_count)
 
             db(
@@ -2252,11 +2267,18 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 )
                 design_page = client.get("/issues/RI-WEB-DESIGN").get_data(as_text=True)
                 self.assertIn("审核设计方案", design_page)
+                self.assertIn("方案概要", design_page)
+                self.assertIn("调整问题处理流程，保持现有使用方式不变。", design_page)
                 design_discussion = design_page.split(
                     'data-tab-pane="discussion"', 1,
                 )[1].split('data-tab-pane="history"', 1)[0]
                 self.assertIn('data-activity-type="DESIGN_SUBMITTED"', design_discussion)
                 self.assertIn("Human 代为补充具体方案", design_discussion)
+                design_history = design_page.split(
+                    'data-tab-pane="history"', 1,
+                )[1].split('class="panel runtime-panel"', 1)[0]
+                self.assertIn("调整问题处理流程，保持现有使用方式不变。", design_history)
+                self.assertNotIn("Human 代为补充具体方案", design_history)
                 web_design_activity = next(
                     item for item in reversed(db("inspector", "activity-list", "--issue-key", "RI-WEB-DESIGN"))
                     if item["activity_type"] == "DESIGN_SUBMITTED"
