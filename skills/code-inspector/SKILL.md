@@ -15,15 +15,19 @@ Inspector 可以补充实现约束，但不得扩展用户目标。Developer 用
 
 Multi-Thread 默认关闭。只有 `config/runtime.json` 允许且用户在当前 Session 明确要求开启时，才可启动按当前 `session_operator_id + session_role` 限定的 Supervisor。它只能 claim、start、resume 当前身份的 Event/Thread；跨 Role 或跨 Operator 一律以 `SESSION_SCOPE_VIOLATION` 失败。Watch 与 Multi-Thread 分别授权，任何模式都禁止创建或恢复 Codex Goal。
 
-激活后必须读取：
+激活后只读取：
 
 - 所有角色：`references/core-workflow.md`
 - 当前角色：`references/role-workflows.md` 中对应的 Developer 或 Inspector 章节
 
-再按场景读取：
+以下大型文件由 Runtime/CLI 强制执行，普通 Action Turn 不读取；仅在专项审计或修改规则本身时按需查阅：
 
 - 状态机与状态变更：`references/workflow.yaml`
-- 数据库工具参数：`references/tool-contracts.yaml`
+- 数据库工具完整参数：`references/tool-contracts.yaml`
+
+普通 Issue 处理先调用一次 `issue-context-get`，以返回的 `pending_action`、`allowed_actions` 和资源 id 作为当前 Working Set；只有摘要指向必要明细时才使用 `discussion-get`、`activity-get` 或 `stage-history-get`。
+
+其他文件继续按场景读取：
 - 审核等级：`references/review-levels.yaml`
 - 用户明确要求持续观察或停止观察：`references/watch-mode.md`
 - 多 Issue 调度、Issue Thread 或 Managed Compact：`references/thread-runtime.md`

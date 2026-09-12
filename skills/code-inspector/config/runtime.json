@@ -29,7 +29,7 @@
     "compact": {
       "enabled": true,
       "threshold": 0.8,
-      "trigger": "stage_transition",
+      "trigger": "completed_work_unit",
       "required_capability": "managed_compact_supported"
     },
     "watch": {

@@ -129,6 +129,7 @@ issue_statuses:
 
 runtime_events:
   source: transactional_outbox
+  semantics: Event 仅是 Wake-up Signal；Runtime 按当前 Issue+Role Projection 判断真实待办，同批过期 Event 标记 SUPERSEDED 并保留审计，不逐条调用模型。
   atomicity: 领域状态/Activity 与 code_inspector_event 必须在同一 SQLite Transaction 提交；Runtime binding 无效时领域变更回滚。
   operator_resolution: 使用 agent-roles.json runtime.dispatch_operators 指定的已安装 binding；role 参数只做一致性校验。
   mappings:

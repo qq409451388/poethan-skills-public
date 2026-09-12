@@ -201,6 +201,8 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             self.assertIn("$code-inspector start insp", codex_skill_text)
             self.assertIn("references/core-workflow.md", codex_skill_text)
             self.assertIn("references/role-workflows.md", codex_skill_text)
+            self.assertIn("issue-context-get", codex_skill_text)
+            self.assertIn("普通 Action", codex_skill_text)
             self.assertIn("activity-get", codex_skill_text)
             self.assertIn("Issue、讨论、阶段提交、审核、验证和报告默认使用简明中文", codex_skill_text)
             self.assertIn("让测试人员和项目负责人", codex_skill_text)
@@ -2719,6 +2721,126 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             self.assertEqual(activity["metadata_json"], metadata)
             self.assertEqual(activity["issue_key"], "RI-ACTIVITY-COMPACT")
             self.assertEqual(activity["task_key"], "RT-ACTIVITY-COMPACT")
+
+    def test_discussion_working_set_is_latest_bounded_and_lazy(self):
+        with tempfile.TemporaryDirectory() as temp:
+            home = Path(temp)
+            self.run_cmd(home, str(INSTALLER), "install")
+            workspace = home / "project"
+            workspace.mkdir()
+            db_tool = home / ".agent-review" / "bin" / "review-db.py"
+
+            def db(role: str, *command: str) -> dict | list:
+                operator = "codex-dev" if role == "developer" else "codex-insp"
+                return self.run_cmd(
+                    home, str(db_tool), "--agent", role, "--operator-id", operator,
+                    *command, cwd=workspace,
+                )
+
+            db("inspector", "task-create", "--task-key", "RT-DISCUSSION-BOUND", "--title", "讨论分页", "--objective", "验证最近讨论")
+            db("inspector", "version-create", "--task-key", "RT-DISCUSSION-BOUND", "--reason", "首次检查")
+            db(
+                "inspector", "issue-create", "--task-key", "RT-DISCUSSION-BOUND",
+                "--issue-key", "RI-DISCUSSION-BOUND", "--title", "讨论增长",
+                "--dimension", "code_quality", "--severity", "low",
+                "--remediation-benefit", "medium", "--remediation-cost", "low",
+                "--disposition", "current_iteration", "--confidence", "high",
+                "--description", "讨论应按需读取", "--facts", "超过 200 条", "--rationale", "控制上下文",
+            )
+            database = home / ".agent-review" / "data" / "review.db"
+            with closing(sqlite3.connect(database)) as conn, conn:
+                issue_id = conn.execute(
+                    "SELECT id FROM review_issue WHERE issue_key='RI-DISCUSSION-BOUND'"
+                ).fetchone()[0]
+                conn.executemany(
+                    """INSERT INTO issue_discussion(issue_id,topic,operator_type,operator_id,content)
+                       VALUES(?,'GENERAL','DEVELOPMENT_AGENT','codex-dev',?)""",
+                    [(issue_id, f"讨论 {index} " + "正文" * 100) for index in range(205)],
+                )
+            recent = db("developer", "discussion-list", "--issue-key", "RI-DISCUSSION-BOUND")
+            self.assertEqual(len(recent), 20)
+            self.assertEqual(set(recent[0]), {"id", "topic", "time", "summary"})
+            self.assertIn("讨论 204", recent[0]["summary"])
+            self.assertNotIn("content", recent[0])
+            older = db(
+                "developer", "discussion-list", "--issue-key", "RI-DISCUSSION-BOUND",
+                "--cursor", str(recent[-1]["id"]), "--limit", "5",
+            )
+            self.assertEqual(len(older), 5)
+            self.assertLess(older[0]["id"], recent[-1]["id"])
+            full = db(
+                "developer", "discussion-get", "--issue-key", "RI-DISCUSSION-BOUND",
+                "--discussion-id", str(recent[0]["id"]),
+            )
+            self.assertIn("讨论 204", full["content"])
+
+            context = db("developer", "issue-context-get", "--issue-key", "RI-DISCUSSION-BOUND")
+            self.assertEqual(context["pending_action"], "triage_or_implement_issue")
+            self.assertIn("implementation-submit", context["allowed_actions"])
+            self.assertEqual(context["lazy_load"], ["discussion-get", "activity-get", "stage-history-get"])
+            self.assertNotIn("content", context["latest_activities"][0])
+
+    def test_stage_get_stays_bounded_and_full_baseline_is_lazy(self):
+        with tempfile.TemporaryDirectory() as temp:
+            home = Path(temp)
+            self.run_cmd(home, str(INSTALLER), "install")
+            workspace = home / "project"
+            workspace.mkdir()
+            db_tool = home / ".agent-review" / "bin" / "review-db.py"
+
+            def db(*command: str) -> dict | list:
+                return self.run_cmd(
+                    home, str(db_tool), "--agent", "developer", "--operator-id", "codex-dev",
+                    *command, cwd=workspace,
+                )
+
+            inspector = lambda *command: self.run_cmd(
+                home, str(db_tool), "--agent", "inspector", "--operator-id", "codex-insp",
+                *command, cwd=workspace,
+            )
+            inspector("task-create", "--task-key", "RT-STAGE-BOUND", "--title", "Stage 分页", "--objective", "验证有界历史")
+            inspector("version-create", "--task-key", "RT-STAGE-BOUND", "--reason", "首次检查")
+            inspector(
+                "issue-create", "--task-key", "RT-STAGE-BOUND", "--issue-key", "RI-STAGE-BOUND",
+                "--title", "Stage 增长", "--dimension", "code_quality", "--severity", "low",
+                "--remediation-benefit", "medium", "--remediation-cost", "low",
+                "--disposition", "current_iteration", "--confidence", "high",
+                "--description", "历史响应应有界", "--facts", "大量 Stage", "--rationale", "控制上下文",
+            )
+            database = home / ".agent-review" / "data" / "review.db"
+            with closing(sqlite3.connect(database)) as conn, conn:
+                issue_id = conn.execute(
+                    "SELECT id FROM review_issue WHERE issue_key='RI-STAGE-BOUND'"
+                ).fetchone()[0]
+                conn.execute("UPDATE review_issue SET status='IN_PROGRESS' WHERE id=?", (issue_id,))
+                for stage_no in range(1, 51):
+                    baseline = json.dumps({
+                        "verified_behaviors": [f"behavior-{stage_no}"],
+                        "input_output_contracts": [f"contract-{stage_no}"],
+                        "business_semantics": [f"semantic-{stage_no}"],
+                        "tests": [f"test-{stage_no}"],
+                    })
+                    conn.execute(
+                        """INSERT INTO issue_stage(
+                               issue_id,plan_no,stage_no,title,objective,acceptance_criteria,status,
+                               baseline_json,baseline_status)
+                           VALUES(?,1,?,?,?,?, 'APPROVED',?,'PASSED')""",
+                        (issue_id, stage_no, f"Stage {stage_no}", "目标", "标准", baseline),
+                    )
+                conn.execute(
+                    """INSERT INTO issue_stage(issue_id,plan_no,stage_no,title,objective,acceptance_criteria,status)
+                       VALUES(?,1,51,'Current','当前目标','当前标准','IN_PROGRESS')""",
+                    (issue_id,),
+                )
+            current = db("stage-get", "--issue-key", "RI-STAGE-BOUND", "--stage-no", "51")
+            self.assertNotIn("historical_baselines", current)
+            self.assertNotIn("baseline", current)
+            self.assertEqual(current["stage_history_count"], 50)
+            self.assertEqual(len(current["stage_history"]), 10)
+            self.assertEqual(len(current["protected_constraints"]["items"]), 40)
+            self.assertTrue(current["protected_constraints"]["truncated"])
+            full = db("stage-history-get", "--issue-key", "RI-STAGE-BOUND", "--stage-no", "1")
+            self.assertEqual(full["baseline"]["verified_behaviors"], ["behavior-1"])
 
 
 if __name__ == "__main__":

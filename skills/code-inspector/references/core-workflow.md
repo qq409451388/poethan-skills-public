@@ -64,4 +64,4 @@ Issue 默认正文只写 `title + summary + dimension + severity`；确有必要
 
 Developer、Inspector 修正自己的讨论时直接 amend 原消息。讨论达成一致后，由 Inspector 用 `decision-record` 整理短结论并关联来源讨论；相同 `decision_type + scope_key` 的旧结论仅留审计。
 
-`activity-amend` 只用于尚未被消费的提交文案和补充证据。审核、验证、人工决定等最终结论不能 amend；需变化时创建新的正式结论。页面处理历史保留工作流里程碑和结论，默认读取只返回精简 Issue 字段，只有确需兼容旧字段时才用 `issue-get --view full`。
+`activity-amend` 只用于尚未被消费的提交文案和补充证据。审核、验证、人工决定等最终结论不能 amend；需变化时创建新的正式结论。页面处理历史保留工作流里程碑和结论。普通 Action Turn 使用 `issue-context-get` 获取有界 Working Set；discussion、activity 与历史 baseline 正文按 id 延迟读取。只有确需兼容旧字段时才用 `issue-get --view full`。

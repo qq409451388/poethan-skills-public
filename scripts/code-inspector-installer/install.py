@@ -289,8 +289,10 @@ def generated_skill_text(platform: str, identities: list[dict[str, Any]], target
     watch_path = target / "scripts" / "watch.py"
     routing = (
         "激活后必须读取 `references/core-workflow.md`，并只读取 "
-        "`references/role-workflows.md` 中当前锁定角色的章节。状态机与工具调用分别以 "
-        "`references/workflow.yaml`、`references/tool-contracts.yaml` 为准；不得直接操作 SQLite。\n\n"
+        "`references/role-workflows.md` 中当前锁定角色的章节。普通 Action Turn 先调用一次 "
+        "`issue-context-get`，以返回的 pending_action、allowed_actions 和资源 id 为 Working Set；只有需要正文时才 "
+        "lazy load。状态机、权限、参数和前置条件由 Runtime/CLI 强制校验；普通 Action 不读取完整 "
+        "`workflow.yaml` 或 `tool-contracts.yaml`，仅在专项审计或修改规则本身时查阅。不得直接操作 SQLite。\n\n"
         "## 人类可读文案\n\n"
         "Issue、讨论、阶段提交、审核、验证和报告默认使用简明中文，先说明现象、影响、结论、验证结果和下一步，"
         "再补必要技术证据；不要只堆状态码、类名、调用链、异常、SQL 或 Diff。目标是让测试人员和项目负责人"

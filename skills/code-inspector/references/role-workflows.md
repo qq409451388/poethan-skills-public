@@ -4,9 +4,9 @@
 
 ## Developer
 
-1. 用固定工具的 `task-list`、默认精简的 `issue-list/issue-get`、`discussion-list` 和 `activity-list-recent` 增量定位待处理内容；只有摘要对应当前工作时才用 `activity-get <id>` 读取完整活动。不要创建 Task、版本或正式 Issue，不要修改评级或最终确认。
+1. 已绑定 Issue 的 Action Turn 先且通常只调用一次 `issue-context-get`；只有 Working Set 摘要明确指向必要正文时才用 `discussion-get`、`activity-get` 或 `stage-history-get`。发现待处理 Issue 时才使用精简的列表命令。不要创建 Task、版本或正式 Issue，不要修改评级或最终确认。
 2. `DESIGN_REQUIRED` 或 `REDESIGN_REQUIRED` 时只阅读、分析和讨论，用 `design-submit` 提交方案；`--summary` 写白话概要，`--scope-changes` 明确列出超出用户目标的变化（没有则传 `[]`），完整技术细节放 `--content`。`DESIGN_PENDING_REVIEW` 时等待审核，不得编码或自行批准。
-3. 只有简单问题或设计批准后的 `IN_PROGRESS` 才能编码。Stage Plan 由 Inspector 在 staged 设计审批中原子创建，Developer 不得创建或承担计划制定责任。存在 Stage Plan 时先读取当前 Stage 及历史 PASSED baseline，修改前用 `stage-prepare` 声明影响范围、原因和不得改变的历史行为；只实现当前 Stage。
+3. 只有简单问题或设计批准后的 `IN_PROGRESS` 才能编码。Stage Plan 由 Inspector 在 staged 设计审批中原子创建，Developer 不得创建或承担计划制定责任。存在 Stage Plan 时先使用 Working Set 中的当前 Stage 与历史保护约束；只有约束摘要不足时才按 id 读取历史 PASSED baseline。修改前用 `stage-prepare` 声明影响范围、原因和不得改变的历史行为；只实现当前 Stage。
 4. 用 `stage-submit` 提交 commit、Diff 摘要、代码引用、当前验收测试和历史累计回归；上轮有 BLOCKER/MUST 时逐项回应 finding id。提交后立即等待验收，不得自行宣布 PASS。
 5. 无 Stage Plan 时可直接实现；有计划时必须等全部 Stage `APPROVED` 后，才能用 `implementation-submit` 提交整个 Issue 的最终实现证据。
 6. 方案按复杂度说明修改模块、类或方法、数据流、状态/幂等/并发、DB/历史/API 兼容、测试和风险，不机械套模板。验收口径或成立性有疑问时只能转 `INSPECTOR_CONFIRMATION_REQUIRED`，不得绕过 Inspector 请求 Human。
@@ -14,7 +14,7 @@
 
 ## Inspector
 
-1. 读取 `workflow.yaml` 和 `review-levels.yaml`；创建或继续检查时用 `task-resolve`。`REVIEW` 沿用基线 identity；`CONTINUOUS` 跨基线复用且所有 Issue 终结也不自动关闭。
+1. 已绑定 Issue 的 Action Turn 先且通常只调用一次 `issue-context-get`，按其 `pending_action/allowed_actions` 工作；仅在专项规则审计时读取完整 `workflow.yaml`，创建或继续扫描时才按需读取 `review-levels.yaml` 并使用 `task-resolve`。
 2. 区分 `scan` 与 `report`：扫描期间先收集候选，主审核者必须额外串联跨模块数据流；向 `CONTINUOUS` 报告单个线上问题只核实证据、判定成立和去重。
 3. 初步合并后先做覆盖面回查和补充扫描，再按根因、修复边界和风险链路去重、评级，最后用 `issue-create-batch` 创建正式 Issue。
 4. 对复杂或方向不确定的问题使用 `design-request`，只定义当前目标必须解决的问题、不可破坏语义和方案问题；旁支发现转 Candidate，不能写成当前 MUST。

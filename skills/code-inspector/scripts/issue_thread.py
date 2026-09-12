@@ -337,8 +337,29 @@ def resume(
             was_archived = item["thread_status"] == "ARCHIVED"
             compact_flags = config["thread_runtime"]["compact"]
             boundary = ReviewRepository(conn).completed_stage_boundary(issue["id"], item["last_compact_stage_no"])
+            metric_revisions = conn.execute(
+                """SELECT
+                     MAX(CASE WHEN turn_type='ACTION' THEN projection_revision END) AS last_action_revision,
+                     MAX(CASE WHEN turn_type='COMPACT' THEN projection_revision END) AS last_compact_revision
+                   FROM code_inspector_turn_metric
+                   WHERE issue_key=? AND operator_id=?""",
+                (issue_key, operator_id),
+            ).fetchone()
+            direct_boundary = bool(
+                not projection["has_active_plan"] and projection["pending_action"]
+                and metric_revisions["last_action_revision"] is not None
+                and revision > int(metric_revisions["last_action_revision"])
+                and (
+                    metric_revisions["last_compact_revision"] is None
+                    or revision > int(metric_revisions["last_compact_revision"])
+                )
+            )
+            compact_work_unit = boundary if boundary is not None else (
+                f"projection:{revision}" if direct_boundary else None
+            )
             should_compact = bool(
-                compact_flags["enabled"] and capability(review_home(), compact_flags["required_capability"]) and boundary
+                compact_flags["enabled"] and capability(review_home(), compact_flags["required_capability"])
+                and compact_work_unit
                 and item["context_tokens"] and item["context_window"]
                 and item["context_tokens"] / item["context_window"] >= float(compact_flags["threshold"])
             )
@@ -374,7 +395,8 @@ def resume(
                             with connect() as compact_conn:
                                 compact_conn.execute(
                                     """UPDATE code_inspector_thread
-                                       SET last_compact_at=CURRENT_TIMESTAMP,last_compact_stage_no=?,
+                                       SET last_compact_at=CURRENT_TIMESTAMP,
+                                           last_compact_stage_no=COALESCE(?,last_compact_stage_no),
                                            error_code=?,error_message=?,updated_at=CURRENT_TIMESTAMP
                                        WHERE issue_key=? AND operator_id=?""",
                                     (boundary, "COMPACT_FAILED" if compact_error else None, compact_error, issue_key, operator_id),
@@ -414,7 +436,7 @@ def resume(
                 except Exception as exc:
                     with connect() as conn:
                         conn.execute("UPDATE code_inspector_thread SET error_code='ARCHIVE_FAILED',error_message=? WHERE issue_key=? AND operator_id=?", (str(exc)[:1000], issue_key, operator_id))
-            return {"issue_key": issue_key, "role": role, "operator_id": operator_id, "thread_id": thread_id, "thread_status": status, "issue_status": issue["status"], "managed_compact": boundary if should_compact else None, "action_turn_completed": True, "projection_revision": revision}
+            return {"issue_key": issue_key, "role": role, "operator_id": operator_id, "thread_id": thread_id, "thread_status": status, "issue_status": issue["status"], "managed_compact": compact_work_unit if should_compact else None, "action_turn_completed": True, "projection_revision": revision}
         except Exception as exc:
             with connect() as conn:
                 if action_started:
@@ -497,6 +519,7 @@ def compact(
             item = mapping(conn, issue_key, operator_id)
             if not item:
                 raise RuntimeError("MAPPING_NOT_FOUND")
+            projection_revision = int(current_projection(conn, issue_key, role)["projection_revision"])
             if item["last_compact_stage_no"] == stage_no:
                 return {"status": "SKIPPED_ALREADY_COMPACTED", "stage_no": stage_no}
             if not force:
@@ -507,6 +530,9 @@ def compact(
             thread_id = item["thread_id"]
         try:
             result = runtime_call(config, lambda runtime: runtime.compact(thread_id))
+            record_turn_metric(
+                issue_key, role, operator_id, projection_revision, "COMPACT", result, None,
+            )
             with connect() as conn:
                 conn.execute(
                     "UPDATE code_inspector_thread SET last_compact_at=CURRENT_TIMESTAMP,last_compact_stage_no=?,updated_at=CURRENT_TIMESTAMP WHERE issue_key=? AND operator_id=?",

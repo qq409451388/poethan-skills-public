@@ -1,4 +1,4 @@
-version: 4.1.0
+version: 4.2.0
 
 command: review-db.py
 identity:
@@ -75,6 +75,13 @@ commands:
     view_values: [compact, full]
     compact_fields: [issue_key, task_key, project_name, title, summary, expected_outcome, technical_note, local_terms_json, dimension, severity, status, evidence_json, current_attempt_no, updated_at, last_activity_at, last_discussion_at]
     note: full 仅用于兼容旧字段或专项审计，普通处理不要读取完整旧正文。
+  issue-context-get:
+    roles: [inspector, developer, human]
+    required: [--issue-key]
+    purpose: 一次返回当前角色处理 Issue 所需的有界 Working Set。
+    returns: [projection_revision, issue, current_stage, effective_decisions, latest_activities, protected_constraints, pending_action, allowed_actions, resources, lazy_load]
+    excludes: [完整讨论正文, 完整 Activity 正文, 全部历史 baseline, 大段重复测试证据]
+    usage_rule: 普通 Action Turn 首先且通常只调用本命令；摘要指向必要明细时才 lazy load。
   issue-update-assessment:
     roles: [inspector, human]
     required: [--issue-key]
@@ -176,7 +183,13 @@ commands:
     required: [--issue-key, --stage-no]
     optional: [--plan-no]
     defaults: {plan-no: 最新计划}
-    returns_extra: historical_baselines，包含之前全部 APPROVED Stage 的 baseline 与 PASSED 状态。
+    returns: [当前 Stage 摘要, 有界的历史有效约束摘要, 最近 Stage id/status/title, 历史数量与截断标记]
+    excludes: [全部历史 baseline, 大段测试证据, 全量 review findings]
+  stage-history-get:
+    roles: [inspector, developer, human]
+    required: [--issue-key, --stage-no]
+    optional: [--plan-no]
+    purpose: 按 Stage 延迟读取完整 baseline、测试证据和审核字段。
   stage-prepare:
     roles: [developer, human]
     purpose: Developer 修改代码前声明当前 Stage 的预计影响范围、修改原因与必须保护的历史行为。
@@ -328,8 +341,15 @@ commands:
   discussion-list:
     roles: [inspector, developer, human]
     required: [--issue-key]
-    optional: [--topic, --since, --limit]
-    defaults: {limit: 200}
+    optional: [--topic, --since, --cursor, --limit]
+    defaults: {limit: 20, order: newest-first}
+    constraints: {limit: 1..100, cursor: 读取 id 小于 cursor 的更早讨论}
+    returns: [id, time, topic, summary]
+    excludes: [content, revision history, operator detail]
+  discussion-get:
+    roles: [inspector, developer, human]
+    required: [--issue-key, --discussion-id]
+    purpose: 按 id 延迟读取单条讨论完整正文。
   decision-record:
     roles: [inspector]
     required: [--issue-key, --decision-type, --outcome, --content]

@@ -1911,7 +1911,8 @@ def historical_constraint_summary(rows: list[sqlite3.Row]) -> dict[str, Any]:
 def compact_stage(row: sqlite3.Row) -> dict[str, Any]:
     item = dict(row)
     return {
-        "id": item["id"], "plan_no": item["plan_no"], "stage_no": item["stage_no"],
+        "id": item["id"], "plan_no": item["plan_no"], "plan_status": item["plan_status"],
+        "stage_no": item["stage_no"],
         "title": item["title"], "objective": item["objective"],
         "acceptance_criteria": item["acceptance_criteria"], "status": item["status"],
         "governance_version": item["governance_version"],

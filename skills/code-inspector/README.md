@@ -123,7 +123,7 @@ Inspector 修改 Task 状态时遵守标准状态机。Human 具有 Task 状态�
 
 正式 Issue 默认只需要标题、短摘要、维度和严重度；完成标准、技术补充、本项目术语和证据按需填写。摘要可用轻量 Markdown 拆成少量要点，但不保存 Agent 推理过程、长日志、完整代码和重复评级。代码定位优先使用文件加类/方法/符号，行号只作快照提示。通用技术词不解释，只定义项目内、业务内或 Agent 临时创造且人工可能不知道的词。
 
-讨论消息使用独立的 `discussion-*` 命令，不再用 `COMMENT_ADDED / DESIGN_GUIDANCE` 塞进处理历史。页面“讨论”视图还会只读投影设计、Stage 和实现正式提交；这些提交仍以 Activity 作为唯一数据源并保留在处理历史，“全部”视图去重后按最新优先展示。Developer、Inspector 修正自己的讨论消息时直接 `discussion-amend`；待审核的设计、Stage、实现提交可用 `activity-amend`，一旦被审核就锁定。讨论达成一致后由 Inspector 用 `decision-record` 写入短结论并关联讨论；同一类型和作用域的新结论成为当前有效版本，历史版本只留审计。
+讨论消息使用独立的 `discussion-*` 命令，不再用 `COMMENT_ADDED / DESIGN_GUIDANCE` 塞进处理历史。`discussion-list` 默认只返回最近 20 条摘要，并支持 `--cursor` / `--since` 增量读取；正文通过 `discussion-get` 按 id 获取。页面“讨论”视图还会只读投影设计、Stage 和实现正式提交；这些提交仍以 Activity 作为唯一数据源并保留在处理历史，“全部”视图去重后按最新优先展示。Developer、Inspector 修正自己的讨论消息时直接 `discussion-amend`；待审核的设计、Stage、实现提交可用 `activity-amend`，一旦被审核就锁定。讨论达成一致后由 Inspector 用 `decision-record` 写入短结论并关联讨论；同一类型和作用域的新结论成为当前有效版本，历史版本只留审计。
 
 用户与 Inspector 的当前 CLI 对话是需求澄清和关键设计确认入口，Issue/Web 只用于自动留档、回看和管理纠错。明确 Bug、唯一合理实现、普通代码细节或用户已明确允许的变化无需重复询问；新增持久化或基础设施、数据变更、对外行为变化、新依赖、范围扩大或多种影响不同的方案，必须先由 Inspector 在 CLI 用日常中文简短询问。用户回答后用 `design-choice-record` 绑定当前设计，`design-review` 再以 `--confirmation recorded --confirmation-id <id>` 批准；设计修订后旧确认失效。其余设计明确使用 `--confirmation not-needed`。
 
@@ -133,7 +133,7 @@ Inspector 修改 Task 状态时遵守标准状态机。Human 具有 Task 状态�
 
 实现审核失败时，若只是代码未按批准方案正确落地，则记录 `VERIFICATION_FAILED` 并回 `IN_PROGRESS`；若方向本身被新证据推翻，则转 `REDESIGN_REQUIRED`，强制重新走方案审核。连续两次失败后 Inspector 必须主动重新判断失败属于实现还是设计，避免重复阅读与大范围返工。
 
-复杂 Issue 可在设计批准前创建 Stage Plan。Stage 独立于 Issue 状态，按 `PLANNED → IN_PROGRESS → PENDING_REVIEW → APPROVED` 串行推进。Developer 在改码前先用 `stage-prepare` 声明影响范围、原因和历史保护项，完成后通过 `stage-submit` 提交 commit、Diff、当前测试、历史累计回归与代码证据。Inspector 按当前验收标准及所有历史 Stage baseline 复核，使用 BLOCKER/MUST/SHOULD/NIT 四级 finding；只有前两级阻断。通过时建立包含已验证行为、输入输出契约、业务语义和测试集合的 `PASSED` baseline，自动激活下一 Stage。第二轮起不得新增无关 SHOULD/NIT，新 BLOCKER/MUST 必须解释此前遗漏原因和实际风险；阻断项清零且所有验收通过后必须 PASS。若发现整案错误则显式进入 `REDESIGN_REQUIRED`，旧计划完整保留。所有 Stage 通过后才允许 `implementation-submit`，且仍需最终整体验证。简单 Issue 无需 Stage。
+复杂 Issue 可在设计批准前创建 Stage Plan。Stage 独立于 Issue 状态，按 `PLANNED → IN_PROGRESS → PENDING_REVIEW → APPROVED` 串行推进。Developer 在改码前先用 `stage-prepare` 声明影响范围、原因和历史保护项，完成后通过 `stage-submit` 提交 commit、Diff、当前测试、历史累计回归与代码证据。Inspector 默认从 `stage-get` 读取当前 Stage、合并后的有界保护约束和历史摘要；确需核验证据时再用 `stage-history-get` 按 stage 读取完整 baseline。审核使用 BLOCKER/MUST/SHOULD/NIT 四级 finding，只有前两级阻断。通过时建立包含已验证行为、输入输出契约、业务语义和测试集合的 `PASSED` baseline，自动激活下一 Stage。第二轮起不得新增无关 SHOULD/NIT，新 BLOCKER/MUST 必须解释此前遗漏原因和实际风险；阻断项清零且所有验收通过后必须 PASS。若发现整案错误则显式进入 `REDESIGN_REQUIRED`，旧计划完整保留。所有 Stage 通过后才允许 `implementation-submit`，且仍需最终整体验证。简单 Issue 无需 Stage。
 
 ## Human 最终兜底
 
@@ -147,11 +147,12 @@ Human 使用 `human-confirmation-resolve` 记录业务边界或风险决定，�
 
 ## 多 Issue Runtime
 
-启用 Thread Isolation 后，Supervisor 只保存 `(issue_key, operator_id) → thread_id`、固定身份、租约和事件等轻量调度数据；具体审核、实现、Diff/Evidence/测试分析由独立 Issue Thread 完成。Review Domain 的可执行状态变化会在同一事务写入 Runtime Event，由独立 Supervisor 消费；这与用户显式开启的 Manual Watch 无关。App Server 适配层、Registry CLI、事件调度器、静默多目标 Watcher和兼容性探针位于 `scripts/`，开关集中在 `config/runtime.json`。
+启用 Thread Isolation 后，Supervisor 只保存 `(issue_key, operator_id) → thread_id`、固定身份、租约和事件等轻量调度数据；具体审核、实现、Diff/Evidence/测试分析由独立 Issue Thread 完成。Review Domain 的可执行状态变化会在同一事务写入 Runtime Event。Event 只作为唤醒信号：Supervisor 领取时重新计算当前 Issue Projection，同一 Issue/Role 的旧事件会标记为 `SUPERSEDED`，没有真实待办时不会调用模型。普通 Action Turn 先且通常只调用一次 `issue-context-get` 获取有界 Working Set，再按资源 id 懒加载明细。每个 INIT/ACTION/COMPACT Turn 只记录 Token 数和 Review DB 子命令计数，不保存提示词、工具参数、返回正文或推理内容。App Server 适配层、Registry CLI、事件调度器、静默多目标 Watcher和兼容性探针位于 `scripts/`，开关集中在 `config/runtime.json`。
 
 ```bash
 python3 scripts/issue-thread.py status
 python3 scripts/code-inspector-supervisor.py status
+python3 scripts/code-inspector-supervisor.py metrics --issue RI-EXAMPLE
 python3 scripts/code-inspector-supervisor.py run
 python3 scripts/capability-probe.py --write
 ```
