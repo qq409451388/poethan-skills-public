@@ -22,6 +22,7 @@ database_pragmas:
 working_set_snapshot:
   projection: 单条 SQL 同时读取 Issue、当前 Stage 与 active plan。
   issue_context: 第一次读取前显式 BEGIN，完整装配后释放 snapshot；审计另开写事务。
+  revision_triggers: V017 在不修改已发布 V016 的前提下，把 review_level、review_scope、baseline_ref、evidence_json、local_terms_json 纳入 projection_revision。
 
 history:
   issue_activity:

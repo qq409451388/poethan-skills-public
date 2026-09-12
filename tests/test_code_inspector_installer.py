@@ -935,11 +935,12 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 "V014__runtime_identity_leases_and_outbox.sql",
                 "V015__token_runtime_projection.sql",
                 "V016__monotonic_issue_projection.sql",
+                "V017__complete_working_set_projection.sql",
             ])
             self.assertIsNotNone(upgraded["backup"])
             with sqlite3.connect(database) as conn:
                 conn.row_factory = sqlite3.Row
-                self.assertEqual(conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0], 16)
+                self.assertEqual(conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0], 17)
                 task = conn.execute("SELECT * FROM review_task WHERE id = 41").fetchone()
                 self.assertEqual((task["task_key"], task["task_type"], task["scope_fingerprint"]),
                                  ("RT-OLD", "REVIEW", "old-fingerprint"))
@@ -1029,6 +1030,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 "V014__runtime_identity_leases_and_outbox.sql",
                 "V015__token_runtime_projection.sql",
                 "V016__monotonic_issue_projection.sql",
+                "V017__complete_working_set_projection.sql",
             ])
             with sqlite3.connect(database) as conn:
                 conn.row_factory = sqlite3.Row
@@ -1080,6 +1082,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 "V014__runtime_identity_leases_and_outbox.sql",
                 "V015__token_runtime_projection.sql",
                 "V016__monotonic_issue_projection.sql",
+                "V017__complete_working_set_projection.sql",
             ])
             with closing(sqlite3.connect(database)) as conn, conn:
                 conn.row_factory = sqlite3.Row
@@ -1255,6 +1258,15 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 "--confirmation", "not-needed", "--content", "错误跳过范围确认",
             )
             self.assertIn("需确认变化", uncovered_change.stderr)
+            human_choice = fails(
+                "human", "design-choice-record", "--issue-key", "RI-DESIGN",
+                "--design-activity-id", str(resubmitted["activity_id"]),
+                "--question", "Human 不得伪装 Inspector CLI 提问。",
+                "--answer", "越权回答。", "--summary", "越权确认。",
+                "--impacts", json.dumps(["new_persistence"]),
+                "--change-ids", json.dumps(["SC-PROGRESS"]),
+            )
+            self.assertIn("无权执行 design-choice-record", human_choice.stderr)
             first_choice = db(
                 "inspector", "design-choice-record", "--issue-key", "RI-DESIGN",
                 "--design-activity-id", str(resubmitted["activity_id"]),
@@ -2760,6 +2772,12 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 "--baseline-ref", "main~1",
             )
             db("inspector", "version-create", "--task-key", "RT-DISCUSSION-BOUND", "--reason", "首次检查")
+            issue_evidence = [{"file_path": "src/payments/service.py", "line": 42}] + [
+                {"file_path": f"src/payments/generated_{index}.py", "code_excerpt": "x" * 1200}
+                for index in range(15)
+            ]
+            issue_terms = {"结算日": "交易进入最终账本的日期"}
+            issue_terms.update({f"术语-{index}": "解释" * 200 for index in range(35)})
             db(
                 "inspector", "issue-create", "--task-key", "RT-DISCUSSION-BOUND",
                 "--issue-key", "RI-DISCUSSION-BOUND", "--title", "讨论增长",
@@ -2767,8 +2785,8 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 "--remediation-benefit", "medium", "--remediation-cost", "low",
                 "--disposition", "current_iteration", "--confidence", "high",
                 "--description", "讨论应按需读取", "--facts", "超过 200 条", "--rationale", "控制上下文",
-                "--evidence", json.dumps([{"file_path": "src/payments/service.py", "line": 42}]),
-                "--local-terms", json.dumps({"结算日": "交易进入最终账本的日期"}, ensure_ascii=False),
+                "--evidence", json.dumps(issue_evidence),
+                "--local-terms", json.dumps(issue_terms, ensure_ascii=False),
             )
             database = home / ".agent-review" / "data" / "review.db"
             with closing(sqlite3.connect(database)) as conn, conn:
@@ -2805,10 +2823,18 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             self.assertEqual(context["issue"]["review_scope"], "src/payments")
             self.assertEqual(context["issue"]["baseline_ref"], "main~1")
             self.assertEqual(
-                context["issue"]["evidence"],
-                [{"file_path": "src/payments/service.py", "line": 42}],
+                context["issue"]["evidence"][0],
+                {"file_path": "src/payments/service.py", "line": 42},
             )
+            self.assertEqual(context["issue"]["evidence_count"], 16)
+            self.assertEqual(len(context["issue"]["evidence"]), 12)
+            self.assertTrue(context["issue"]["evidence_truncated"])
+            self.assertTrue(context["issue"]["evidence"][1]["truncated"])
             self.assertEqual(context["issue"]["local_terms"]["结算日"], "交易进入最终账本的日期")
+            self.assertEqual(context["issue"]["local_terms_count"], 36)
+            self.assertEqual(len(context["issue"]["local_terms"]), 30)
+            self.assertTrue(context["issue"]["local_terms_truncated"])
+            self.assertLessEqual(len(context["issue"]["local_terms"]["术语-0"]), 240)
             self.assertEqual(
                 context["lazy_load"],
                 ["discussion-get", "activity-get", "stage-history-get", "design-preview"],
@@ -2991,6 +3017,10 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 ).fetchone()[0]]
                 conn.execute("UPDATE review_issue SET summary='s2' WHERE id=?", (issue_id,))
                 revisions.append(conn.execute("SELECT projection_revision FROM review_issue WHERE id=?", (issue_id,)).fetchone()[0])
+                conn.execute("UPDATE review_issue SET evidence_json='[{\"file_path\":\"new.py\"}]' WHERE id=?", (issue_id,))
+                revisions.append(conn.execute("SELECT projection_revision FROM review_issue WHERE id=?", (issue_id,)).fetchone()[0])
+                conn.execute("UPDATE review_issue SET local_terms_json='{\"ledger\":\"账本\"}' WHERE id=?", (issue_id,))
+                revisions.append(conn.execute("SELECT projection_revision FROM review_issue WHERE id=?", (issue_id,)).fetchone()[0])
                 conn.execute(
                     """INSERT INTO issue_discussion(issue_id,topic,operator_type,operator_id,content)
                        VALUES(?,'GENERAL','DEVELOPMENT_AGENT','dev','discussion')""",
@@ -3019,6 +3049,12 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 )
                 revisions.append(conn.execute("SELECT projection_revision FROM review_issue WHERE id=?", (issue_id,)).fetchone()[0])
                 conn.execute("UPDATE review_task SET project_name='p2' WHERE id=1")
+                revisions.append(conn.execute("SELECT projection_revision FROM review_issue WHERE id=?", (issue_id,)).fetchone()[0])
+                conn.execute("UPDATE review_task SET review_level='L2' WHERE id=1")
+                revisions.append(conn.execute("SELECT projection_revision FROM review_issue WHERE id=?", (issue_id,)).fetchone()[0])
+                conn.execute("UPDATE review_task SET review_scope='src/payments' WHERE id=1")
+                revisions.append(conn.execute("SELECT projection_revision FROM review_issue WHERE id=?", (issue_id,)).fetchone()[0])
+                conn.execute("UPDATE review_task SET baseline_ref='main~1' WHERE id=1")
                 revisions.append(conn.execute("SELECT projection_revision FROM review_issue WHERE id=?", (issue_id,)).fetchone()[0])
 
             self.assertTrue(all(after > before for before, after in zip(revisions, revisions[1:])))

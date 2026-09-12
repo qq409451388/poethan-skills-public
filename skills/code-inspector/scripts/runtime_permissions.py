@@ -59,6 +59,22 @@ ALLOWED_ACTIVITY_BY_AGENT = {
 }
 
 
+ACTION_ROLES = {
+    "discussion-append": {"inspector", "developer", "human"},
+    "activity-append": set(ALLOWED_ACTIVITY_BY_AGENT),
+    "design-request": {"inspector", "human"},
+    "design-submit": {"developer", "human"},
+    "design-choice-record": {"inspector"},
+    "design-review": {"inspector", "human"},
+    "stage-prepare": {"developer", "human"},
+    "stage-submit": {"developer", "human"},
+    "stage-review": {"inspector", "human"},
+    "implementation-submit": {"developer", "human"},
+    "issue-update-status": {"inspector", "developer", "human"},
+    "human-escalate": {"inspector"},
+}
+
+
 def status_targets(status: str, role: str) -> set[str]:
     """返回 Runtime 通用状态命令当前真正接受的目标状态。"""
     if role == "human" and status != "HUMAN_CONFIRMATION_REQUIRED":
@@ -77,36 +93,40 @@ def runtime_issue_actions(state: dict[str, Any]) -> tuple[list[str], list[str]]:
     active_plan_complete = bool(state.get("active_plan_complete"))
 
     actions: list[str] = []
-    if role in {"inspector", "developer", "human"}:
+    if role in ACTION_ROLES["discussion-append"]:
         actions.append("discussion-append")
-    if ALLOWED_ACTIVITY_BY_AGENT.get(role):
+    if role in ACTION_ROLES["activity-append"]:
         actions.append("activity-append")
 
-    if role in {"inspector", "human"} and status in {"PROPOSED", "IN_PROGRESS"}:
+    if role in ACTION_ROLES["design-request"] and status in {"PROPOSED", "IN_PROGRESS"}:
         actions.append("design-request")
-    if role in {"developer", "human"} and status in {"DESIGN_REQUIRED", "REDESIGN_REQUIRED"}:
+    if role in ACTION_ROLES["design-submit"] and status in {"DESIGN_REQUIRED", "REDESIGN_REQUIRED"}:
         actions.append("design-submit")
-    if role in {"inspector", "human"} and status == "DESIGN_PENDING_REVIEW":
-        actions.extend(["design-choice-record", "design-review"])
+    if status == "DESIGN_PENDING_REVIEW":
+        if role in ACTION_ROLES["design-choice-record"]:
+            actions.append("design-choice-record")
+        if role in ACTION_ROLES["design-review"]:
+            actions.append("design-review")
 
-    if role in {"developer", "human"} and status == "IN_PROGRESS" and stage_status == "IN_PROGRESS":
-        actions.append("stage-prepare")
-        if stage_prepared or stage_governance_version < 2:
+    if status == "IN_PROGRESS" and stage_status == "IN_PROGRESS":
+        if role in ACTION_ROLES["stage-prepare"]:
+            actions.append("stage-prepare")
+        if role in ACTION_ROLES["stage-submit"] and (stage_prepared or stage_governance_version < 2):
             actions.append("stage-submit")
-    if role in {"inspector", "human"} and status == "IN_PROGRESS" and stage_status == "PENDING_REVIEW":
+    if role in ACTION_ROLES["stage-review"] and status == "IN_PROGRESS" and stage_status == "PENDING_REVIEW":
         actions.append("stage-review")
 
     implementation_ready = status in {"PROPOSED", "IN_PROGRESS"} and (
         not has_active_plan or active_plan_complete
     )
-    if role in {"developer", "human"} and implementation_ready:
+    if role in ACTION_ROLES["implementation-submit"] and implementation_ready:
         actions.append("implementation-submit")
 
     if status_targets(status, role):
         actions.append("issue-update-status")
 
     exception_actions = []
-    if role == "inspector" and status in HUMAN_ESCALATION_SOURCES:
+    if role in ACTION_ROLES["human-escalate"] and status in HUMAN_ESCALATION_SOURCES:
         exception_actions.append("human-escalate")
     return actions, exception_actions
 

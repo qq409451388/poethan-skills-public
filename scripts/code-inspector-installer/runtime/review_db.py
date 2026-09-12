@@ -156,6 +156,53 @@ def loads(value: str | None, default: Any) -> Any:
         return default
     return json.loads(value)
 
+CONTEXT_EVIDENCE_LIMIT = 12
+CONTEXT_EVIDENCE_ITEM_MAX_CHARS = 800
+CONTEXT_LOCAL_TERMS_LIMIT = 30
+CONTEXT_LOCAL_TERM_MAX_CHARS = 80
+CONTEXT_LOCAL_MEANING_MAX_CHARS = 240
+
+def truncate_context_text(value: Any, limit: int) -> str:
+    text = str(value)
+    return text if len(text) <= limit else text[:limit - 3] + "..."
+
+def bounded_context_evidence(evidence: list[Any]) -> tuple[list[Any], bool]:
+    """保留常用定位字段，并限制 evidence 数量与单项正文大小。"""
+    result: list[Any] = []
+    truncated = len(evidence) > CONTEXT_EVIDENCE_LIMIT
+    locator_fields = (
+        "file_path", "class_name", "method_name", "symbol", "line", "line_start", "line_end",
+    )
+    for item in evidence[:CONTEXT_EVIDENCE_LIMIT]:
+        encoded = dumps(item)
+        if len(encoded) <= CONTEXT_EVIDENCE_ITEM_MAX_CHARS:
+            result.append(item)
+            continue
+        truncated = True
+        compact: dict[str, Any] = {"truncated": True}
+        if isinstance(item, dict):
+            for field in locator_fields:
+                value = item.get(field)
+                if value is None:
+                    continue
+                compact[field] = value if isinstance(value, (int, float, bool)) else truncate_context_text(value, 160)
+        compact["summary"] = truncate_context_text(encoded, CONTEXT_EVIDENCE_ITEM_MAX_CHARS // 2)
+        result.append(compact)
+    return result, truncated
+
+def bounded_context_local_terms(local_terms: dict[str, Any]) -> tuple[dict[str, str], bool]:
+    """保留有序术语前缀，并限制术语名和解释长度。"""
+    result: dict[str, str] = {}
+    truncated = len(local_terms) > CONTEXT_LOCAL_TERMS_LIMIT
+    for index, (term, meaning) in enumerate(list(local_terms.items())[:CONTEXT_LOCAL_TERMS_LIMIT], 1):
+        key = truncate_context_text(term, CONTEXT_LOCAL_TERM_MAX_CHARS)
+        if key in result:
+            key = truncate_context_text(term, CONTEXT_LOCAL_TERM_MAX_CHARS - 6) + f"#{index}"
+        value = truncate_context_text(meaning, CONTEXT_LOCAL_MEANING_MAX_CHARS)
+        truncated = truncated or key != term or value != str(meaning)
+        result[key] = value
+    return result, truncated
+
 HUMAN_RECORD_MAX_CHARS = 180
 
 def validate_human_record(value: str, field_name: str) -> str:
@@ -2047,8 +2094,12 @@ def issue_context_get(args: argparse.Namespace) -> None:
         audit(conn, actor_id(args), "issue.context-get", "review_issue", args.issue_key, True,
               f"projection_revision={projection['projection_revision']}")
     issue_json = dict(issue)
-    issue_json["evidence"] = loads(issue_json.pop("evidence_json"), [])
-    issue_json["local_terms"] = loads(issue_json.pop("local_terms_json"), {})
+    evidence = loads(issue_json.pop("evidence_json"), [])
+    local_terms = loads(issue_json.pop("local_terms_json"), {})
+    issue_json["evidence"], issue_json["evidence_truncated"] = bounded_context_evidence(evidence)
+    issue_json["evidence_count"] = len(evidence)
+    issue_json["local_terms"], issue_json["local_terms_truncated"] = bounded_context_local_terms(local_terms)
+    issue_json["local_terms_count"] = len(local_terms)
     for field in ("summary", "expected_outcome", "technical_note"):
         value = issue_json.get(field)
         if isinstance(value, str) and len(value) > 600:

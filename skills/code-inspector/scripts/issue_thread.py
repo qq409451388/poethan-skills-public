@@ -335,6 +335,45 @@ def resume(
             if item["thread_status"] == "FAILED":
                 raise RuntimeError(f"THREAD_{item['thread_status']}")
             thread_id, cwd = item["thread_id"], item["cwd"]
+            execution_action = projection["pending_action"]
+            if execution_action is None:
+                thread_status = item["thread_status"]
+                if issue["status"] in TERMINAL_ISSUES:
+                    conn.execute(
+                        """UPDATE code_inspector_thread
+                           SET thread_status='COMPLETED',issue_status=?,next_action='archive',
+                               worker_id=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP
+                           WHERE id=?""",
+                        (issue["status"], item["id"]),
+                    )
+                    # End the database transaction before the external archive call.
+                    conn.commit()
+                    thread_status = "COMPLETED"
+                    try:
+                        runtime_call(config, lambda runtime: runtime.archive(thread_id))
+                        conn.execute(
+                            """UPDATE code_inspector_thread
+                               SET thread_status='ARCHIVED',next_action='none',updated_at=CURRENT_TIMESTAMP
+                               WHERE id=?""",
+                            (item["id"],),
+                        )
+                        thread_status = "ARCHIVED"
+                    except Exception as exc:
+                        conn.execute(
+                            """UPDATE code_inspector_thread
+                               SET error_code='ARCHIVE_FAILED',error_message=?,updated_at=CURRENT_TIMESTAMP
+                               WHERE id=?""",
+                            (str(exc)[:1000], item["id"]),
+                        )
+                return {
+                    "issue_key": issue_key, "role": role, "operator_id": operator_id,
+                    "thread_id": thread_id, "thread_status": thread_status,
+                    "issue_status": issue["status"], "status": "SKIPPED_STALE",
+                    "action_turn_completed": True, "model_called": False,
+                    "event_action": reason, "execution_action": None,
+                    "event_revision": event_revision,
+                    "execution_revision": execution_revision,
+                }
             was_archived = item["thread_status"] == "ARCHIVED"
             compact_flags = config["thread_runtime"]["compact"]
             boundary = ReviewRepository(conn).completed_stage_boundary(issue["id"], item["last_compact_stage_no"])
@@ -368,7 +407,7 @@ def resume(
                 """UPDATE code_inspector_thread SET thread_status='ACTIVE',last_event=?,worker_id=?,
                    lease_until=datetime('now',?),heartbeat_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP,
                    last_active_at=CURRENT_TIMESTAMP,error_code=NULL,error_message=NULL WHERE id=?""",
-                (event_id or reason, worker_id, f"+{lease_seconds} seconds", item["id"]),
+                (event_id or execution_action, worker_id, f"+{lease_seconds} seconds", item["id"]),
             )
         lock_key = f"workspace-{Path(cwd).resolve()}" if role == "developer" else f"thread-{thread_id}"
         action_started = False
@@ -376,7 +415,7 @@ def resume(
             with active_slot(int(config["thread_runtime"]["concurrency"]["max_active_issue_threads"])):
                 with execution_lock(lock_key):
                     prompt = (
-                        f"ACTION issue={issue_key} role={role} action={reason} "
+                        f"ACTION issue={issue_key} role={role} action={execution_action} "
                         f"execution_revision={execution_revision} "
                         f"event_revision={event_revision if event_revision is not None else '-'} "
                         f"event_id={event_id or '-'}。\n"
@@ -448,7 +487,9 @@ def resume(
                 "issue_key": issue_key, "role": role, "operator_id": operator_id,
                 "thread_id": thread_id, "thread_status": status, "issue_status": issue["status"],
                 "managed_compact": compact_work_unit if should_compact else None,
-                "action_turn_completed": True, "event_revision": event_revision,
+                "action_turn_completed": True, "model_called": True,
+                "event_action": reason, "execution_action": execution_action,
+                "event_revision": event_revision,
                 "execution_revision": execution_revision,
             }
         except Exception as exc:

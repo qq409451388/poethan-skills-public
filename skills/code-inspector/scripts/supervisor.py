@@ -262,7 +262,10 @@ def process_event(event: dict, scope: SessionScope) -> dict:
             )
         if not result.get("action_turn_completed"):
             raise RuntimeError("ACTION_TURN_NOT_COMPLETED")
-        status, failure, error = "DONE", None, None
+        if result.get("status") == "SKIPPED_STALE":
+            status, failure, error = "SUPERSEDED", None, "NO_PENDING_ACTION_AT_RESUME"
+        else:
+            status, failure, error = "DONE", None, None
     except Exception as exc:
         result, failure, error = None, classify_error(exc), str(exc)[:1000]
         status = "PENDING" if failure == "RETRYABLE" else "FAILED"
