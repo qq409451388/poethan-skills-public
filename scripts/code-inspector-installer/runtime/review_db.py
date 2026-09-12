@@ -13,6 +13,12 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+try:
+    from issue_projection import current_projection
+except ModuleNotFoundError:  # 仓库内直接执行时，模块尚未复制到安装目录。
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "skills" / "code-inspector" / "scripts"))
+    from issue_projection import current_projection
+
 DEFAULT_DB_PATH = Path(os.path.expandvars(os.path.expanduser(
     os.environ.get("AGENT_REVIEW_DB", "~/.agent-review/data/review.db")
 )))
@@ -1868,6 +1874,57 @@ def stage_list(args: argparse.Namespace) -> None:
         ).fetchall()
     print_json([stage_row_json(row) for row in rows])
 
+
+STAGE_HISTORY_LIMIT = 10
+CONSTRAINT_ITEM_LIMIT = 40
+
+
+def historical_constraint_summary(rows: list[sqlite3.Row]) -> dict[str, Any]:
+    """返回有界、去重的历史保护约束；完整 baseline 仍按 Stage 单独读取。"""
+    items: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    total = 0
+    for row in rows:
+        baseline = loads(row["baseline_json"], {})
+        for category in ("verified_behaviors", "input_output_contracts", "business_semantics"):
+            for value in baseline.get(category, []):
+                total += 1
+                normalized = json.dumps(value, ensure_ascii=False, sort_keys=True)
+                if normalized in seen:
+                    continue
+                seen.add(normalized)
+                if len(items) < CONSTRAINT_ITEM_LIMIT:
+                    text = value if isinstance(value, str) else normalized
+                    items.append({
+                        "category": category,
+                        "summary": text[:240] + ("..." if len(text) > 240 else ""),
+                        "source_stage_no": row["stage_no"],
+                    })
+    return {
+        "items": items,
+        "unique_count": len(seen),
+        "source_item_count": total,
+        "truncated": len(seen) > len(items),
+    }
+
+
+def compact_stage(row: sqlite3.Row) -> dict[str, Any]:
+    item = dict(row)
+    return {
+        "id": item["id"], "plan_no": item["plan_no"], "stage_no": item["stage_no"],
+        "title": item["title"], "objective": item["objective"],
+        "acceptance_criteria": item["acceptance_criteria"], "status": item["status"],
+        "governance_version": item["governance_version"],
+        "planned_change_scope": loads(item["planned_change_scope_json"], {}),
+        "change_reason": item["change_reason"],
+        "protected_behaviors": loads(item["protected_behaviors_json"], []),
+        "prepared_at": item["prepared_at"], "submitted_commit_sha": item["submitted_commit_sha"],
+        "developer_summary": item["developer_summary"], "diff_summary": item["diff_summary"],
+        "review_comment": item["review_comment"], "review_round": item["review_round"],
+        "baseline_status": item["baseline_status"],
+        "submitted_at": item["submitted_at"], "approved_at": item["approved_at"],
+    }
+
 def stage_get(args: argparse.Namespace) -> None:
     require_agent(args.agent)
     with connect() as conn:
@@ -1888,23 +1945,139 @@ def stage_get(args: argparse.Namespace) -> None:
         if not row:
             raise KeyError(f"Stage 不存在: plan={plan_no}, stage={args.stage_no}")
         previous = conn.execute(
-            """SELECT stage_no, title, baseline_json, baseline_status, baseline_established_at
+            """SELECT id, stage_no, title, status, baseline_json, baseline_status, baseline_established_at
                FROM issue_stage
                WHERE issue_id = ? AND plan_no = ? AND stage_no < ? AND status = 'APPROVED'
                ORDER BY stage_no""",
             (issue["id"], plan_no, args.stage_no),
         ).fetchall()
-    result = stage_row_json(row)
-    result["historical_baselines"] = [
+    history = [
         {
-            "stage_no": item["stage_no"], "title": item["title"],
-            "status": item["baseline_status"],
-            "baseline": loads(item["baseline_json"], {}),
-            "established_at": item["baseline_established_at"],
+            "id": item["id"], "stage_no": item["stage_no"], "title": item["title"],
+            "status": item["status"], "baseline_status": item["baseline_status"],
         }
-        for item in previous
+        for item in previous[-STAGE_HISTORY_LIMIT:]
     ]
-    print_json(result)
+    current = compact_stage(row)
+    print_json({
+        **current,
+        "stage": current,
+        "protected_constraints": historical_constraint_summary(previous),
+        "stage_history": history,
+        "stage_history_count": len(previous),
+        "stage_history_truncated": len(previous) > len(history),
+    })
+
+
+def stage_history_get(args: argparse.Namespace) -> None:
+    """按 Stage 读取完整审核与 baseline，避免普通 Working Set 随历史增长。"""
+    require_agent(args.agent)
+    with connect() as conn:
+        issue = issue_row(conn, args.issue_key)
+        plan_no = args.plan_no
+        if plan_no is None:
+            plan_no = conn.execute(
+                "SELECT MAX(plan_no) FROM issue_stage WHERE issue_id=?", (issue["id"],),
+            ).fetchone()[0]
+        row = conn.execute(
+            "SELECT * FROM issue_stage WHERE issue_id=? AND plan_no=? AND stage_no=?",
+            (issue["id"], plan_no, args.stage_no),
+        ).fetchone()
+        if not row:
+            raise KeyError(f"Stage 不存在: plan={plan_no}, stage={args.stage_no}")
+        audit(conn, actor_id(args), "stage.history-get", "issue_stage", str(row["id"]), True)
+    print_json(stage_row_json(row))
+
+
+def issue_context_get(args: argparse.Namespace) -> None:
+    """一次返回当前角色的有界 Working Set，历史正文只提供可继续读取的 id。"""
+    require_agent(args.agent)
+    if args.agent == "human":
+        role = "inspector"
+    else:
+        role = args.agent
+    with connect() as conn:
+        projection = current_projection(conn, args.issue_key, role)
+        issue = conn.execute(
+            """SELECT i.issue_key, i.title, i.summary, i.expected_outcome, i.technical_note,
+                      i.status, i.dimension, i.severity, i.current_attempt_no,
+                      t.task_key, t.project_name
+               FROM review_issue i JOIN review_task t ON t.id=i.task_id
+               WHERE i.issue_key=?""",
+            (args.issue_key,),
+        ).fetchone()
+        stage = None
+        stage_history: list[dict[str, Any]] = []
+        constraints = {"items": [], "unique_count": 0, "source_item_count": 0, "truncated": False}
+        stage_rows: list[sqlite3.Row] = []
+        if projection["has_active_plan"]:
+            plan_no = conn.execute(
+                "SELECT MAX(plan_no) FROM issue_stage WHERE issue_id=? AND plan_status='ACTIVE'",
+                (projection["issue_id"],),
+            ).fetchone()[0]
+            stage_rows = conn.execute(
+                """SELECT * FROM issue_stage
+                   WHERE issue_id=? AND plan_no=? ORDER BY stage_no""",
+                (projection["issue_id"], plan_no),
+            ).fetchall()
+            current = projection["current_stage"]
+            if current:
+                row = next((item for item in stage_rows if item["id"] == current["id"]), None)
+                stage = compact_stage(row) if row else current
+            approved = [item for item in stage_rows if item["status"] == "APPROVED"]
+            constraints = historical_constraint_summary(approved)
+            stage_history = [
+                {"id": item["id"], "stage_no": item["stage_no"], "status": item["status"], "title": item["title"]}
+                for item in stage_rows[-STAGE_HISTORY_LIMIT:]
+            ]
+        activities = conn.execute(
+            """SELECT id, activity_type, result_status,
+                      COALESCE(amended_at, created_at) AS time,
+                      CASE WHEN length(trim(content)) > 160
+                        THEN substr(trim(replace(replace(replace(content,char(13),' '),char(10),' '),char(9),' ')),1,157) || '...'
+                        ELSE trim(replace(replace(replace(content,char(13),' '),char(10),' '),char(9),' ')) END AS summary
+               FROM issue_activity WHERE issue_id=?
+               ORDER BY id DESC LIMIT 6""",
+            (projection["issue_id"],),
+        ).fetchall()
+        decisions = conn.execute(
+            """SELECT id, decision_type, scope_key, outcome, created_at AS time,
+                      CASE WHEN length(trim(content)) > 180
+                        THEN substr(trim(content),1,177) || '...' ELSE trim(content) END AS summary
+               FROM issue_decision WHERE issue_id=? AND effective=1
+               ORDER BY id DESC LIMIT 10""",
+            (projection["issue_id"],),
+        ).fetchall()
+        discussions = conn.execute(
+            """SELECT id FROM issue_discussion WHERE issue_id=? ORDER BY id DESC LIMIT 10""",
+            (projection["issue_id"],),
+        ).fetchall()
+        audit(conn, actor_id(args), "issue.context-get", "review_issue", args.issue_key, True,
+              f"projection_revision={projection['projection_revision']}")
+    issue_json = dict(issue)
+    for field in ("summary", "expected_outcome", "technical_note"):
+        value = issue_json.get(field)
+        if isinstance(value, str) and len(value) > 600:
+            issue_json[field] = value[:597] + "..."
+    print_json({
+        "projection_revision": projection["projection_revision"],
+        "issue": issue_json,
+        "current_stage": stage,
+        "effective_decisions": [dict(item) for item in decisions],
+        "latest_activities": [dict(item) for item in activities],
+        "protected_constraints": constraints,
+        "pending_action": projection["pending_action"],
+        "allowed_actions": projection["allowed_actions"],
+        "resources": {
+            "activity_ids": [item["id"] for item in activities],
+            "discussion_ids": [item["id"] for item in discussions],
+            "stage_refs": [
+                {"stage_id": item["id"], "stage_no": item["stage_no"]} for item in stage_rows
+            ][-STAGE_HISTORY_LIMIT:],
+            "stage_history_count": len(stage_rows),
+        },
+        "lazy_load": ["discussion-get", "activity-get", "stage-history-get"],
+    })
 
 def stage_prepare(args: argparse.Namespace) -> None:
     require_agent(args.agent)
@@ -1958,13 +2131,7 @@ def stage_prepare(args: argparse.Namespace) -> None:
                WHERE id = ?""",
             (dumps(change_scope), reason, dumps(protected_behaviors), stage["id"]),
         )
-        previous_baselines = [
-            {
-                "stage_no": item["stage_no"], "title": item["title"],
-                "status": item["baseline_status"], "baseline": loads(item["baseline_json"], {}),
-            }
-            for item in previous
-        ]
+        constraint_summary = historical_constraint_summary(previous)
         conn.execute(
             """INSERT INTO issue_activity(
                 issue_id, attempt_no, activity_type, operator_type, operator_id,
@@ -1982,7 +2149,9 @@ def stage_prepare(args: argparse.Namespace) -> None:
         audit(conn, actor_id(args), "stage.prepare", "review_issue", args.issue_key, True)
     print_json({
         "issue_key": args.issue_key, "plan_no": plan_no, "stage_no": args.stage_no,
-        "status": "IN_PROGRESS", "historical_baselines": previous_baselines,
+        "status": "IN_PROGRESS", "protected_constraints": constraint_summary,
+        "historical_stage_nos": [item["stage_no"] for item in previous[-STAGE_HISTORY_LIMIT:]],
+        "historical_stage_count": len(previous),
     })
 
 def stage_submit(args: argparse.Namespace) -> None:
@@ -2521,9 +2690,17 @@ def discussion_amend(args: argparse.Namespace) -> None:
 
 def discussion_list(args: argparse.Namespace) -> None:
     require_agent(args.agent)
-    if not 1 <= args.limit <= 1000:
-        raise ValueError("limit 必须在 1 到 1000 之间")
-    sql = """SELECT d.*, i.issue_key
+    if not 1 <= args.limit <= 100:
+        raise ValueError("limit 必须在 1 到 100 之间")
+    if args.cursor is not None and args.cursor < 1:
+        raise ValueError("cursor 必须是正整数 discussion id")
+    sql = """SELECT d.id, d.topic,
+                    COALESCE(d.amended_at, d.created_at) AS time,
+                    CASE
+                      WHEN length(trim(d.content)) > 160
+                        THEN substr(trim(replace(replace(replace(d.content, char(13), ' '), char(10), ' '), char(9), ' ')), 1, 157) || '...'
+                      ELSE trim(replace(replace(replace(d.content, char(13), ' '), char(10), ' '), char(9), ' '))
+                    END AS summary
              FROM issue_discussion d JOIN review_issue i ON i.id = d.issue_id
              WHERE i.issue_key = ?"""
     params: list[Any] = [args.issue_key]
@@ -2533,13 +2710,32 @@ def discussion_list(args: argparse.Namespace) -> None:
     if args.since:
         sql += " AND COALESCE(d.amended_at, d.created_at) >= ?"
         params.append(normalize_since(args.since))
-    sql += " ORDER BY d.created_at ASC, d.id ASC LIMIT ?"
+    if args.cursor is not None:
+        sql += " AND d.id < ?"
+        params.append(args.cursor)
+    # id 是稳定 cursor；amended_at 仍通过 time 暴露，增量修订可配合 --since 获取。
+    sql += " ORDER BY d.id DESC LIMIT ?"
     params.append(args.limit)
     with connect() as conn:
         rows = conn.execute(sql, params).fetchall()
         audit(conn, actor_id(args), "discussion.list", "issue_discussion", args.issue_key, True,
               f"count={len(rows)}")
     print_json([dict(row) for row in rows])
+
+
+def discussion_get(args: argparse.Namespace) -> None:
+    require_agent(args.agent)
+    with connect() as conn:
+        row = conn.execute(
+            """SELECT d.*, i.issue_key
+               FROM issue_discussion d JOIN review_issue i ON i.id=d.issue_id
+               WHERE i.issue_key=? AND d.id=?""",
+            (args.issue_key, args.discussion_id),
+        ).fetchone()
+        if not row:
+            raise KeyError(f"讨论不存在或不属于问题 {args.issue_key}: {args.discussion_id}")
+        audit(conn, actor_id(args), "discussion.get", "issue_discussion", str(args.discussion_id), True)
+    print_json(dict(row))
 
 def decision_record(args: argparse.Namespace) -> None:
     require_agent(args.agent)
@@ -3217,6 +3413,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--plan-no", type=int)
     p.set_defaults(func=stage_get)
 
+    p = sub.add_parser("stage-history-get")
+    p.add_argument("--issue-key", required=True)
+    p.add_argument("--stage-no", required=True, type=int)
+    p.add_argument("--plan-no", type=int)
+    p.set_defaults(func=stage_history_get)
+
+    p = sub.add_parser("issue-context-get")
+    p.add_argument("--issue-key", required=True)
+    p.set_defaults(func=issue_context_get)
+
     p = sub.add_parser("stage-prepare")
     p.add_argument("--issue-key", required=True)
     p.add_argument("--stage-no", required=True, type=int)
@@ -3308,8 +3514,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--issue-key", required=True)
     p.add_argument("--topic", choices=sorted(DISCUSSION_TOPICS))
     p.add_argument("--since")
-    p.add_argument("--limit", type=int, default=200)
+    p.add_argument("--cursor", type=int, help="读取 id 小于 cursor 的更早讨论")
+    p.add_argument("--limit", type=int, default=20)
     p.set_defaults(func=discussion_list)
+
+    p = sub.add_parser("discussion-get")
+    p.add_argument("--issue-key", required=True)
+    p.add_argument("--discussion-id", required=True, type=int)
+    p.set_defaults(func=discussion_get)
 
     p = sub.add_parser("decision-record")
     p.add_argument("--issue-key", required=True)

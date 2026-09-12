@@ -490,7 +490,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 "--topic", "GENERAL", "--content", "请重新评估严重度",
             )
             comments = db("inspector", "discussion-list", "--issue-key", "RI-BATCH-1")
-            self.assertTrue(any(item["content"] == "请重新评估严重度" for item in comments))
+            self.assertTrue(any(item["summary"] == "请重新评估严重度" for item in comments))
 
             detail = db("developer", "issue-get", "--issue-key", "RI-BATCH-1")
             self.assertEqual(detail["summary"], "完整描述 1")
@@ -759,10 +759,15 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             self.assertEqual((amended["amendment_count"], amended["unchanged"]), (1, False))
             current = db("inspector", "discussion-list", "--issue-key", "RI-AMEND")
             amended_discussion = next(item for item in current if item["id"] == developer_discussion["discussion_id"])
-            self.assertEqual(amended_discussion["content"], "最新开发说明")
-            self.assertEqual(amended_discussion["amendment_count"], 1)
-            self.assertIsNotNone(amended_discussion["amended_at"])
-            self.assertNotIn("旧开发说明", [item["content"] for item in current])
+            self.assertEqual(amended_discussion["summary"], "最新开发说明")
+            full_discussion = db(
+                "inspector", "discussion-get", "--issue-key", "RI-AMEND",
+                "--discussion-id", str(developer_discussion["discussion_id"]),
+            )
+            self.assertEqual(full_discussion["content"], "最新开发说明")
+            self.assertEqual(full_discussion["amendment_count"], 1)
+            self.assertIsNotNone(full_discussion["amended_at"])
+            self.assertNotIn("旧开发说明", [item["summary"] for item in current])
 
             with sqlite3.connect(home / ".agent-review" / "data" / "review.db") as conn:
                 revision = conn.execute(
@@ -797,7 +802,10 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 "--discussion-id", str(inspector_discussion["discussion_id"]), "--content", "最新审核约束",
             )
             recent = db("developer", "discussion-list", "--issue-key", "RI-AMEND")
-            self.assertEqual(recent[-1]["content"], "最新审核约束")
+            inspector_summary = next(
+                item for item in recent if item["id"] == inspector_discussion["discussion_id"]
+            )
+            self.assertEqual(inspector_summary["summary"], "最新审核约束")
 
             conclusion = db(
                 "inspector", "decision-record", "--issue-key", "RI-AMEND",
@@ -910,11 +918,12 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 "V012__lean_issues_discussions_and_decisions.sql",
                 "V013__issue_thread_runtime.sql",
                 "V014__runtime_identity_leases_and_outbox.sql",
+                "V015__token_runtime_projection.sql",
             ])
             self.assertIsNotNone(upgraded["backup"])
             with sqlite3.connect(database) as conn:
                 conn.row_factory = sqlite3.Row
-                self.assertEqual(conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0], 14)
+                self.assertEqual(conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0], 15)
                 task = conn.execute("SELECT * FROM review_task WHERE id = 41").fetchone()
                 self.assertEqual((task["task_key"], task["task_type"], task["scope_fingerprint"]),
                                  ("RT-OLD", "REVIEW", "old-fingerprint"))
@@ -1002,6 +1011,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 "V012__lean_issues_discussions_and_decisions.sql",
                 "V013__issue_thread_runtime.sql",
                 "V014__runtime_identity_leases_and_outbox.sql",
+                "V015__token_runtime_projection.sql",
             ])
             with sqlite3.connect(database) as conn:
                 conn.row_factory = sqlite3.Row
@@ -1049,7 +1059,10 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                        VALUES('evt-v13','idem-v13','RI-V13','inspector','STAGE_SUBMITTED','FAILED','old error')"""
                 )
             upgraded = INSTALLER_MODULE.migrate(database, root / "backups")
-            self.assertEqual(upgraded["applied"], ["V014__runtime_identity_leases_and_outbox.sql"])
+            self.assertEqual(upgraded["applied"], [
+                "V014__runtime_identity_leases_and_outbox.sql",
+                "V015__token_runtime_projection.sql",
+            ])
             with closing(sqlite3.connect(database)) as conn, conn:
                 conn.row_factory = sqlite3.Row
                 thread = conn.execute("SELECT * FROM code_inspector_thread WHERE thread_id='thr-v13'").fetchone()
@@ -1063,7 +1076,13 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                     ("codex-insp", 0, "old error"),
                 )
                 columns = {row[1] for row in conn.execute("PRAGMA table_info(code_inspector_event)")}
-                self.assertTrue({"attempt_count", "claimed_at", "lease_until", "worker_id", "next_attempt_at", "failure_kind"}.issubset(columns))
+                self.assertTrue({
+                    "attempt_count", "claimed_at", "lease_until", "worker_id", "next_attempt_at",
+                    "failure_kind", "projection_revision", "superseded_by_event_id",
+                }.issubset(columns))
+                self.assertIsNotNone(conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='code_inspector_turn_metric'"
+                ).fetchone())
                 self.assertEqual(conn.execute("PRAGMA foreign_key_check").fetchall(), [])
 
     def test_design_commands_permissions_atomicity_and_attempt_semantics(self):
@@ -1500,7 +1519,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 "--change-reason", "Inspector 不得替 Dev 声明",
             )
             prepared = prepare(1)
-            self.assertEqual(prepared["historical_baselines"], [])
+            self.assertEqual(prepared["protected_constraints"]["items"], [])
             fails("developer", "stage-submit", "--issue-key", "RI-STAGE", "--stage-no", "2",
                   "--content", "提前提交", "--commit-sha", "bad")
             fails("developer", "implementation-submit", "--issue-key", "RI-STAGE", "--content", "提前最终提交")
@@ -1691,9 +1710,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             )
 
             prepared_stage3 = prepare(3, ["Stage 1 behavior", "Stage 1 I/O", "Stage 2 behavior"])
-            self.assertEqual(
-                [item["stage_no"] for item in prepared_stage3["historical_baselines"]], [1, 2],
-            )
+            self.assertEqual(prepared_stage3["historical_stage_nos"], [1, 2])
             db(
                 "developer", "stage-submit", "--issue-key", "RI-STAGE", "--stage-no", "3",
                 "--content", "Stage 3 完成", "--commit-sha", "abc004",
@@ -1762,7 +1779,10 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             )
             stage3_state = db("developer", "stage-get", "--issue-key", "RI-STAGE", "--stage-no", "3")
             self.assertEqual(stage3_state["baseline_status"], "PASSED")
-            self.assertEqual(stage3_state["baseline"]["inherits_stage_nos"], [1, 2])
+            stage3_history = db(
+                "developer", "stage-history-get", "--issue-key", "RI-STAGE", "--stage-no", "3",
+            )
+            self.assertEqual(stage3_history["baseline"]["inherits_stage_nos"], [1, 2])
             final = db("developer", "implementation-submit", "--issue-key", "RI-STAGE", "--content", "全阶段完成")
             self.assertEqual(final["attempt_no"], 1)
             stage_activity_types = {

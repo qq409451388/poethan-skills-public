@@ -16,6 +16,7 @@ import threading
 from typing import Any, Iterator
 
 from codex_thread_runtime import CodexRuntimeError, CodexThreadRuntime, load_config
+from issue_projection import current_projection
 from review_repository import ReviewRepository
 from runtime_identity import resolve_identity
 from runtime_capabilities import capability, require_capability
@@ -163,6 +164,37 @@ def usage_values(turn: dict[str, Any]) -> tuple[int | None, int | None]:
     return last.get("totalTokens"), usage.get("modelContextWindow")
 
 
+def _token_value(source: dict[str, Any], *names: str) -> int | None:
+    for name in names:
+        value = source.get(name)
+        if isinstance(value, int):
+            return value
+    return None
+
+
+def record_turn_metric(
+    issue_key: str, role: str, operator_id: str, projection_revision: int,
+    turn_type: str, turn: dict[str, Any], event_id: str | None,
+) -> None:
+    usage = turn.get("usage") or {}
+    last = usage.get("last") or {}
+    with connect() as conn:
+        conn.execute(
+            """INSERT INTO code_inspector_turn_metric(
+                   event_id,issue_key,role,operator_id,projection_revision,turn_type,turn_id,
+                   input_tokens,cached_input_tokens,output_tokens,review_db_calls_json)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                event_id, issue_key, role, operator_id, projection_revision, turn_type,
+                turn.get("turn_id"),
+                _token_value(last, "inputTokens", "input_tokens"),
+                _token_value(last, "cachedInputTokens", "cached_input_tokens"),
+                _token_value(last, "outputTokens", "output_tokens"),
+                json.dumps(turn.get("review_db_calls") or {}, ensure_ascii=False, sort_keys=True),
+            ),
+        )
+
+
 def runtime_call(config: dict[str, Any], function, *, retry_safe: bool = False):
     app = config["thread_runtime"]["app_server"]
     last_error: Exception | None = None
@@ -182,7 +214,8 @@ def runtime_call(config: dict[str, Any], function, *, retry_safe: bool = False):
 def start(
     issue_key: str, operator_id: str, expected_role: str | None = None,
     model: str | None = None, *, session_scope: SessionScope | None = None,
-    acquire_dispatch_lock: bool = True,
+    acquire_dispatch_lock: bool = True, event_id: str | None = None,
+    projection_revision: int | None = None,
 ) -> dict[str, Any]:
     config = load_config(config_path())
     if session_scope is None:
@@ -218,12 +251,24 @@ def start(
             with execution_lock(lock_key):
                 # Never replay this transaction: a timeout after thread/start may have
                 # created an unbound thread, and a retry would create a duplicate.
-                result = runtime_call(config, lambda runtime: runtime.start(
-                    cwd, role, issue_key, identity.operator_id, identity.agent_platform,
-                    identity.fixed_tool_path, model,
-                ))
+                zero_turn = capability(review_home(), "zero_turn_resume")
+
+                def create(runtime: CodexThreadRuntime) -> dict[str, Any]:
+                    result = runtime.start(
+                        cwd, role, issue_key, identity.operator_id, identity.agent_platform,
+                        identity.fixed_tool_path, model,
+                    )
+                    if not zero_turn:
+                        result["turn"] = runtime.run_turn(
+                            result["thread_id"],
+                            "调用 issue-context-get 初始化当前 Working Set，只确认已就绪，不执行写操作。",
+                        )
+                    return result
+
+                result = runtime_call(config, create)
         thread_id = result["thread_id"]
-        tokens, window = usage_values(result["turn"])
+        init_turn = result.get("turn")
+        tokens, window = usage_values(init_turn or {})
         try:
             with connect() as conn:
                 issue = ReviewRepository(conn).issue(issue_key)
@@ -234,21 +279,30 @@ def start(
                          context_tokens,context_window,last_active_at)
                        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)""",
                     (issue["id"], issue_key, role, operator_id, identity.agent_platform,
-                     identity.runtime_backend, thread_id, "WAITING", issue["status"],
+                    identity.runtime_backend, thread_id, "WAITING", issue["status"],
                      "await_event", "INITIALIZED", cwd, tokens, window),
                 )
+                revision = projection_revision
+                if revision is None:
+                    revision = current_projection(conn, issue_key, role)["projection_revision"]
+            if init_turn:
+                record_turn_metric(issue_key, role, operator_id, int(revision), "INIT", init_turn, event_id)
         except Exception as exc:
             try:
                 runtime_call(config, lambda runtime: runtime.archive(thread_id))
             finally:
                 raise RuntimeError(f"MAPPING_WRITE_FAILED:{exc}") from exc
-        return {"issue_key": issue_key, "role": role, "operator_id": operator_id, "thread_id": thread_id, "thread_status": "WAITING"}
+        return {
+            "issue_key": issue_key, "role": role, "operator_id": operator_id,
+            "thread_id": thread_id, "thread_status": "WAITING",
+            "initialization_turn": bool(init_turn),
+        }
 
 
 def resume(
     issue_key: str, operator_id: str, reason: str, expected_role: str | None = None,
     event_id: str | None = None, *, session_scope: SessionScope | None = None,
-    acquire_dispatch_lock: bool = True,
+    acquire_dispatch_lock: bool = True, projection_revision: int | None = None,
 ) -> dict[str, Any]:
     config = load_config(config_path())
     if session_scope is None:
@@ -269,6 +323,8 @@ def resume(
     with lock:
         with connect() as conn:
             issue = ReviewRepository(conn).issue(issue_key)
+            projection = current_projection(conn, issue_key, role)
+            revision = int(projection_revision if projection_revision is not None else projection["projection_revision"])
             item = mapping(conn, issue_key, operator_id)
             if not item:
                 raise RuntimeError("MAPPING_NOT_FOUND")
@@ -298,11 +354,10 @@ def resume(
             with active_slot(int(config["thread_runtime"]["concurrency"]["max_active_issue_threads"])):
                 with execution_lock(lock_key):
                     prompt = (
-                        f"继续处理 {issue_key}。\nreason={reason}\n"
-                        f"event_id={event_id or '-'}\noperator_id={operator_id}\n"
-                        f"固定 Review 工具={identity.fixed_tool_path}\n"
-                        "重新读取 Review DB 最新状态后执行当前角色应执行动作，不依赖上次 Turn 缓存；"
-                        "只使用固定工具，只处理当前 Issue，不得切换角色。"
+                        f"ACTION issue={issue_key} role={role} action={reason} "
+                        f"projection_revision={revision} event_id={event_id or '-'}。\n"
+                        f"先且通常只调用一次：{identity.fixed_tool_path} issue-context-get --issue-key {issue_key}。"
+                        "以返回的 pending_action 和 allowed_actions 执行；只有摘要明确指向必要明细时才 lazy load。"
                     )
                     def execute(runtime: CodexThreadRuntime):
                         nonlocal action_started
@@ -310,9 +365,10 @@ def resume(
                             runtime.unarchive(thread_id)
                         runtime.resume(thread_id, cwd)
                         compact_error = None
+                        compact_turn = None
                         if should_compact:
                             try:
-                                runtime.compact(thread_id, resume=False)
+                                compact_turn = runtime.compact(thread_id, resume=False)
                             except Exception as exc:
                                 compact_error = str(exc)[:1000]
                             with connect() as compact_conn:
@@ -326,6 +382,7 @@ def resume(
                         action_started = True
                         result = runtime.run_turn(thread_id, prompt)
                         result["compact_error"] = compact_error
+                        result["compact_turn"] = compact_turn
                         return result
                     # A mutation is not replayed after an ambiguous transport failure.
                     with thread_lease_heartbeat(
@@ -333,6 +390,10 @@ def resume(
                     ):
                         turn = runtime_call(config, execute)
             tokens, window = usage_values(turn)
+            compact_turn = turn.pop("compact_turn", None)
+            if compact_turn:
+                record_turn_metric(issue_key, role, operator_id, revision, "COMPACT", compact_turn, event_id)
+            record_turn_metric(issue_key, role, operator_id, revision, "ACTION", turn, event_id)
             with connect() as conn:
                 issue = ReviewRepository(conn).issue(issue_key)
                 status = "COMPLETED" if issue["status"] in TERMINAL_ISSUES else "WAITING"
@@ -353,7 +414,7 @@ def resume(
                 except Exception as exc:
                     with connect() as conn:
                         conn.execute("UPDATE code_inspector_thread SET error_code='ARCHIVE_FAILED',error_message=? WHERE issue_key=? AND operator_id=?", (str(exc)[:1000], issue_key, operator_id))
-            return {"issue_key": issue_key, "role": role, "operator_id": operator_id, "thread_id": thread_id, "thread_status": status, "issue_status": issue["status"], "managed_compact": boundary if should_compact else None, "action_turn_completed": True}
+            return {"issue_key": issue_key, "role": role, "operator_id": operator_id, "thread_id": thread_id, "thread_status": status, "issue_status": issue["status"], "managed_compact": boundary if should_compact else None, "action_turn_completed": True, "projection_revision": revision}
         except Exception as exc:
             with connect() as conn:
                 if action_started:
@@ -378,6 +439,7 @@ def resume(
 def dispatch(
     issue_key: str, operator_id: str, reason: str, expected_role: str | None = None,
     event_id: str | None = None, *, session_scope: SessionScope | None = None,
+    projection_revision: int | None = None,
 ) -> dict[str, Any]:
     config = load_config(config_path())
     identity = resolve_identity(review_home(), operator_id, expected_role)
@@ -401,12 +463,13 @@ def dispatch(
         if not item:
             initialized = start(
                 issue_key, operator_id, expected_role, session_scope=session_scope,
-                acquire_dispatch_lock=False,
+                acquire_dispatch_lock=False, event_id=event_id,
+                projection_revision=projection_revision,
             )
         result = resume(
             issue_key, operator_id, reason, expected_role, event_id,
             session_scope=session_scope,
-            acquire_dispatch_lock=False,
+            acquire_dispatch_lock=False, projection_revision=projection_revision,
         )
         result["initialized"] = bool(initialized)
         return result

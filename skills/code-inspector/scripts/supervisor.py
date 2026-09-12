@@ -13,6 +13,7 @@ from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import issue_thread
+from issue_projection import current_projection
 from review_repository import ReviewRepository
 from runtime_identity import resolve_identity
 from session_scope import SessionScope, assert_session_target, create_session_scope, require_config_allowed
@@ -132,30 +133,53 @@ def claim(scope: SessionScope, limit: int, worker: str | None = None) -> list[di
     worker = worker or worker_id()
     with issue_thread.connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
-        rows = conn.execute(
-            """SELECT e.* FROM code_inspector_event e
+        issue_keys = conn.execute(
+            """SELECT e.issue_key, MIN(e.id) AS first_id
+               FROM code_inspector_event e
                WHERE e.status='PENDING' AND (e.next_attempt_at IS NULL OR e.next_attempt_at <= CURRENT_TIMESTAMP)
                  AND e.operator_id=? AND e.role=?
                  AND NOT EXISTS(
                    SELECT 1 FROM code_inspector_event active
                    WHERE active.issue_key=e.issue_key AND active.operator_id=e.operator_id
-                     AND active.status='PROCESSING'
-                 )
-                 AND e.id=(SELECT MIN(x.id) FROM code_inspector_event x
-                           WHERE x.status='PENDING' AND x.issue_key=e.issue_key
-                             AND x.operator_id=e.operator_id
-                             AND (x.next_attempt_at IS NULL OR x.next_attempt_at <= CURRENT_TIMESTAMP))
-               ORDER BY e.created_at,e.id LIMIT ?""", (scope.operator_id, scope.role, limit),
+                     AND active.status='PROCESSING')
+               GROUP BY e.issue_key ORDER BY first_id LIMIT ?""",
+            (scope.operator_id, scope.role, limit),
         ).fetchall()
-        ids = [row["id"] for row in rows]
-        if ids:
+        ids: list[int] = []
+        for group in issue_keys:
+            pending = conn.execute(
+                """SELECT * FROM code_inspector_event
+                   WHERE issue_key=? AND operator_id=? AND role=? AND status='PENDING'
+                     AND (next_attempt_at IS NULL OR next_attempt_at <= CURRENT_TIMESTAMP)
+                   ORDER BY id""",
+                (group["issue_key"], scope.operator_id, scope.role),
+            ).fetchall()
+            projection = current_projection(conn, group["issue_key"], scope.role)
+            if not projection["pending_action"]:
+                conn.execute(
+                    """UPDATE code_inspector_event SET status='SUPERSEDED',projection_revision=?,
+                       last_error='NO_PENDING_ACTION',updated_at=CURRENT_TIMESTAMP
+                       WHERE issue_key=? AND operator_id=? AND role=? AND status='PENDING'""",
+                    (projection["projection_revision"], group["issue_key"], scope.operator_id, scope.role),
+                )
+                continue
+            selected = pending[-1]
+            older_ids = [row["id"] for row in pending[:-1]]
+            if older_ids:
+                conn.execute(
+                    f"""UPDATE code_inspector_event SET status='SUPERSEDED',projection_revision=?,
+                        superseded_by_event_id=?,last_error='COALESCED_TO_CURRENT_PROJECTION',
+                        updated_at=CURRENT_TIMESTAMP WHERE id IN ({','.join('?' for _ in older_ids)})""",
+                    (projection["projection_revision"], selected["event_id"], *older_ids),
+                )
             conn.execute(
-                f"""UPDATE code_inspector_event SET status='PROCESSING',attempt_count=attempt_count+1,
-                    worker_id=?,claimed_at=CURRENT_TIMESTAMP,lease_until=datetime('now',?),
-                    failure_kind=NULL,last_error=NULL,updated_at=CURRENT_TIMESTAMP
-                    WHERE id IN ({','.join('?' for _ in ids)})""",
-                (worker, f"+{lease} seconds", *ids),
+                """UPDATE code_inspector_event SET status='PROCESSING',attempt_count=attempt_count+1,
+                   worker_id=?,claimed_at=CURRENT_TIMESTAMP,lease_until=datetime('now',?),
+                   projection_revision=?,failure_kind=NULL,last_error=NULL,updated_at=CURRENT_TIMESTAMP
+                   WHERE id=?""",
+                (worker, f"+{lease} seconds", projection["projection_revision"], selected["id"]),
             )
+            ids.append(selected["id"])
         conn.commit()
         return [dict(conn.execute("SELECT * FROM code_inspector_event WHERE id=?", (row_id,)).fetchone()) for row_id in ids]
 
@@ -174,11 +198,39 @@ def process_event(event: dict, scope: SessionScope) -> dict:
         scope, event["operator_id"], event["role"],
         event.get("agent_platform"), event.get("runtime_backend"),
     )
+    with issue_thread.connect() as conn:
+        projection = current_projection(conn, event["issue_key"], event["role"])
+        if not projection["pending_action"]:
+            conn.execute(
+                """UPDATE code_inspector_event SET status='SUPERSEDED',projection_revision=?,
+                   last_error='NO_PENDING_ACTION_AT_DISPATCH',worker_id=NULL,lease_until=NULL,
+                   updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='PROCESSING' AND worker_id=?""",
+                (projection["projection_revision"], event["id"], event["worker_id"]),
+            )
+            return {
+                "event_id": event["event_id"], "status": "SUPERSEDED", "failure_kind": None,
+                "result": {"action_turn_completed": False, "model_called": False}, "error": None,
+            }
+        conn.execute(
+            """UPDATE code_inspector_event SET status='SUPERSEDED',projection_revision=?,
+               superseded_by_event_id=?,last_error='COVERED_BY_ACTIVE_PROJECTION',updated_at=CURRENT_TIMESTAMP
+               WHERE issue_key=? AND operator_id=? AND role=? AND status='PENDING'
+                 AND COALESCE(activity_id,0) <= ?""",
+            (
+                projection["projection_revision"], event["event_id"], event["issue_key"],
+                event["operator_id"], event["role"], projection["projection_revision"],
+            ),
+        )
+        conn.execute(
+            "UPDATE code_inspector_event SET projection_revision=? WHERE id=?",
+            (projection["projection_revision"], event["id"]),
+        )
     try:
         with event_lease_heartbeat(event):
             result = issue_thread.dispatch(
-                event["issue_key"], event["operator_id"], event["event_type"],
+                event["issue_key"], event["operator_id"], projection["pending_action"],
                 event["role"], event["event_id"], session_scope=scope,
+                projection_revision=projection["projection_revision"],
             )
         if not result.get("action_turn_completed"):
             raise RuntimeError("ACTION_TURN_NOT_COMPLETED")
@@ -335,13 +387,47 @@ def status(issue: str | None = None, operator: str | None = None, state: str | N
     if issue: filters.append("issue_key=?"); params.append(issue)
     if operator: filters.append("operator_id=?"); params.append(operator)
     sql = """SELECT event_id,issue_key,role,operator_id,agent_platform,runtime_backend,event_type,
-             status,attempt_count,failure_kind,lease_until,created_at,last_error
+             status,projection_revision,superseded_by_event_id,attempt_count,failure_kind,
+             lease_until,created_at,last_error
              FROM code_inspector_event"""
     if filters: sql += " WHERE " + " AND ".join(filters)
     sql += " ORDER BY id DESC LIMIT 100"
     with issue_thread.connect() as conn:
         events = [dict(row) for row in conn.execute(sql, params)]
     return {"threads": threads, "events": events}
+
+
+def turn_metrics(issue: str | None = None, event_id: str | None = None) -> dict:
+    sql = """SELECT id,event_id,issue_key,role,operator_id,projection_revision,turn_type,turn_id,
+                    input_tokens,cached_input_tokens,output_tokens,review_db_calls_json,created_at
+             FROM code_inspector_turn_metric"""
+    filters, params = [], []
+    if issue:
+        filters.append("issue_key=?"); params.append(issue)
+    if event_id:
+        filters.append("event_id=?"); params.append(event_id)
+    if filters:
+        sql += " WHERE " + " AND ".join(filters)
+    sql += " ORDER BY id"
+    with issue_thread.connect() as conn:
+        rows = [dict(row) for row in conn.execute(sql, params)]
+    calls: dict[str, int] = {}
+    for row in rows:
+        parsed = json.loads(row.pop("review_db_calls_json") or "{}")
+        row["review_db_calls"] = parsed
+        for name, count in parsed.items():
+            calls[name] = calls.get(name, 0) + int(count)
+    return {
+        "turns": rows,
+        "summary": {
+            "turn_count": len(rows),
+            "model_wakeups": sum(1 for row in rows if row["turn_type"] in {"INIT", "ACTION"}),
+            "input_tokens": sum(row["input_tokens"] or 0 for row in rows),
+            "cached_input_tokens": sum(row["cached_input_tokens"] or 0 for row in rows),
+            "output_tokens": sum(row["output_tokens"] or 0 for row in rows),
+            "review_db_calls": calls,
+        },
+    }
 
 
 def main() -> int:
@@ -351,6 +437,7 @@ def main() -> int:
     p = sub.add_parser("dispatch-pending"); p.add_argument("--session-identity", required=True); p.add_argument("--multi-thread", action="store_true", required=True)
     p = sub.add_parser("run"); p.add_argument("--session-identity", required=True); p.add_argument("--multi-thread", action="store_true", required=True); p.add_argument("--interval", type=float)
     p = sub.add_parser("status"); p.add_argument("--issue"); p.add_argument("--operator"); p.add_argument("--status")
+    p = sub.add_parser("metrics"); p.add_argument("--issue"); p.add_argument("--event-id")
     p = sub.add_parser("reconcile"); p.add_argument("--issue"); p.add_argument("--operator")
     p = sub.add_parser("retry-event"); p.add_argument("--event-id", required=True); p.add_argument("--confirm", action="store_true")
     p = sub.add_parser("pause-thread"); p.add_argument("--issue", required=True); p.add_argument("--operator", required=True); p.add_argument("--confirm", action="store_true")
@@ -370,6 +457,7 @@ def main() -> int:
         elif args.command == "reconcile": result = reconcile(args.issue, args.operator)
         elif args.command == "retry-event": result = retry_event(args.event_id, args.confirm)
         elif args.command == "pause-thread": result = pause_thread(args.issue, args.operator, args.confirm)
+        elif args.command == "metrics": result = turn_metrics(args.issue, args.event_id)
         else: result = status(args.issue, args.operator, args.status)
         print(json.dumps(result, ensure_ascii=False))
         return 0

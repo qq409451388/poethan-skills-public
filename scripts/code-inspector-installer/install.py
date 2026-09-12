@@ -160,7 +160,7 @@ def link_runtime(home: Path, skill_config: dict[str, Any], force: bool, skill_so
         for name in (
             "code-inspector-supervisor.py", "supervisor.py", "issue_thread.py",
             "codex_thread_runtime.py", "runtime_identity.py", "runtime_capabilities.py",
-            "review_repository.py", "session_scope.py",
+            "review_repository.py", "session_scope.py", "issue_projection.py",
         ):
             atomic_copy_path(skill_source / "scripts" / name, home / "bin" / name, force)
     for role, assignments in skill_config["bindings"].items():

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import queue
+import re
 import subprocess
 import threading
 import time
@@ -15,6 +16,39 @@ from typing import Any
 
 class CodexRuntimeError(RuntimeError):
     pass
+
+
+REVIEW_COMMAND_RE = re.compile(r"review-db(?:-[A-Za-z0-9_-]+)?\.py[\"']?\s+([a-z][a-z0-9-]+)")
+
+
+def review_db_command(item: dict[str, Any]) -> str | None:
+    """只提取 Review DB 子命令名，不保留 shell 参数或工具返回正文。"""
+    candidates: list[str] = []
+    for key in ("command", "cmd", "input"):
+        value = item.get(key)
+        if isinstance(value, str):
+            candidates.append(value)
+        elif isinstance(value, list):
+            candidates.append(" ".join(str(part) for part in value))
+    arguments = item.get("arguments")
+    if isinstance(arguments, dict):
+        for key in ("cmd", "command"):
+            if isinstance(arguments.get(key), str):
+                candidates.append(arguments[key])
+    elif isinstance(arguments, str):
+        try:
+            parsed = json.loads(arguments)
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, dict):
+            for key in ("cmd", "command"):
+                if isinstance(parsed.get(key), str):
+                    candidates.append(parsed[key])
+    for candidate in candidates:
+        matched = REVIEW_COMMAND_RE.search(candidate)
+        if matched:
+            return matched.group(1)
+    return None
 
 
 class CodexThreadRuntime:
@@ -104,6 +138,7 @@ class CodexThreadRuntime:
         deadline = time.monotonic() + self.turn_timeout
         last_message = ""
         usage: dict[str, Any] | None = None
+        review_db_calls: dict[str, int] = {}
         while True:
             if time.monotonic() >= deadline:
                 raise CodexRuntimeError(f"TURN_TIMEOUT:{thread_id}")
@@ -111,6 +146,9 @@ class CodexThreadRuntime:
             method, params = message.get("method"), message.get("params", {})
             if method == "item/completed" and params.get("threadId") == thread_id:
                 item = params.get("item", {})
+                command = review_db_command(item)
+                if command:
+                    review_db_calls[command] = review_db_calls.get(command, 0) + 1
                 if item.get("type") == "agentMessage":
                     last_message = item.get("text", "")
             elif method == "thread/tokenUsage/updated" and params.get("threadId") == thread_id:
@@ -119,7 +157,10 @@ class CodexThreadRuntime:
                 turn = params.get("turn", {})
                 if turn.get("status") != "completed":
                     raise CodexRuntimeError(f"TURN_{str(turn.get('status')).upper()}: {turn.get('error')}")
-                return {"status": "completed", "message": last_message, "usage": usage, "turn_id": turn.get("id")}
+                return {
+                    "status": "completed", "message": last_message, "usage": usage,
+                    "turn_id": turn.get("id"), "review_db_calls": review_db_calls,
+                }
             elif "id" in message and "method" in message:
                 self._send({"id": message["id"], "error": {"code": -32000, "message": "unattended request denied"}})
 
@@ -128,14 +169,11 @@ class CodexThreadRuntime:
         agent_platform: str, fixed_tool_path: str, model: str | None = None,
     ) -> dict[str, Any]:
         prompt = (
-            "加载 code-inspector Skill。\n\n"
-            f"当前逻辑身份：{operator_id}\n当前 Agent 平台：{agent_platform}\n"
-            f"当前角色：{role}\n当前 Issue：{issue_key}\n"
-            f"固定 Review 工具：{fixed_tool_path}\n\n"
-            "这是该 Issue + Role 的独立执行 Thread。只处理当前 Issue；Review DB 是业务状态真相。"
-            "从 Review DB 获取最新 Issue、Plan、Current Stage、必要 Activity、Evidence 与 Review Result，"
-            "初始化当前角色状态。只能使用上述固定工具，不得直接调用底层 review-db.py 伪造身份，"
-            "不得切换角色。不要继承或寻找 Supervisor 会话历史。最后只确认初始化完成，不执行跨 Issue 工作。"
+            f"Code Inspector 固定身份：operator={operator_id}, platform={agent_platform}, role={role}, issue={issue_key}。\n"
+            f"固定 Review 工具：{fixed_tool_path}\n"
+            "只处理该 Issue 且不得切换身份。Review DB 是状态真相；每个 ACTION Turn 先调用一次 "
+            "issue-context-get，并以其 pending_action/allowed_actions 为当前流程依据。普通 ACTION 不读取完整 "
+            "workflow.yaml 或 tool-contracts.yaml；仅在专项审计时按需查阅。"
         )
         params: dict[str, Any] = {
             "cwd": str(Path(cwd).resolve()),
@@ -146,18 +184,7 @@ class CodexThreadRuntime:
         if model:
             params["model"] = model
         started = self.request("thread/start", params)
-        thread_id = started["thread"]["id"]
-        try:
-            turn = self.run_turn(thread_id, "执行上述初始化要求。")
-        except Exception:
-            # The mapping is not committed until the initialization Turn
-            # completes. Best-effort archive prevents a known-id orphan.
-            try:
-                self.archive(thread_id)
-            except Exception:
-                pass
-            raise
-        return {"thread_id": thread_id, "turn": turn, "thread": started["thread"]}
+        return {"thread_id": started["thread"]["id"], "thread": started["thread"]}
 
     def resume(self, thread_id: str, cwd: str | None = None) -> dict[str, Any]:
         params: dict[str, Any] = {"threadId": thread_id, "excludeTurns": True}
