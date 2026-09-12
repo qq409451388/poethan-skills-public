@@ -147,7 +147,7 @@ Human 使用 `human-confirmation-resolve` 记录业务边界或风险决定，�
 
 ## 多 Issue Runtime
 
-启用 Thread Isolation 后，Supervisor 只保存 `(issue_key, operator_id) → thread_id`、固定身份、租约和事件等轻量调度数据；具体审核、实现、Diff/Evidence/测试分析由独立 Issue Thread 完成。Review Domain 的可执行状态变化会在同一事务写入 Runtime Event。Event 只作为唤醒信号：Supervisor 领取时重新计算当前 Issue Projection，同一 Issue/Role 的旧事件会标记为 `SUPERSEDED`，没有真实待办时不会调用模型。普通 Action Turn 先且通常只调用一次 `issue-context-get` 获取有界 Working Set，再按资源 id 懒加载明细。每个 INIT/ACTION/COMPACT Turn 只记录 Token 数和 Review DB 子命令计数，不保存提示词、工具参数、返回正文或推理内容。App Server 适配层、Registry CLI、事件调度器、静默多目标 Watcher和兼容性探针位于 `scripts/`，开关集中在 `config/runtime.json`。
+启用 Thread Isolation 后，Supervisor 只保存 `(issue_key, operator_id) → thread_id`、固定身份、租约和事件等轻量调度数据；具体审核、实现、Diff/Evidence/测试分析由独立 Issue Thread 完成。Review Domain 的可执行状态变化会在同一事务写入 Runtime Event。Event 只作为唤醒信号：Supervisor 领取时重新计算当前 Issue Projection，同一 Issue/Role 的旧事件会标记为 `SUPERSEDED`，没有真实待办时不会调用模型；dispatch 使用事务内 Event row-id cutoff，晚于快照的新 Event 不会被误收敛。Projection revision 是 Issue 自身的单调 Working Set 版本，由数据库触发器覆盖 Issue、Activity、Discussion、Decision、Stage 和相关 Task 字段变化。普通 Action Turn 先且通常只调用一次 `issue-context-get` 获取有界 Working Set（包括最近 8 条讨论摘要），再按资源 id 懒加载明细。每个 INIT/ACTION/COMPACT Turn 只记录 Token 数和 Review DB 子命令计数，不保存提示词、工具参数、返回正文或推理内容。App Server 适配层、Registry CLI、事件调度器、静默多目标 Watcher和兼容性探针位于 `scripts/`，开关集中在 `config/runtime.json`。
 
 ```bash
 python3 scripts/issue-thread.py status

@@ -1,4 +1,4 @@
-version: 4.2.0
+version: 4.3.0
 
 command: review-db.py
 identity:
@@ -79,7 +79,9 @@ commands:
     roles: [inspector, developer, human]
     required: [--issue-key]
     purpose: 一次返回当前角色处理 Issue 所需的有界 Working Set。
-    returns: [projection_revision, issue, current_stage, effective_decisions, latest_activities, protected_constraints, pending_action, allowed_actions, resources, lazy_load]
+    returns: [projection_revision, issue, current_stage, effective_decisions, latest_activities, latest_discussions, protected_constraints, pending_action, allowed_actions, resources, lazy_load]
+    discussion_window: 最近 8 条 id/topic/time/summary；正文仍通过 discussion-get 延迟读取。
+    revision_semantics: Issue 自身的单调 Working Set 版本；Issue、Task 投影字段、Activity、Discussion、Decision、Stage 的变更由数据库触发器推进。
     excludes: [完整讨论正文, 完整 Activity 正文, 全部历史 baseline, 大段重复测试证据]
     usage_rule: 普通 Action Turn 首先且通常只调用本命令；摘要指向必要明细时才 lazy load。
   issue-update-assessment:
@@ -184,6 +186,7 @@ commands:
     optional: [--plan-no]
     defaults: {plan-no: 最新计划}
     returns: [当前 Stage 摘要, 有界的历史有效约束摘要, 最近 Stage id/status/title, 历史数量与截断标记]
+    constraint_order: 新 Stage 优先；相同约束保留最新来源。显式 effective/superseded 约束语义尚未定义。
     excludes: [全部历史 baseline, 大段测试证据, 全量 review findings]
   stage-history-get:
     roles: [inspector, developer, human]

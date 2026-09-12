@@ -921,11 +921,12 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 "V013__issue_thread_runtime.sql",
                 "V014__runtime_identity_leases_and_outbox.sql",
                 "V015__token_runtime_projection.sql",
+                "V016__monotonic_issue_projection.sql",
             ])
             self.assertIsNotNone(upgraded["backup"])
             with sqlite3.connect(database) as conn:
                 conn.row_factory = sqlite3.Row
-                self.assertEqual(conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0], 15)
+                self.assertEqual(conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0], 16)
                 task = conn.execute("SELECT * FROM review_task WHERE id = 41").fetchone()
                 self.assertEqual((task["task_key"], task["task_type"], task["scope_fingerprint"]),
                                  ("RT-OLD", "REVIEW", "old-fingerprint"))
@@ -1014,6 +1015,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 "V013__issue_thread_runtime.sql",
                 "V014__runtime_identity_leases_and_outbox.sql",
                 "V015__token_runtime_projection.sql",
+                "V016__monotonic_issue_projection.sql",
             ])
             with sqlite3.connect(database) as conn:
                 conn.row_factory = sqlite3.Row
@@ -1064,6 +1066,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             self.assertEqual(upgraded["applied"], [
                 "V014__runtime_identity_leases_and_outbox.sql",
                 "V015__token_runtime_projection.sql",
+                "V016__monotonic_issue_projection.sql",
             ])
             with closing(sqlite3.connect(database)) as conn, conn:
                 conn.row_factory = sqlite3.Row
@@ -2779,6 +2782,11 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             self.assertIn("implementation-submit", context["allowed_actions"])
             self.assertEqual(context["lazy_load"], ["discussion-get", "activity-get", "stage-history-get"])
             self.assertNotIn("content", context["latest_activities"][0])
+            self.assertEqual(len(context["latest_discussions"]), 8)
+            self.assertEqual(
+                set(context["latest_discussions"][0]), {"id", "topic", "time", "summary"},
+            )
+            self.assertIn("讨论 204", context["latest_discussions"][0]["summary"])
 
     def test_stage_get_stays_bounded_and_full_baseline_is_lazy(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -2815,7 +2823,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 conn.execute("UPDATE review_issue SET status='IN_PROGRESS' WHERE id=?", (issue_id,))
                 for stage_no in range(1, 51):
                     baseline = json.dumps({
-                        "verified_behaviors": [f"behavior-{stage_no}"],
+                        "verified_behaviors": [f"behavior-{stage_no}", "shared-behavior"],
                         "input_output_contracts": [f"contract-{stage_no}"],
                         "business_semantics": [f"semantic-{stage_no}"],
                         "tests": [f"test-{stage_no}"],
@@ -2839,8 +2847,78 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             self.assertEqual(len(current["stage_history"]), 10)
             self.assertEqual(len(current["protected_constraints"]["items"]), 40)
             self.assertTrue(current["protected_constraints"]["truncated"])
+            self.assertEqual(current["protected_constraints"]["items"][0]["source_stage_no"], 50)
+            shared = next(
+                item for item in current["protected_constraints"]["items"]
+                if item["summary"] == "shared-behavior"
+            )
+            self.assertEqual(shared["source_stage_no"], 50)
+            self.assertGreaterEqual(
+                min(item["source_stage_no"] for item in current["protected_constraints"]["items"]),
+                37,
+            )
             full = db("stage-history-get", "--issue-key", "RI-STAGE-BOUND", "--stage-no", "1")
-            self.assertEqual(full["baseline"]["verified_behaviors"], ["behavior-1"])
+            self.assertEqual(
+                full["baseline"]["verified_behaviors"], ["behavior-1", "shared-behavior"],
+            )
+
+    def test_projection_revision_covers_every_working_set_source(self):
+        with tempfile.TemporaryDirectory() as temp:
+            home = Path(temp)
+            self.run_cmd(home, str(INSTALLER), "install")
+            database = home / ".agent-review" / "data" / "review.db"
+            with closing(sqlite3.connect(database)) as conn, conn:
+                conn.row_factory = sqlite3.Row
+                conn.execute(
+                    """INSERT INTO review_task(task_key,project_name,project_path,title,objective,status)
+                       VALUES('RT-REV','p','/p','t','o','IN_PROGRESS')"""
+                )
+                conn.execute(
+                    """INSERT INTO review_issue(
+                           issue_key,task_id,introduced_version,title,dimension,severity,
+                           remediation_benefit,remediation_cost,disposition,confidence,status,
+                           description,facts,rationale,summary)
+                       VALUES('RI-REV',1,1,'i','code_quality','low','medium','low',
+                              'current_iteration','high','IN_PROGRESS','d','f','r','s')"""
+                )
+                issue_id = conn.execute("SELECT id FROM review_issue WHERE issue_key='RI-REV'").fetchone()[0]
+
+                revisions = [conn.execute(
+                    "SELECT projection_revision FROM review_issue WHERE id=?", (issue_id,),
+                ).fetchone()[0]]
+                conn.execute("UPDATE review_issue SET summary='s2' WHERE id=?", (issue_id,))
+                revisions.append(conn.execute("SELECT projection_revision FROM review_issue WHERE id=?", (issue_id,)).fetchone()[0])
+                conn.execute(
+                    """INSERT INTO issue_discussion(issue_id,topic,operator_type,operator_id,content)
+                       VALUES(?,'GENERAL','DEVELOPMENT_AGENT','dev','discussion')""",
+                    (issue_id,),
+                )
+                revisions.append(conn.execute("SELECT projection_revision FROM review_issue WHERE id=?", (issue_id,)).fetchone()[0])
+                conn.execute(
+                    """INSERT INTO issue_decision(
+                           issue_id,decision_type,outcome,operator_type,operator_id,content)
+                       VALUES(?,'TEST','APPROVED','INSPECTOR_AGENT','insp','decision')""",
+                    (issue_id,),
+                )
+                revisions.append(conn.execute("SELECT projection_revision FROM review_issue WHERE id=?", (issue_id,)).fetchone()[0])
+                conn.execute(
+                    """INSERT INTO issue_stage(
+                           issue_id,plan_no,stage_no,title,objective,acceptance_criteria,status)
+                       VALUES(?,1,1,'stage','objective','acceptance','IN_PROGRESS')""",
+                    (issue_id,),
+                )
+                revisions.append(conn.execute("SELECT projection_revision FROM review_issue WHERE id=?", (issue_id,)).fetchone()[0])
+                conn.execute(
+                    """INSERT INTO issue_activity(
+                           issue_id,activity_type,operator_type,operator_id,content)
+                       VALUES(?,'STATUS_CHANGED','SYSTEM','runtime','activity')""",
+                    (issue_id,),
+                )
+                revisions.append(conn.execute("SELECT projection_revision FROM review_issue WHERE id=?", (issue_id,)).fetchone()[0])
+                conn.execute("UPDATE review_task SET project_name='p2' WHERE id=1")
+                revisions.append(conn.execute("SELECT projection_revision FROM review_issue WHERE id=?", (issue_id,)).fetchone()[0])
+
+            self.assertTrue(all(after > before for before, after in zip(revisions, revisions[1:])))
 
 
 if __name__ == "__main__":

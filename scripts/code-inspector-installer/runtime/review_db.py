@@ -1877,6 +1877,7 @@ def stage_list(args: argparse.Namespace) -> None:
 
 STAGE_HISTORY_LIMIT = 10
 CONSTRAINT_ITEM_LIMIT = 40
+DISCUSSION_CONTEXT_LIMIT = 8
 
 
 def historical_constraint_summary(rows: list[sqlite3.Row]) -> dict[str, Any]:
@@ -1884,7 +1885,8 @@ def historical_constraint_summary(rows: list[sqlite3.Row]) -> dict[str, Any]:
     items: list[dict[str, Any]] = []
     seen: set[str] = set()
     total = 0
-    for row in rows:
+    # 新 Stage 的约束代表更新后的认知，达到输出上限时必须优先保留。
+    for row in sorted(rows, key=lambda item: int(item["stage_no"]), reverse=True):
         baseline = loads(row["baseline_json"], {})
         for category in ("verified_behaviors", "input_output_contracts", "business_semantics"):
             for value in baseline.get(category, []):
@@ -2050,8 +2052,13 @@ def issue_context_get(args: argparse.Namespace) -> None:
             (projection["issue_id"],),
         ).fetchall()
         discussions = conn.execute(
-            """SELECT id FROM issue_discussion WHERE issue_id=? ORDER BY id DESC LIMIT 10""",
-            (projection["issue_id"],),
+            """SELECT id, topic, COALESCE(amended_at, created_at) AS time,
+                      CASE WHEN length(trim(content)) > 160
+                        THEN substr(trim(replace(replace(replace(content,char(13),' '),char(10),' '),char(9),' ')),1,157) || '...'
+                        ELSE trim(replace(replace(replace(content,char(13),' '),char(10),' '),char(9),' ')) END AS summary
+               FROM issue_discussion WHERE issue_id=?
+               ORDER BY id DESC LIMIT ?""",
+            (projection["issue_id"], DISCUSSION_CONTEXT_LIMIT),
         ).fetchall()
         audit(conn, actor_id(args), "issue.context-get", "review_issue", args.issue_key, True,
               f"projection_revision={projection['projection_revision']}")
@@ -2066,6 +2073,7 @@ def issue_context_get(args: argparse.Namespace) -> None:
         "current_stage": stage,
         "effective_decisions": [dict(item) for item in decisions],
         "latest_activities": [dict(item) for item in activities],
+        "latest_discussions": [dict(item) for item in discussions],
         "protected_constraints": constraints,
         "pending_action": projection["pending_action"],
         "allowed_actions": projection["allowed_actions"],

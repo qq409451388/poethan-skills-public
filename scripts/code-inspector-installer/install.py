@@ -514,9 +514,19 @@ def main() -> int:
             if db.exists():
                 try:
                     with closing(sqlite3.connect(db)) as conn:
-                        required = {"schema_version", "review_task", "review_task_version", "review_issue", "issue_stage", "issue_activity", "agent_audit_log", "code_inspector_thread", "code_inspector_event"}
+                        required = {
+                            "schema_version", "review_task", "review_task_version", "review_issue",
+                            "issue_stage", "issue_activity", "agent_audit_log", "code_inspector_thread",
+                            "code_inspector_event", "code_inspector_turn_metric",
+                        }
                         tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-                        schema_ok = required.issubset(tables)
+                        issue_columns = {row[1] for row in conn.execute("PRAGMA table_info(review_issue)")}
+                        event_columns = {row[1] for row in conn.execute("PRAGMA table_info(code_inspector_event)")}
+                        schema_ok = (
+                            required.issubset(tables)
+                            and "projection_revision" in issue_columns
+                            and "coalesced_through_row_id" in event_columns
+                        )
                         installed_version = conn.execute(
                             "SELECT COALESCE(MAX(version), 0) FROM schema_version"
                         ).fetchone()[0]

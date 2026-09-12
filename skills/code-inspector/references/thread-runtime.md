@@ -34,7 +34,7 @@ reason=STAGE_SUBMITTED
 stage=3
 ```
 
-Event 是 Wake-up Signal，不是要求逐条执行的工作任务。claim 与 dispatch 前都查询当前 Issue+Role Projection：没有真实待办时标记 `SUPERSEDED` 且不调用模型；存在待办时，同批 Pending Event 收敛到最新信号，并以最新 Projection 只执行一次 Action Turn。历史 Event 保留审计。不同 Issue 可在 `max_active_issue_threads` 限额内并行。PROCESSING Event、Lease、Heartbeat 与 AMBIGUOUS 恢复边界保持不变，不自动重放未知副作用 Turn。
+Event 是 Wake-up Signal，不是要求逐条执行的工作任务。claim 与 dispatch 前都查询当前 Issue+Role Projection：没有真实待办时标记 `SUPERSEDED` 且不调用模型；存在待办时，同批 Pending Event 收敛到最新信号，并以最新 Projection 只执行一次 Action Turn。Projection revision 是 `review_issue` 上由数据库触发器推进的单调 Working Set 版本，不再借用 Activity id。dispatch 在 `BEGIN IMMEDIATE` 内同时读取 Projection 和 Event row-id cutoff，只覆盖 cutoff 以内的 Pending Event；事务提交后到达的新 Event 保持 Pending。历史 Event 保留审计。不同 Issue 可在 `max_active_issue_threads` 限额内并行。PROCESSING Event、Lease、Heartbeat 与 AMBIGUOUS 恢复边界保持不变，不自动重放未知副作用 Turn。
 
 ## 锁与 Workspace
 

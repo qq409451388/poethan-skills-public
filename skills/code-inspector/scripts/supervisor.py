@@ -175,9 +175,13 @@ def claim(scope: SessionScope, limit: int, worker: str | None = None) -> list[di
             conn.execute(
                 """UPDATE code_inspector_event SET status='PROCESSING',attempt_count=attempt_count+1,
                    worker_id=?,claimed_at=CURRENT_TIMESTAMP,lease_until=datetime('now',?),
-                   projection_revision=?,failure_kind=NULL,last_error=NULL,updated_at=CURRENT_TIMESTAMP
+                   projection_revision=?,coalesced_through_row_id=?,failure_kind=NULL,last_error=NULL,
+                   updated_at=CURRENT_TIMESTAMP
                    WHERE id=?""",
-                (worker, f"+{lease} seconds", projection["projection_revision"], selected["id"]),
+                (
+                    worker, f"+{lease} seconds", projection["projection_revision"],
+                    selected["id"], selected["id"],
+                ),
             )
             ids.append(selected["id"])
         conn.commit()
@@ -199,13 +203,36 @@ def process_event(event: dict, scope: SessionScope) -> dict:
         event.get("agent_platform"), event.get("runtime_backend"),
     )
     with issue_thread.connect() as conn:
+        # Projection 与 cutoff 在同一写事务内观察；事务提交后新到的 Event id
+        # 必然大于 cutoff，不会因为 activity_id=NULL 或跨表 revision 而被误收敛。
+        conn.execute("BEGIN IMMEDIATE")
         projection = current_projection(conn, event["issue_key"], event["role"])
+        pending_cutoff = conn.execute(
+            """SELECT COALESCE(MAX(id),0) FROM code_inspector_event
+               WHERE issue_key=? AND operator_id=? AND role=? AND status='PENDING'""",
+            (event["issue_key"], event["operator_id"], event["role"]),
+        ).fetchone()[0]
+        event_cutoff = max(int(event["id"]), int(pending_cutoff))
         if not projection["pending_action"]:
             conn.execute(
                 """UPDATE code_inspector_event SET status='SUPERSEDED',projection_revision=?,
-                   last_error='NO_PENDING_ACTION_AT_DISPATCH',worker_id=NULL,lease_until=NULL,
+                   coalesced_through_row_id=?,last_error='NO_PENDING_ACTION_AT_DISPATCH',
+                   worker_id=NULL,lease_until=NULL,
                    updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='PROCESSING' AND worker_id=?""",
-                (projection["projection_revision"], event["id"], event["worker_id"]),
+                (
+                    projection["projection_revision"], event_cutoff,
+                    event["id"], event["worker_id"],
+                ),
+            )
+            conn.execute(
+                """UPDATE code_inspector_event SET status='SUPERSEDED',projection_revision=?,
+                   superseded_by_event_id=?,last_error='NO_PENDING_ACTION_AT_DISPATCH',
+                   updated_at=CURRENT_TIMESTAMP
+                   WHERE issue_key=? AND operator_id=? AND role=? AND status='PENDING' AND id<=?""",
+                (
+                    projection["projection_revision"], event["event_id"], event["issue_key"],
+                    event["operator_id"], event["role"], event_cutoff,
+                ),
             )
             return {
                 "event_id": event["event_id"], "status": "SUPERSEDED", "failure_kind": None,
@@ -215,15 +242,16 @@ def process_event(event: dict, scope: SessionScope) -> dict:
             """UPDATE code_inspector_event SET status='SUPERSEDED',projection_revision=?,
                superseded_by_event_id=?,last_error='COVERED_BY_ACTIVE_PROJECTION',updated_at=CURRENT_TIMESTAMP
                WHERE issue_key=? AND operator_id=? AND role=? AND status='PENDING'
-                 AND COALESCE(activity_id,0) <= ?""",
+                 AND id <= ?""",
             (
                 projection["projection_revision"], event["event_id"], event["issue_key"],
-                event["operator_id"], event["role"], projection["projection_revision"],
+                event["operator_id"], event["role"], event_cutoff,
             ),
         )
         conn.execute(
-            "UPDATE code_inspector_event SET projection_revision=? WHERE id=?",
-            (projection["projection_revision"], event["id"]),
+            """UPDATE code_inspector_event
+               SET projection_revision=?,coalesced_through_row_id=? WHERE id=?""",
+            (projection["projection_revision"], event_cutoff, event["id"]),
         )
     try:
         with event_lease_heartbeat(event):
@@ -387,7 +415,8 @@ def status(issue: str | None = None, operator: str | None = None, state: str | N
     if issue: filters.append("issue_key=?"); params.append(issue)
     if operator: filters.append("operator_id=?"); params.append(operator)
     sql = """SELECT event_id,issue_key,role,operator_id,agent_platform,runtime_backend,event_type,
-             status,projection_revision,superseded_by_event_id,attempt_count,failure_kind,
+             status,projection_revision,coalesced_through_row_id,superseded_by_event_id,
+             attempt_count,failure_kind,
              lease_until,created_at,last_error
              FROM code_inspector_event"""
     if filters: sql += " WHERE " + " AND ".join(filters)

@@ -1,4 +1,4 @@
-version: 4.0.0
+version: 4.1.0
 
 issue_content:
   default_required: [title, summary, dimension, severity]
@@ -130,6 +130,8 @@ issue_statuses:
 runtime_events:
   source: transactional_outbox
   semantics: Event 仅是 Wake-up Signal；Runtime 按当前 Issue+Role Projection 判断真实待办，同批过期 Event 标记 SUPERSEDED 并保留审计，不逐条调用模型。
+  projection_revision: review_issue 上的单调 Working Set 版本；影响 Issue、Activity、Discussion、Decision、Stage 或投影内 Task 字段的写操作由数据库触发器推进。
+  coalescing_cutoff: dispatch 在 BEGIN IMMEDIATE 事务中同时读取 Projection 与当前 Event row-id cutoff，只覆盖 cutoff 以内的 Pending Event；不再比较 activity_id。
   atomicity: 领域状态/Activity 与 code_inspector_event 必须在同一 SQLite Transaction 提交；Runtime binding 无效时领域变更回滚。
   operator_resolution: 使用 agent-roles.json runtime.dispatch_operators 指定的已安装 binding；role 参数只做一致性校验。
   mappings:

@@ -65,7 +65,7 @@ def _action(status: str, role: str, stage: sqlite3.Row | None, has_plan: bool) -
 
 def current_projection(conn: sqlite3.Connection, issue_key: str, role: str) -> dict[str, Any]:
     issue = conn.execute(
-        "SELECT id, issue_key, status FROM review_issue WHERE issue_key=?",
+        "SELECT id, issue_key, status, projection_revision FROM review_issue WHERE issue_key=?",
         (issue_key,),
     ).fetchone()
     if not issue:
@@ -73,15 +73,11 @@ def current_projection(conn: sqlite3.Connection, issue_key: str, role: str) -> d
     stage = _current_stage(conn, issue["id"])
     has_plan = _has_active_plan(conn, issue["id"])
     action, allowed_actions = _action(issue["status"], role, stage, has_plan)
-    revision = conn.execute(
-        "SELECT COALESCE(MAX(id),0) FROM issue_activity WHERE issue_id=?",
-        (issue["id"],),
-    ).fetchone()[0]
     return {
         "issue_id": issue["id"],
         "issue_key": issue_key,
         "issue_status": issue["status"],
-        "projection_revision": int(revision),
+        "projection_revision": int(issue["projection_revision"]),
         "pending_action": action,
         "allowed_actions": allowed_actions,
         "current_stage": dict(stage) if stage else None,
