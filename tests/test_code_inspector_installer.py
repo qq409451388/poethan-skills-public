@@ -2588,6 +2588,25 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                        VALUES('evt-visible','idem-visible','RI-RUNTIME','inspector','codex-insp','codex',
                               'codex-app-server','STAGE_SUBMITTED','FAILED','RETRYABLE')"""
                 )
+                conn.execute(
+                    """INSERT INTO code_inspector_event(
+                       event_id,idempotency_key,issue_key,role,operator_id,agent_platform,runtime_backend,
+                       event_type,status,last_error,projection_revision)
+                       VALUES('evt-stale','idem-stale','RI-RUNTIME','inspector','codex-insp','codex',
+                              'codex-app-server','STAGE_SUBMITTED','SUPERSEDED',
+                              'NO_PENDING_ACTION_AT_RESUME',4)"""
+                )
+                conn.executemany(
+                    """INSERT INTO code_inspector_turn_metric(
+                       event_id,issue_key,role,operator_id,projection_revision,turn_type,turn_id,
+                       input_tokens,cached_input_tokens,output_tokens,review_db_calls_json)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                    [
+                        (None, "RI-RUNTIME", "inspector", "codex-insp", 1, "INIT", "turn-init", 1000, 200, 100, '{"issue-context-get":1}'),
+                        ("evt-action", "RI-RUNTIME", "inspector", "codex-insp", 3, "ACTION", "turn-action", 2000, 500, 250, '{"issue-context-get":2,"activity-get":1}'),
+                        (None, "RI-RUNTIME", "inspector", "codex-insp", 4, "COMPACT", "turn-compact", 300, 0, 30, '{}'),
+                    ],
+                )
             old_home, old_db = os.environ.get("AGENT_REVIEW_HOME"), os.environ.get("AGENT_REVIEW_DB")
             os.environ["AGENT_REVIEW_HOME"] = str(review_home)
             os.environ["AGENT_REVIEW_DB"] = str(database)
@@ -2604,14 +2623,46 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 self.assertIn("thr-visible", runtime_html)
                 self.assertIn("evt-visible", runtime_html)
                 self.assertIn("63.0%", runtime_html)
-                self.assertIn("Agent 运行状态", runtime_html)
-                self.assertIn("等待事件", runtime_html)
-                self.assertIn("调度事件队列", runtime_html)
+                self.assertIn("AI 运行情况", runtime_html)
+                self.assertIn("有 1 个问题需要关注", runtime_html)
+                self.assertIn("今日 AI 消耗", runtime_html)
+                self.assertIn("3.7K", runtime_html)
+                self.assertIn('<span>处理 Issue</span><strong>1</strong>', runtime_html)
+                self.assertIn('<span>模型唤醒</span><strong>2 <em>次</em></strong>', runtime_html)
+                self.assertIn("Cached Input Tokens", runtime_html)
+                self.assertIn("今日节省情况", runtime_html)
+                self.assertIn('<span>拦截过期事件</span><strong>1</strong>', runtime_html)
+                self.assertIn('<span>避免模型唤醒</span><strong>1</strong>', runtime_html)
+                self.assertIn('<span>上下文整理</span><strong>1</strong>', runtime_html)
+                self.assertIn("Token 消耗最高", runtime_html)
+                self.assertIn("自动处理失败，需要检查", runtime_html)
+                self.assertIn("已被最新状态覆盖", runtime_html)
+                self.assertIn('<details class="advanced-diagnostics">', runtime_html)
+                self.assertIn("等待新任务", runtime_html)
+                self.assertIn("调度事件", runtime_html)
+                self.assertIn("Turn Metrics", runtime_html)
+                self.assertIn("Execution Revision", runtime_html)
                 self.assertIn("重新入队", runtime_html)
                 self.assertNotIn(">Reconcile<", runtime_html)
                 self.assertNotIn(">Retry<", runtime_html)
+                filtered_runtime = client.get(
+                    "/runtime?issue=RI-RUNTIME&role=inspector&status=FAILED"
+                )
+                self.assertEqual(filtered_runtime.status_code, 200)
+                self.assertIn(
+                    '<details class="advanced-diagnostics" open>',
+                    filtered_runtime.get_data(as_text=True),
+                )
                 issue_html = client.get("/issues/RI-RUNTIME").get_data(as_text=True)
-                self.assertIn("Agent 运行状态", issue_html)
+                self.assertIn("AI 运行", issue_html)
+                self.assertIn("总 Token", issue_html)
+                self.assertIn("3.7K", issue_html)
+                self.assertIn("模型唤醒", issue_html)
+                self.assertIn("执行失败", issue_html)
+                self.assertIn("issue-context-get", issue_html)
+                self.assertIn("activity-get", issue_html)
+                self.assertIn("最近 AI 执行记录", issue_html)
+                self.assertIn("高级诊断", issue_html)
                 self.assertIn("检查者", issue_html)
                 self.assertIn("codex-insp", issue_html)
                 self.assertIn('data-issue-auto-refresh data-refresh-interval="1000"', issue_html)

@@ -1,6 +1,6 @@
 # Code Inspector Webtool
 
-本机 Human 工作台，使用“待我处理 / 检查任务 / 候选问题 / 运行状态”四个入口，并保持“检查任务 → 任务详情 → Issue 详情”的领域层级。它不负责创建扫描结果；任务、正式 Issue 与候选仍由已开启代码检查模式的 Agent 通过领域命令创建。
+本机 Human 工作台，使用“待我处理 / 检查任务 / 候选问题 / AI 运行情况”四个入口，并保持“检查任务 → 任务详情 → Issue 详情”的领域层级。它不负责创建扫描结果；任务、正式 Issue 与候选仍由已开启代码检查模式的 Agent 通过领域命令创建。
 
 ## 数据边界
 
@@ -57,7 +57,7 @@ python3 apps/code-inspector-webtool/app.py
 - 检查任务：默认显示活动任务，可按项目、状态和 `REVIEW` / `CONTINUOUS` 类型筛选并选择显示已关闭任务；整行进入任务详情。
 - 任务详情：展示任务信息、版本历史、统计指标和可组合筛选的问题列表；任务编辑集中在弹窗中。
 - Issue 详情：展示设计、实现与审核阶段、结构化证据、当前轮实现和协作记录；协作记录默认按最新优先汇总全部内容，同时保留讨论与处理历史筛选，设计、Stage、实现等正式协作提交会同时投影到讨论和历史但只落库一次。Human 可处理最终边界/安全确认，用专用 `human-confirmation-resolve` 恢复设计或实现流程，但不能借此直接 `CONFIRMED`。所有写操作仍走 human 领域命令。
-- Agent Runtime：`/runtime` 展示 Thread、Event、Lease、Context Usage 与错误，可按 Issue、Role、Operator、Status 过滤。Retry、Reconcile、Pause 只经过 Runtime CLI 并写审计；页面不直接更新 Runtime 表、不执行具体业务 Turn，也不成为第二个 Supervisor。
+- AI 运行情况：`/runtime` 默认展示今日 Token、处理 Issue、模型唤醒、过期事件拦截、需要关注项和 Issue 消耗排行；异常文案使用 Human 可理解的中文。Thread、Event、Lease、Revision、Turn Metrics 及 Retry/Reconcile/Pause 完整保留在默认折叠的“高级诊断”中，管理操作只经过 Runtime CLI 并写审计。Issue 详情同步展示该 Issue 的 AI 消耗、工具读取和折叠的最近 Turn。
 - 候选问题：默认显示 `SUBMITTED` / `UNDER_REVIEW`，支持任务和状态筛选；接受与拒绝都要求填写审核结论，且接受不会自动创建正式 Issue。
 
 弹窗支持遮罩、关闭按钮和 ESC 关闭，Tab 切换时不会丢失当前页面上下文。活动内容继续支持换行、列表、行内代码和 fenced Markdown 代码块。
