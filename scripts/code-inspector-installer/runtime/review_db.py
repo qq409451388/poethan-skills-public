@@ -33,10 +33,6 @@ except ModuleNotFoundError:  # 仓库内直接执行时，模块尚未复制到�
         status_targets,
     )
 
-DEFAULT_DB_PATH = Path(os.path.expandvars(os.path.expanduser(
-    os.environ.get("AGENT_REVIEW_DB", "~/.agent-review/data/review.db")
-)))
-
 SEVERITY_WEIGHT = {"critical": 4, "high": 3, "medium": 2, "low": 1}
 BENEFIT_WEIGHT = {"high": 3, "medium": 2, "low": 1}
 DIMENSION_WEIGHT = {
@@ -91,11 +87,13 @@ AMENDABLE_ACTIVITY_TYPES = {
 }
 
 def configured_db_path() -> Path:
-    if os.environ.get("AGENT_REVIEW_DB"):
-        return DEFAULT_DB_PATH
-    config_dir = Path(os.path.expandvars(os.path.expanduser(
+    override = os.environ.get("AGENT_REVIEW_DB")
+    if override:
+        return Path(os.path.expandvars(os.path.expanduser(override))).resolve()
+    review_home = Path(os.path.expandvars(os.path.expanduser(
         os.environ.get("AGENT_REVIEW_HOME", "~/.agent-review")
-    ))) / "config"
+    ))).resolve()
+    config_dir = review_home / "config"
     runtime_config = config_dir / "runtime.json"
     if runtime_config.exists():
         try:
@@ -103,7 +101,7 @@ def configured_db_path() -> Path:
             return Path(os.path.expandvars(os.path.expanduser(config["database"]))).resolve()
         except (KeyError, TypeError, ValueError, OSError) as exc:
             raise RuntimeError(f"配置文件无效: {runtime_config}: {exc}") from exc
-    return DEFAULT_DB_PATH
+    return (review_home / "data" / "review.db").resolve()
 
 def configured_home() -> Path:
     return Path(os.path.expandvars(os.path.expanduser(
@@ -138,15 +136,35 @@ class ClosingConnection(sqlite3.Connection):
         self.close()
         return result
 
+class DatabaseOpenError(RuntimeError):
+    pass
+
+def database_open_error(db_path: Path) -> DatabaseOpenError:
+    return DatabaseOpenError(
+        f"数据库无法打开: {db_path}\n"
+        "请检查数据库文件及父目录访问权限；SQLite WAL 模式还需要在同目录访问 "
+        f"{db_path.name}-wal 和 {db_path.name}-shm"
+    )
+
 def connect() -> sqlite3.Connection:
     db_path = configured_db_path()
     if not db_path.exists():
         raise RuntimeError(f"数据库不存在: {db_path}")
-    conn = sqlite3.connect(db_path, factory=ClosingConnection)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA busy_timeout = 5000")
-    return conn
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = sqlite3.connect(db_path, factory=ClosingConnection)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("PRAGMA busy_timeout = 5000")
+        # 强制读取数据库 schema，使 WAL/SHM 访问问题在连接层立即给出明确诊断。
+        conn.execute("PRAGMA schema_version").fetchone()
+        return conn
+    except sqlite3.OperationalError as exc:
+        if conn is not None:
+            conn.close()
+        if "unable to open database file" in str(exc).lower():
+            raise database_open_error(db_path) from exc
+        raise
 
 def dumps(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False)
@@ -285,6 +303,38 @@ def operator_type(agent: str) -> str:
 
 def actor_id(args: argparse.Namespace) -> str:
     return args.operator_id or args.agent
+
+def metric_issue_key(conn: sqlite3.Connection, args: argparse.Namespace) -> str | None:
+    """只提取统计所需 Issue Key；不保存或序列化完整命令参数。"""
+    issue_key = getattr(args, "issue_key", None)
+    if isinstance(issue_key, str) and issue_key:
+        return issue_key
+    activity_id = getattr(args, "activity_id", None)
+    if getattr(args, "command", None) == "activity-get" and activity_id is not None:
+        row = conn.execute(
+            """SELECT i.issue_key
+               FROM issue_activity a JOIN review_issue i ON i.id = a.issue_id
+               WHERE a.id = ?""",
+            (activity_id,),
+        ).fetchone()
+        return row["issue_key"] if row else None
+    return None
+
+def record_tool_call_metric(args: argparse.Namespace, success: bool) -> None:
+    """每次已解析的 Review DB CLI 调用只写一条轻量计数。"""
+    with connect() as conn:
+        conn.execute(
+            """INSERT INTO review_tool_call_metric(
+                 command, issue_key, role, operator_id, success
+               ) VALUES (?, ?, ?, ?, ?)""",
+            (
+                args.command,
+                metric_issue_key(conn, args),
+                args.agent,
+                actor_id(args),
+                1 if success else 0,
+            ),
+        )
 
 def require_runtime_issue_action(
     action: str, role: str, issue_status: str, *, stage: sqlite3.Row | None = None,
@@ -2849,6 +2899,17 @@ def activity_append(args: argparse.Namespace) -> None:
         raise PermissionError(f"agent {args.agent} 无权追加活动 {args.activity_type}")
     if args.activity_type in {"COMMENT_ADDED", "DESIGN_GUIDANCE"}:
         raise ValueError("讨论内容必须使用 discussion-append，不再追加到处理历史")
+    metadata = json.loads(args.metadata)
+    if not isinstance(metadata, dict):
+        raise ValueError("metadata 必须是 JSON 对象")
+    fastmode = metadata.get("workflow_mode") == "FASTMODE"
+    if fastmode and (
+        args.agent != "inspector"
+        or args.activity_type not in {
+            "VERIFICATION_EVIDENCE_ADDED", "VERIFICATION_PASSED", "VERIFICATION_FAILED",
+        }
+    ):
+        raise PermissionError("FastMode 只允许 Inspector 记录验证证据和 PASS/FAIL 结论")
 
     with connect() as conn:
         row = conn.execute(
@@ -2874,7 +2935,7 @@ def activity_append(args: argparse.Namespace) -> None:
                 {"inspector":"INSPECTOR_AGENT","developer":"DEVELOPMENT_AGENT","human":"HUMAN"}[args.agent],
                 actor_id(args), args.content, args.result_status,
                 dumps(json.loads(args.code_reference)),
-                dumps(json.loads(args.metadata)),
+                dumps(metadata),
             ),
         )
         decision_mapping = {
@@ -2890,9 +2951,9 @@ def activity_append(args: argparse.Namespace) -> None:
             record_issue_decision(
                 conn, args, row, decision_type, outcome, args.content,
                 scope_key=scope_key, source_activity_id=activity_cursor.lastrowid,
-                metadata=json.loads(args.metadata),
+                metadata=metadata,
             )
-        if args.activity_type in {"REVIEW_REJECTED", "VERIFICATION_FAILED"}:
+        if args.activity_type in {"REVIEW_REJECTED", "VERIFICATION_FAILED"} and not fastmode:
             enqueue_runtime_event(
                 conn, args.issue_key, args.activity_type,
                 activity_cursor.lastrowid, "developer",
@@ -3664,21 +3725,34 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
+    success = False
+    failure: Exception | None = None
     try:
         validate_actor_binding(args)
         args.func(args)
-        return 0
+        success = True
     except Exception as exc:
-        try:
-            with connect() as conn:
-                audit(
-                    conn, actor_id(args), "command.failed", "command", getattr(args, "command", None),
-                    False, str(exc),
-                )
-        except Exception:
-            pass
+        failure = exc
+        if not isinstance(exc, DatabaseOpenError):
+            try:
+                with connect() as conn:
+                    audit(
+                        conn, actor_id(args), "command.failed", "command", getattr(args, "command", None),
+                        False, str(exc),
+                    )
+            except Exception:
+                pass
         print(json.dumps({"error": str(exc)}, ensure_ascii=False), file=sys.stderr)
-        return 1
+    # 数据库本身无法打开时不通过第二次连接制造隐式重试；其他调用统一只记一次。
+    if not isinstance(failure, DatabaseOpenError):
+        try:
+            record_tool_call_metric(args, success)
+        except Exception as metric_error:
+            print(
+                json.dumps({"warning": f"Review DB 工具调用统计写入失败: {metric_error}"}, ensure_ascii=False),
+                file=sys.stderr,
+            )
+    return 0 if success else 1
 
 if __name__ == "__main__":
     raise SystemExit(main())

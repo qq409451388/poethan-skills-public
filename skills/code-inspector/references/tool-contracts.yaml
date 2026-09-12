@@ -281,7 +281,7 @@ commands:
     json_arguments: [--code-reference, --metadata]
     forbidden_atomic_types: [DESIGN_REQUESTED, DESIGN_SUBMITTED, DESIGN_APPROVED, DESIGN_REJECTED, STAGE_PLAN_CREATED, STAGE_SCOPE_DECLARED, STAGE_SUBMITTED, STAGE_APPROVED, STAGE_REJECTED, STAGE_PLAN_SUPERSEDED, HUMAN_CONFIRMATION_REQUESTED, HUMAN_CONFIRMATION_PROVIDED]
     forbidden_discussion_types: [COMMENT_ADDED, DESIGN_GUIDANCE]
-    note: 讨论一律使用 discussion-append；审核、验证等结论会同步建立 issue_decision，核心工作流活动必须由对应原子命令生成。
+    note: 讨论一律使用 discussion-append；审核、验证等结论会同步建立 issue_decision，核心工作流活动必须由对应原子命令生成。FastMode 仅允许 Inspector 追加 VERIFICATION_EVIDENCE_ADDED、VERIFICATION_PASSED、VERIFICATION_FAILED，并以 metadata.workflow_mode=FASTMODE 标记；其中 VERIFICATION_FAILED 不触发 Developer Runtime Event。
     content_format:
       short: 单行纯文本，不添加 Markdown 装饰。
       multiline: 多个独立说明可直接换行；无需强制使用列表。

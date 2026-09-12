@@ -5,7 +5,7 @@ description: 在用户明确开启代码检查模式后，按安装时分配的 
 
 # Code Inspector
 
-仅在用户明确开启后执行本流程；启动命令与角色选择规则见 `references/activation.yaml`。
+仅在用户明确开启后执行本流程；启动命令与角色选择规则见 `references/activation.yaml`。标准工作流使用 `$code-inspector start dev|insp`；Human 协调的快速人工审核只使用 `$code-inspector fastmode RI-XXX [RI-YYY ...]`（兼容 `/code-inspector`）。
 
 安装后的 Skill 会生成当前平台可用的逻辑身份、角色能力、会话选择器和固定工具入口。会话角色在启动时确定并保持到退出，不得自动切换身份；只使用当前身份的固定工具，不直接访问 SQLite 或执行 SQL。
 
@@ -20,12 +20,20 @@ Multi-Thread 默认关闭。只有 `config/runtime.json` 允许且用户在当�
 - 所有角色：`references/core-workflow.md`
 - 当前角色：`references/role-workflows.md` 中对应的 Developer 或 Inspector 章节
 
+FastMode 固定使用 Inspector 身份。启动时改为读取 `references/fastmode.md`，锁定命令中的 Issue Scope，并按输入顺序串行审核；Developer Agent 不是前置条件，Human 负责开发沟通与最终状态，Inspector 只负责代码检查、验证和记录。FastMode 不依赖 `pending_action`，不启动 Runtime、Watch、Multi-Thread 或 Developer，不自动关闭 Issue。
+
 以下大型文件由 Runtime/CLI 强制执行，普通 Action Turn 不读取；仅在专项审计或修改规则本身时按需查阅：
 
 - 状态机与状态变更：`references/workflow.yaml`
 - 数据库工具完整参数：`references/tool-contracts.yaml`
 
-普通 Issue 处理先调用一次 `issue-context-get`，以返回的 `pending_action`、`permitted_actions`、`exception_actions` 和资源 id 作为当前 Working Set；只有摘要指向必要明细时才使用 `discussion-get`、`activity-get` 或 `stage-history-get`。
+普通 Issue 与 FastMode 的首次上下文读取都固定使用：
+
+```bash
+<fixed_tool> issue-context-get --issue-key <issue_key>
+```
+
+`issue-context-get` 使用 `--issue-key`，不使用 `--issue-id`。以返回的 `pending_action`、`permitted_actions`、`exception_actions` 和资源 id 作为当前 Working Set；只有摘要指向必要明细时才使用 `discussion-get`、`activity-get` 或 `stage-history-get`。
 
 其他文件继续按场景读取：
 - 审核等级：`references/review-levels.yaml`

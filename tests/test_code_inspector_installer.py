@@ -89,6 +89,37 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 expanded = INSTALLER_MODULE.expand_path("${HOME}/.codex/skills")
             self.assertEqual(expanded, (platform_home / ".codex" / "skills").resolve())
 
+    def test_review_db_path_is_resolved_from_current_environment(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            review_home = root / "review-home"
+            override = root / "override" / "review.db"
+            with mock.patch.dict(os.environ, {"AGENT_REVIEW_HOME": str(review_home)}):
+                os.environ.pop("AGENT_REVIEW_DB", None)
+                self.assertEqual(
+                    REVIEW_DB_MODULE.configured_db_path(),
+                    (review_home / "data" / "review.db").resolve(),
+                )
+                os.environ["AGENT_REVIEW_DB"] = str(override)
+                self.assertEqual(REVIEW_DB_MODULE.configured_db_path(), override.resolve())
+
+    def test_review_db_open_error_reports_path_and_wal_permissions(self):
+        with tempfile.TemporaryDirectory() as temp:
+            database = Path(temp) / "data" / "review.db"
+            database.parent.mkdir()
+            database.touch()
+            failure = sqlite3.OperationalError("unable to open database file")
+            with mock.patch.object(REVIEW_DB_MODULE, "configured_db_path", return_value=database), \
+                 mock.patch.object(REVIEW_DB_MODULE.sqlite3, "connect", side_effect=failure) as connect_mock:
+                with self.assertRaises(REVIEW_DB_MODULE.DatabaseOpenError) as raised:
+                    REVIEW_DB_MODULE.connect()
+            message = str(raised.exception)
+            self.assertIn(f"数据库无法打开: {database}", message)
+            self.assertIn("数据库文件及父目录访问权限", message)
+            self.assertIn("review.db-wal", message)
+            self.assertIn("review.db-shm", message)
+            connect_mock.assert_called_once()
+
     def test_copied_skill_wrapper_can_execute_runtime(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -167,6 +198,161 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             self.assertIn("cd /d", windows_text)
             self.assertIn('python "app.py" %*', windows_text)
 
+    def test_review_tool_metrics_and_fastmode_records_without_runtime(self):
+        with tempfile.TemporaryDirectory() as temp:
+            home = Path(temp)
+            self.run_cmd(home, str(INSTALLER), "install")
+            review_home = home / ".agent-review"
+            database = review_home / "data" / "review.db"
+            inspector_tool = review_home / "bin" / "review-db-codex-insp.py"
+            with closing(sqlite3.connect(database)) as conn, conn:
+                task_id = conn.execute(
+                    """INSERT INTO review_task(
+                         task_key,project_name,project_path,title,objective,status
+                       ) VALUES('RT-FASTMODE','project',?,'FastMode','快速人工审核','IN_PROGRESS')""",
+                    (str(home),),
+                ).lastrowid
+                for key in ("RI-FAST-A", "RI-FAST-B", "RI-OUTSIDE"):
+                    conn.execute(
+                        """INSERT INTO review_issue(
+                             issue_key,task_id,introduced_version,title,dimension,severity,
+                             remediation_benefit,remediation_cost,disposition,confidence,status,
+                             description,facts,rationale
+                           ) VALUES(?,?,1,?,'code_quality','medium','medium','low',
+                                    'current_iteration','high','PROPOSED','描述','事实','依据')""",
+                        (key, task_id, key),
+                    )
+                conn.execute("DELETE FROM review_tool_call_metric")
+
+            # 普通单会话没有 Turn Metric，真实 CLI 调用仍只统计一次。
+            first = self.run_cmd(home, str(inspector_tool), "issue-context-get", "--issue-key", "RI-FAST-A")
+            self.assertIsNone(first["pending_action"])
+            with closing(sqlite3.connect(database)) as conn:
+                conn.row_factory = sqlite3.Row
+                self.assertEqual(conn.execute("SELECT COUNT(*) FROM code_inspector_turn_metric").fetchone()[0], 0)
+                metric = conn.execute("SELECT * FROM review_tool_call_metric").fetchone()
+                self.assertEqual(
+                    (metric["command"], metric["issue_key"], metric["role"], metric["operator_id"], metric["success"]),
+                    ("issue-context-get", "RI-FAST-A", "inspector", "codex-insp", 1),
+                )
+
+            # 即使 Runtime Turn 自己也保存了工具归因，真实调用表仍不重复累计。
+            with closing(sqlite3.connect(database)) as conn, conn:
+                conn.execute(
+                    """INSERT INTO code_inspector_turn_metric(
+                         issue_key,role,operator_id,projection_revision,turn_type,turn_id,
+                         input_tokens,output_tokens,review_db_calls_json
+                       ) VALUES('RI-FAST-A','inspector','codex-insp',0,'ACTION','turn-fast',10,2,
+                                '{"issue-context-get":1}')"""
+                )
+                self.assertEqual(
+                    conn.execute(
+                        "SELECT COUNT(*) FROM review_tool_call_metric WHERE command='issue-context-get'"
+                    ).fetchone()[0],
+                    1,
+                )
+            self.run_cmd(home, str(inspector_tool), "issue-context-get", "--issue-key", "RI-FAST-A")
+            with closing(sqlite3.connect(database)) as conn:
+                # Runtime 也经固定 wrapper 调 CLI：第二次真实调用变成 2，Turn 归因本身不变成第 3 次。
+                self.assertEqual(
+                    conn.execute(
+                        "SELECT COUNT(*) FROM review_tool_call_metric WHERE command='issue-context-get'"
+                    ).fetchone()[0],
+                    2,
+                )
+
+            failed = self.run_raw(
+                home, str(inspector_tool), "issue-get", "--issue-key", "RI-NOT-FOUND",
+            )
+            self.assertNotEqual(failed.returncode, 0)
+            self.assertIn("RI-NOT-FOUND", failed.stderr)
+
+            secret = "SENSITIVE-CONTENT-MUST-NOT-BE-METRIC"
+            self.run_cmd(
+                home, str(inspector_tool), "discussion-append", "--issue-key", "RI-FAST-A",
+                "--content", secret,
+            )
+
+            # FastMode 不依赖 pending_action 或 Developer Runtime，PASS/FAIL 只记录验证事实。
+            self.run_cmd(home, str(inspector_tool), "issue-context-get", "--issue-key", "RI-FAST-B")
+            fast_metadata = json.dumps({"workflow_mode": "FASTMODE"})
+            for key, activity_type, result in (
+                ("RI-FAST-A", "VERIFICATION_EVIDENCE_ADDED", "PASS"),
+                ("RI-FAST-A", "VERIFICATION_PASSED", "PASS"),
+                ("RI-FAST-B", "VERIFICATION_EVIDENCE_ADDED", "FAIL"),
+                ("RI-FAST-B", "VERIFICATION_FAILED", "FAIL"),
+            ):
+                self.run_cmd(
+                    home, str(inspector_tool), "activity-append", "--issue-key", key,
+                    "--activity-type", activity_type, "--content", f"{key} {activity_type}",
+                    "--result-status", result, "--metadata", fast_metadata,
+                )
+
+            with closing(sqlite3.connect(database)) as conn:
+                evidence_activity_id = conn.execute(
+                    """SELECT a.id FROM issue_activity a JOIN review_issue i ON i.id=a.issue_id
+                       WHERE i.issue_key='RI-FAST-A' AND a.activity_type='VERIFICATION_EVIDENCE_ADDED'"""
+                ).fetchone()[0]
+            self.run_cmd(home, str(inspector_tool), "activity-get", str(evidence_activity_id))
+
+            with closing(sqlite3.connect(database)) as conn:
+                conn.row_factory = sqlite3.Row
+                failed_metric = conn.execute(
+                    """SELECT command,issue_key,role,operator_id,success
+                       FROM review_tool_call_metric
+                       WHERE command='issue-get' AND issue_key='RI-NOT-FOUND'"""
+                ).fetchone()
+                self.assertEqual(tuple(failed_metric), ("issue-get", "RI-NOT-FOUND", "inspector", "codex-insp", 0))
+                metric_columns = {
+                    row[1] for row in conn.execute("PRAGMA table_info(review_tool_call_metric)")
+                }
+                self.assertEqual(
+                    metric_columns,
+                    {"id", "command", "issue_key", "role", "operator_id", "success", "created_at"},
+                )
+                serialized_metrics = json.dumps(
+                    [tuple(row) for row in conn.execute("SELECT * FROM review_tool_call_metric")],
+                    ensure_ascii=False,
+                )
+                self.assertNotIn(secret, serialized_metrics)
+                self.assertEqual(
+                    conn.execute(
+                        """SELECT issue_key FROM review_tool_call_metric
+                           WHERE command='activity-get' ORDER BY id DESC LIMIT 1"""
+                    ).fetchone()[0],
+                    "RI-FAST-A",
+                )
+                self.assertEqual(
+                    conn.execute(
+                        """SELECT COUNT(*) FROM review_tool_call_metric
+                           WHERE command='activity-append' AND issue_key IN ('RI-FAST-A','RI-FAST-B')"""
+                    ).fetchone()[0],
+                    4,
+                )
+                self.assertEqual(conn.execute("SELECT COUNT(*) FROM code_inspector_thread").fetchone()[0], 0)
+                self.assertEqual(conn.execute("SELECT COUNT(*) FROM code_inspector_event").fetchone()[0], 0)
+                self.assertEqual(
+                    conn.execute(
+                        "SELECT COUNT(*) FROM issue_activity WHERE operator_type='DEVELOPMENT_AGENT'"
+                    ).fetchone()[0],
+                    0,
+                )
+                conclusions = conn.execute(
+                    """SELECT i.issue_key,a.activity_type,a.metadata_json
+                       FROM issue_activity a JOIN review_issue i ON i.id=a.issue_id
+                       WHERE a.activity_type IN ('VERIFICATION_PASSED','VERIFICATION_FAILED')
+                       ORDER BY i.issue_key"""
+                ).fetchall()
+                self.assertEqual(
+                    [(row["issue_key"], row["activity_type"]) for row in conclusions],
+                    [("RI-FAST-A", "VERIFICATION_PASSED"), ("RI-FAST-B", "VERIFICATION_FAILED")],
+                )
+                self.assertTrue(all(json.loads(row["metadata_json"])["workflow_mode"] == "FASTMODE" for row in conclusions))
+                self.assertEqual(
+                    dict(conn.execute("SELECT issue_key,status FROM review_issue WHERE issue_key IN ('RI-FAST-A','RI-FAST-B')")),
+                    {"RI-FAST-A": "PROPOSED", "RI-FAST-B": "PROPOSED"},
+                )
+
     def test_install_is_idempotent_and_workflow_is_enforced(self):
         with tempfile.TemporaryDirectory() as temp:
             home = Path(temp)
@@ -184,6 +370,8 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             self.assertTrue((home / ".agent-review" / "bin" / "code-inspector-supervisor.py").is_file())
             self.assertTrue((home / ".agent-review" / "bin" / "runtime_identity.py").is_file())
             self.assertTrue((home / ".agent-review" / "bin" / "session_scope.py").is_file())
+            codex_rules = home / ".codex" / "rules" / "code-inspector.rules"
+            self.assertTrue(codex_rules.is_file())
             if os.name != "nt":
                 self.assertTrue(os.access(home / ".agent-review" / "bin" / "code-inspector-supervisor.py", os.X_OK))
             bindings = json.loads((home / ".agent-review" / "config" / "agent-bindings.json").read_text())
@@ -212,9 +400,25 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             self.assertIn(str(trae_skill / "tools" / "review-db-trae-inspector.py"), trae_skill_text)
             self.assertIn("$code-inspector start dev", codex_skill_text)
             self.assertIn("$code-inspector start insp", codex_skill_text)
+            self.assertIn("$code-inspector fastmode RI-XXX [RI-YYY ...]", codex_skill_text)
+            self.assertIn("FastMode 固定使用 Inspector 身份", codex_skill_text)
+            self.assertIn("Developer Agent 不是前置条件", codex_skill_text)
+            self.assertIn("references/fastmode.md", codex_skill_text)
             self.assertIn("references/core-workflow.md", codex_skill_text)
             self.assertIn("references/role-workflows.md", codex_skill_text)
-            self.assertIn("issue-context-get", codex_skill_text)
+            fixed_context_syntax = "<fixed_tool> issue-context-get --issue-key <issue_key>"
+            source_skill_text = (ROOT / "skills" / "code-inspector" / "SKILL.md").read_text(encoding="utf-8")
+            self.assertIn(fixed_context_syntax, source_skill_text)
+            self.assertIn(fixed_context_syntax, codex_skill_text)
+            self.assertIn("$code-inspector fastmode RI-XXX [RI-YYY ...]", source_skill_text)
+            self.assertIn("FastMode 固定使用 Inspector 身份", source_skill_text)
+            self.assertIn("Developer Agent 不是前置条件", source_skill_text)
+            self.assertIn("`issue-context-get` 使用 `--issue-key`，不使用 `--issue-id`", source_skill_text)
+            self.assertIn("`issue-context-get` 使用 `--issue-key`，不使用 `--issue-id`", codex_skill_text)
+            self.assertIn(
+                "普通 Action 不读取完整 `workflow.yaml` 或 `tool-contracts.yaml`",
+                codex_skill_text,
+            )
             self.assertIn("普通 Action", codex_skill_text)
             self.assertIn("activity-get", codex_skill_text)
             self.assertIn("Issue、讨论、阶段提交、审核、验证和报告默认使用简明中文", codex_skill_text)
@@ -231,8 +435,38 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             self.assertIn("Watch 不授权 Multi-Thread", codex_skill_text)
             self.assertIn("禁止创建或恢复 Codex Goal", codex_skill_text)
             self.assertIn("当前平台仅配置 `inspector` 角色", trae_skill_text)
+            self.assertIn("$code-inspector fastmode RI-XXX [RI-YYY ...]", trae_skill_text)
+
+            activation_text = (
+                ROOT / "skills" / "code-inspector" / "references" / "activation.yaml"
+            ).read_text(encoding="utf-8")
+            fastmode_text = (
+                ROOT / "skills" / "code-inspector" / "references" / "fastmode.md"
+            ).read_text(encoding="utf-8")
+            self.assertIn("minimum_issue_keys: 1", activation_text)
+            self.assertIn("deduplicate: preserve_first_input_order", activation_text)
+            self.assertIn("require_existing_issue: true", activation_text)
+            self.assertIn("processing_order: serial", activation_text)
+            self.assertIn("pending_action_required: false", activation_text)
+            self.assertIn("outside_scope_behavior: 禁止操作", activation_text)
+            self.assertIn("$code-inspector fastmode RI-XXX [RI-YYY ...]", fastmode_text)
+            self.assertIn("FastMode 至少需要一个 Issue Key", fastmode_text)
+            self.assertIn("<issue_key> 不存在", fastmode_text)
+            self.assertIn("pending_action=null", fastmode_text)
+            self.assertIn("不自动设置 `CONFIRMED`", fastmode_text)
             self.assertIn("$code-inspector start` 即可启动", trae_skill_text)
             self.assertIn('固定工具：`python "', codex_skill_text)
+            codex_rules_text = codex_rules.read_text(encoding="utf-8")
+            for alias in ("codex-dev", "codex-insp"):
+                wrapper = str((codex_skill / "tools" / f"review-db-{alias}.py").resolve())
+                self.assertIn(
+                    f'prefix_rule(pattern=["python","{wrapper}"], decision="allow"',
+                    codex_rules_text,
+                )
+                self.assertIn(
+                    f'prefix_rule(pattern=["{wrapper}"], decision="allow"',
+                    codex_rules_text,
+                )
             self.assertNotIn("modify-business-code", codex_skill_text.split("可执行命令：", 1)[1].split("。", 1)[0])
             self.assertNotIn("### 执行流程", codex_skill_text)
             self.assertNotIn("Issue 默认正文只写", codex_skill_text)
@@ -936,11 +1170,12 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 "V015__token_runtime_projection.sql",
                 "V016__monotonic_issue_projection.sql",
                 "V017__complete_working_set_projection.sql",
+                "V018__review_tool_call_metric.sql",
             ])
             self.assertIsNotNone(upgraded["backup"])
             with sqlite3.connect(database) as conn:
                 conn.row_factory = sqlite3.Row
-                self.assertEqual(conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0], 17)
+                self.assertEqual(conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0], 18)
                 task = conn.execute("SELECT * FROM review_task WHERE id = 41").fetchone()
                 self.assertEqual((task["task_key"], task["task_type"], task["scope_fingerprint"]),
                                  ("RT-OLD", "REVIEW", "old-fingerprint"))
@@ -1031,6 +1266,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 "V015__token_runtime_projection.sql",
                 "V016__monotonic_issue_projection.sql",
                 "V017__complete_working_set_projection.sql",
+                "V018__review_tool_call_metric.sql",
             ])
             with sqlite3.connect(database) as conn:
                 conn.row_factory = sqlite3.Row
@@ -1083,6 +1319,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 "V015__token_runtime_projection.sql",
                 "V016__monotonic_issue_projection.sql",
                 "V017__complete_working_set_projection.sql",
+                "V018__review_tool_call_metric.sql",
             ])
             with closing(sqlite3.connect(database)) as conn, conn:
                 conn.row_factory = sqlite3.Row
@@ -1103,6 +1340,9 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 }.issubset(columns))
                 self.assertIsNotNone(conn.execute(
                     "SELECT name FROM sqlite_master WHERE type='table' AND name='code_inspector_turn_metric'"
+                ).fetchone())
+                self.assertIsNotNone(conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='review_tool_call_metric'"
                 ).fetchone())
                 self.assertEqual(conn.execute("PRAGMA foreign_key_check").fetchall(), [])
 
@@ -2575,6 +2815,12 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                               'current_iteration','high','IN_PROGRESS','d','f','r')"""
                 )
                 conn.execute(
+                    """INSERT INTO review_issue(issue_key,task_id,introduced_version,title,dimension,severity,
+                       remediation_benefit,remediation_cost,disposition,confidence,status,description,facts,rationale)
+                       VALUES('RI-NO-TOKEN',1,1,'普通模式','code_quality','medium','medium','low',
+                              'current_iteration','high','PROPOSED','d','f','r')"""
+                )
+                conn.execute(
                     """INSERT INTO code_inspector_thread(
                        issue_id,issue_key,role,operator_id,agent_platform,runtime_backend,thread_id,
                        thread_status,issue_status,next_action,last_event,cwd,context_tokens,context_window)
@@ -2607,6 +2853,16 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                         (None, "RI-RUNTIME", "inspector", "codex-insp", 4, "COMPACT", "turn-compact", 300, 0, 30, '{}'),
                     ],
                 )
+                conn.executemany(
+                    """INSERT INTO review_tool_call_metric(
+                         command,issue_key,role,operator_id,success
+                       ) VALUES(?,?,?,?,?)""",
+                    [
+                        ("issue-context-get", "RI-RUNTIME", "inspector", "codex-insp", 1),
+                        ("activity-get", "RI-RUNTIME", "inspector", "codex-insp", 0),
+                        ("issue-context-get", "RI-NO-TOKEN", "inspector", "codex-insp", 1),
+                    ],
+                )
             old_home, old_db = os.environ.get("AGENT_REVIEW_HOME"), os.environ.get("AGENT_REVIEW_DB")
             os.environ["AGENT_REVIEW_HOME"] = str(review_home)
             os.environ["AGENT_REVIEW_DB"] = str(database)
@@ -2630,6 +2886,8 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 self.assertIn('<span>处理 Issue</span><strong>1</strong>', runtime_html)
                 self.assertIn('<span>模型唤醒</span><strong>2 <em>次</em></strong>', runtime_html)
                 self.assertIn("Cached Input Tokens", runtime_html)
+                self.assertIn("今日工具调用", runtime_html)
+                self.assertIn('<span>issue-context-get</span><strong>2</strong>', runtime_html)
                 self.assertIn("今日节省情况", runtime_html)
                 self.assertIn('<span>拦截过期事件</span><strong>1</strong>', runtime_html)
                 self.assertIn('<span>避免模型唤醒</span><strong>1</strong>', runtime_html)
@@ -2655,12 +2913,14 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 )
                 issue_html = client.get("/issues/RI-RUNTIME").get_data(as_text=True)
                 self.assertIn("AI 运行", issue_html)
-                self.assertIn("总 Token", issue_html)
+                self.assertIn("AI Token", issue_html)
                 self.assertIn("3.7K", issue_html)
                 self.assertIn("模型唤醒", issue_html)
                 self.assertIn("执行失败", issue_html)
                 self.assertIn("issue-context-get", issue_html)
                 self.assertIn("activity-get", issue_html)
+                self.assertIn('<span>issue-context-get</span><strong>1</strong>', issue_html)
+                self.assertIn('<span>activity-get</span><strong>1</strong><small>失败 1</small>', issue_html)
                 self.assertIn("最近 AI 执行记录", issue_html)
                 self.assertIn("高级诊断", issue_html)
                 self.assertIn("检查者", issue_html)
@@ -2670,6 +2930,11 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 self.assertIn('data-live-region="human-actions"', issue_html)
                 self.assertIn('data-browser-events-url="/api/browser-events"', issue_html)
                 self.assertIn("开启桌面提醒", issue_html)
+
+                no_token_html = client.get("/issues/RI-NO-TOKEN").get_data(as_text=True)
+                self.assertIn("当前模式暂无法获取模型 Token Usage", no_token_html)
+                self.assertIn('<span>issue-context-get</span><strong>1</strong>', no_token_html)
+                self.assertNotIn('<span>AI Token</span><strong>0</strong>', no_token_html)
 
                 # 首次读取只建立游标，之后只返回真正发生的新变化。
                 initial_feed = client.get("/api/browser-events")
@@ -2948,8 +3213,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             args = SimpleNamespace(
                 agent="developer", operator_id="codex-dev", issue_key="RI-SNAPSHOT",
             )
-            with mock.patch.object(REVIEW_DB_MODULE, "DEFAULT_DB_PATH", database), \
-                 mock.patch.dict(os.environ, {
+            with mock.patch.dict(os.environ, {
                      "AGENT_REVIEW_DB": str(database),
                      "AGENT_REVIEW_HOME": str(home / ".agent-review"),
                  }), \

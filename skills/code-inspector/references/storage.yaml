@@ -1,4 +1,4 @@
-version: 2.1.0
+version: 2.2.0
 
 database:
   engine: sqlite
@@ -38,6 +38,15 @@ history:
     purpose: Inspector 从讨论中整理的结论，以及原子审核/验证/人工决定产生的正式结论。
     effective_rule: 同一 issue_id、decision_type、scope_key 只有最新一条 effective=1；旧结论通过 superseded_by_id 留审计。
   agent_audit_log: append_only
+
+metrics:
+  review_tool_call_metric:
+    purpose: Review DB CLI 的真实调用次数；普通 Session、FastMode 与 Runtime 共用同一口径。
+    fields: [command, issue_key, role, operator_id, success, created_at]
+    forbidden_content: [完整命令参数, Prompt, 推理过程, 返回正文, evidence 正文, discussion 正文]
+  code_inspector_turn_metric:
+    purpose: 仅记录能够取得 Usage 的模型 Turn Token 与该 Turn 的工具归因。
+    aggregation_rule: 工具真实调用总数只查 review_tool_call_metric，不与 review_db_calls_json 累加。
 
 domain_tables:
   review_task: 长期检查目标。

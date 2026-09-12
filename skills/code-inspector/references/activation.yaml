@@ -1,13 +1,15 @@
-version: 1.4.0
+version: 1.5.0
 
 session_mode:
   default: inactive
   canonical_start_commands:
     - $code-inspector start
     - $code-inspector start <role-selector>
+    - $code-inspector fastmode <issue-key> [<issue-key> ...]
   compatible_start_commands:
     - /code-inspector start
     - /code-inspector start <role-selector>
+    - /code-inspector fastmode <issue-key> [<issue-key> ...]
   natural_start_phrases:
     - 进入代码检查模式
     - 开启代码检查模式
@@ -16,6 +18,8 @@ session_mode:
     - 关闭代码检查模式
     - $code-inspector stop
     - /code-inspector stop
+    - $code-inspector exit
+    - /code-inspector exit
   role_selection:
     selector_source: 安装后 SKILL.md 中当前平台的“会话角色选择”
     one_configured_role:
@@ -27,6 +31,41 @@ session_mode:
     natural_language: 多角色平台使用自然语言开启时也必须明确指定角色或 selector，否则不激活。
     session_lock: 激活后将角色和逻辑身份固定到当前会话模式；后续任务不得触发自动切换。
     switch_role: 先退出当前模式，再用新 selector 重新启动。
+
+fastmode:
+  kind: human_coordinated_fast_review
+  canonical_command: $code-inspector fastmode RI-XXX [RI-YYY ...]
+  compatible_command: /code-inspector fastmode RI-XXX [RI-YYY ...]
+  natural_language_activation: forbidden
+  role: inspector
+  workflow_mode: FASTMODE
+  developer_agent_required: false
+  human_coordinated: true
+  validation:
+    minimum_issue_keys: 1
+    issue_key_pattern: ^RI-[A-Z0-9][A-Z0-9-]*$
+    require_existing_issue: true
+    deduplicate: preserve_first_input_order
+    missing_issue_behavior: 明确报告该 Issue 不存在，不得换成其他 Issue。
+  issue_scope:
+    source: 启动命令中去重后的 Issue Key
+    storage: session_memory
+    expansion: forbidden
+    outside_scope_behavior: 禁止操作；旁支发现沿用 Candidate 机制。
+  processing_order: serial
+  first_read: <fixed_tool> issue-context-get --issue-key <issue_key>
+  first_read_parameter_rule: 使用 --issue-key，禁止使用 --issue-id。
+  pending_action_required: false
+  runtime:
+    multi_thread: forbidden
+    watch: forbidden
+    developer_thread: forbidden
+    developer_session: forbidden
+    developer_event: forbidden
+    fake_developer_activity: forbidden
+  terminal_status_owner: human
+  completion_behavior: 分 Issue 记录 PASS/FAIL 并汇总；不得自动 CONFIRMED 或 CANCELLED。
+  lifecycle: Session 保持 FastMode；只能重查当前 Scope。更换 Scope 必须先 exit 后重新 fastmode。
 
 multi_thread:
   default: inactive

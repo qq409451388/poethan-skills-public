@@ -17,19 +17,26 @@
     <div><h2 id="today-usage-title">今日 AI 消耗</h2><p class="section-sub">总量按 Input + Output 计算；缓存读取包含在 Input 中，不重复相加。</p></div>
   </div>
   <div class="ai-metric-grid">
-    <article class="ai-metric ai-metric-primary"><span>Token 总量</span><strong>{{ today.total_tokens|compact_count }}</strong><small>今日全部 AI 执行</small></article>
+    <article class="ai-metric ai-metric-primary"><span>AI Token</span>{% if today.token_usage_available %}<strong>{{ today.total_tokens|compact_count }}</strong><small>今日全部 AI 执行</small>{% else %}<strong>—</strong><small>当前模式暂无法获取模型 Token Usage</small>{% endif %}</article>
     <article class="ai-metric"><span>处理 Issue</span><strong>{{ today.issue_count or 0 }}</strong><small>产生过 AI 消耗</small></article>
     <article class="ai-metric"><span>平均每个 Issue</span><strong>{{ today.average_tokens|compact_count }}</strong><small>便于识别异常消耗</small></article>
     <article class="ai-metric"><span>模型唤醒</span><strong>{{ today.wakeups or 0 }} <em>次</em></strong><small>初始化与业务执行</small></article>
   </div>
   <details class="usage-breakdown">
     <summary>查看 Token 明细</summary>
+    {% if today.token_usage_available %}
     <div class="usage-breakdown-grid">
       <div><span>Input Tokens</span><strong>{{ today.input_tokens|compact_count }}</strong></div>
       <div><span>Cached Input Tokens</span><strong>{{ today.cached_input_tokens|compact_count }}</strong></div>
       <div><span>Output Tokens</span><strong>{{ today.output_tokens|compact_count }}</strong></div>
     </div>
+    {% else %}<p class="panel-note">当前模式暂无法获取模型 Token Usage。</p>{% endif %}
   </details>
+</section>
+
+<section class="panel" aria-labelledby="tool-calls-title">
+  <div class="section-head"><div><h2 id="tool-calls-title">今日工具调用</h2><p class="section-sub">直接按 Review DB CLI 的真实调用统计，不与 Turn Metric 重复累计。</p></div></div>
+  <div class="tool-read-grid">{% for tool in today_tool_calls %}<div><span>{{ tool.name }}</span><strong>{{ tool.count }}</strong>{% if tool.failure_count %}<small>失败 {{ tool.failure_count }}</small>{% endif %}</div>{% endfor %}</div>
 </section>
 
 <div class="runtime-summary-grid">

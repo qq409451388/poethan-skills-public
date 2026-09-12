@@ -772,20 +772,27 @@ def token_total(row: dict) -> int:
 
 
 def review_db_tool_counts(rows: list[dict]) -> list[dict]:
-    totals: dict[str, int] = {}
-    for row in rows:
-        calls = parse_json_field(row.get("review_db_calls_json"), {})
-        if not isinstance(calls, dict):
-            continue
-        for name, count in calls.items():
-            if isinstance(count, (int, float)):
-                totals[str(name)] = totals.get(str(name), 0) + int(count)
-    preferred = ["issue-context-get", "activity-get", "discussion-get", "stage-history-get"]
-    ordered = [{"name": name, "count": totals.pop(name, 0)} for name in preferred]
+    totals = {
+        str(row["command"]): {
+            "count": int(row.get("call_count") or 0),
+            "failure_count": int(row.get("failure_count") or 0),
+        }
+        for row in rows
+    }
+    preferred = [
+        "issue-context-get", "issue-get", "activity-get", "discussion-get",
+        "stage-get", "stage-history-get", "design-preview", "decision-list",
+    ]
+    ordered = [
+        {"name": name, **totals.pop(name, {"count": 0, "failure_count": 0})}
+        for name in preferred
+    ]
     ordered.extend(
-        {"name": name, "count": count}
-        for name, count in sorted(totals.items(), key=lambda item: (-item[1], item[0]))
-        if count
+        {"name": name, **counts}
+        for name, counts in sorted(
+            totals.items(), key=lambda item: (-item[1]["count"], item[0])
+        )
+        if counts["count"]
     )
     return ordered
 
@@ -795,6 +802,9 @@ def issue_ai_summary(issue_key: str, threads: list[dict], events: list[dict]) ->
         """SELECT COALESCE(SUM(input_tokens),0) AS input_tokens,
                   COALESCE(SUM(cached_input_tokens),0) AS cached_input_tokens,
                   COALESCE(SUM(output_tokens),0) AS output_tokens,
+                  COUNT(*) AS turn_count,
+                  SUM(CASE WHEN input_tokens IS NOT NULL OR cached_input_tokens IS NOT NULL
+                                OR output_tokens IS NOT NULL THEN 1 ELSE 0 END) AS token_usage_count,
                   SUM(CASE WHEN turn_type='INIT' THEN 1 ELSE 0 END) AS init_count,
                   SUM(CASE WHEN turn_type='ACTION' THEN 1 ELSE 0 END) AS action_count,
                   SUM(CASE WHEN turn_type='COMPACT' THEN 1 ELSE 0 END) AS compact_count
@@ -811,7 +821,9 @@ def issue_ai_summary(issue_key: str, threads: list[dict], events: list[dict]) ->
         turn["total_tokens"] = token_total(turn)
         turn["review_db_calls"] = parse_json_field(turn["review_db_calls_json"], {})
     tool_rows = query_all(
-        "SELECT review_db_calls_json FROM code_inspector_turn_metric WHERE issue_key=?",
+        """SELECT command,COUNT(*) AS call_count,
+                  SUM(CASE WHEN success=0 THEN 1 ELSE 0 END) AS failure_count
+           FROM review_tool_call_metric WHERE issue_key=? GROUP BY command""",
         (issue_key,),
     )
     context_values = [
@@ -839,10 +851,13 @@ def issue_ai_summary(issue_key: str, threads: list[dict], events: list[dict]) ->
         latest_status, latest_kind = "正在处理", "active"
     elif recent_turns:
         latest_status, latest_kind = "正常", "ok"
+    elif tool_rows:
+        latest_status, latest_kind = "已记录工具调用", "neutral"
     else:
         latest_status, latest_kind = "暂无执行记录", "neutral"
     return {
         **usage,
+        "token_usage_available": int(usage.get("token_usage_count") or 0) > 0,
         "total_tokens": token_total(usage),
         "wakeups": int(usage.get("init_count") or 0) + int(usage.get("action_count") or 0),
         "context_usage": max(context_values) if context_values else None,
@@ -1017,15 +1032,32 @@ def runtime_overview():
         """SELECT COALESCE(SUM(input_tokens),0) AS input_tokens,
                   COALESCE(SUM(cached_input_tokens),0) AS cached_input_tokens,
                   COALESCE(SUM(output_tokens),0) AS output_tokens,
+                  SUM(CASE WHEN input_tokens IS NOT NULL OR cached_input_tokens IS NOT NULL
+                                OR output_tokens IS NOT NULL THEN 1 ELSE 0 END) AS token_usage_count,
                   COUNT(DISTINCT issue_key) AS issue_count,
                   SUM(CASE WHEN turn_type IN ('INIT','ACTION') THEN 1 ELSE 0 END) AS wakeups,
                   SUM(CASE WHEN turn_type='COMPACT' THEN 1 ELSE 0 END) AS compact_count
            FROM code_inspector_turn_metric WHERE created_at>=? AND created_at<?""",
         (today_start, today_end),
     ) or {}
+    today["token_usage_available"] = int(today.get("token_usage_count") or 0) > 0
     today["total_tokens"] = token_total(today)
     issue_count = int(today.get("issue_count") or 0)
     today["average_tokens"] = round(today["total_tokens"] / issue_count) if issue_count else 0
+
+    tool_filters = ["created_at>=?", "created_at<?"]
+    tool_params: list[str] = [today_start, today_end]
+    for column, value in (("issue_key", issue), ("role", role), ("operator_id", operator)):
+        if value:
+            tool_filters.append(f"{column}=?")
+            tool_params.append(value)
+    today_tool_calls = review_db_tool_counts(query_all(
+        """SELECT command,COUNT(*) AS call_count,
+                  SUM(CASE WHEN success=0 THEN 1 ELSE 0 END) AS failure_count
+           FROM review_tool_call_metric WHERE """
+        + " AND ".join(tool_filters) + " GROUP BY command",
+        tool_params,
+    ))
 
     savings = query_one(
         """SELECT COUNT(*) AS intercepted_events
@@ -1174,7 +1206,8 @@ def runtime_overview():
         }
     return render_template(
         "runtime.html", threads=threads, events=events, turns=turns,
-        today=today, savings=savings, issue_usage=issue_usage[:10],
+        today=today, today_tool_calls=today_tool_calls,
+        savings=savings, issue_usage=issue_usage[:10],
         attention=attention, health=health,
         filters={"issue": issue, "role": role, "operator": operator, "status": status_filter},
         thread_statuses=RUNTIME_THREAD_STATUSES, event_statuses=RUNTIME_EVENT_STATUSES,

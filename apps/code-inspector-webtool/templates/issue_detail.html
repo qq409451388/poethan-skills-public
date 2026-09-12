@@ -182,13 +182,14 @@
     <section class="panel runtime-panel" id="agent-runtime" data-live-region="agent-runtime">
       <div class="section-head"><div><h2>AI 运行</h2><p class="section-sub">查看这个 Issue 的 AI 消耗和最近执行结果。</p></div><a class="btn btn-small" href="{{ url_for('runtime_overview') }}">查看全局 AI 运行情况</a></div>
       <div class="issue-ai-metrics">
-        <div><span>总 Token</span><strong>{{ ai_summary.total_tokens|compact_count }}</strong></div>
+        <div><span>AI Token</span>{% if ai_summary.token_usage_available %}<strong>{{ ai_summary.total_tokens|compact_count }}</strong>{% else %}<strong>—</strong><small>当前模式暂无法获取模型 Token Usage</small>{% endif %}</div>
         <div><span>模型唤醒</span><strong>{{ ai_summary.wakeups }} 次</strong></div>
         <div><span>上下文占用</span><strong>{% if ai_summary.context_usage is not none %}{{ ai_summary.context_usage }}%{% else %}—{% endif %}</strong></div>
         <div><span>最近一次执行</span><strong class="runtime-result-{{ ai_summary.latest_kind }}">{{ ai_summary.latest_status }}</strong></div>
       </div>
       <details class="usage-breakdown issue-usage-breakdown">
         <summary>查看执行与 Token 构成</summary>
+        {% if ai_summary.token_usage_available %}
         <div class="usage-breakdown-grid">
           <div><span>初始化</span><strong>{{ ai_summary.init_count or 0 }} 次</strong></div>
           <div><span>业务执行</span><strong>{{ ai_summary.action_count or 0 }} 次</strong></div>
@@ -197,10 +198,12 @@
           <div><span>Cached Input</span><strong>{{ ai_summary.cached_input_tokens|compact_count }}</strong></div>
           <div><span>Output</span><strong>{{ ai_summary.output_tokens|compact_count }}</strong></div>
         </div>
+        {% else %}<p class="panel-note">当前模式暂无法获取模型 Token Usage。</p>{% endif %}
       </details>
       <div class="tool-reads">
-        <h3>工具读取</h3>
-        <div class="tool-read-grid">{% for tool in ai_summary.tool_calls %}<div><span>{{ tool.name }}</span><strong>{{ tool.count }}</strong></div>{% endfor %}</div>
+        <h3>工具调用</h3>
+        <p class="section-sub">Review DB CLI 真实调用，普通模式与 Runtime 模式统一统计。</p>
+        <div class="tool-read-grid">{% for tool in ai_summary.tool_calls %}<div><span>{{ tool.name }}</span><strong>{{ tool.count }}</strong>{% if tool.failure_count %}<small>失败 {{ tool.failure_count }}</small>{% endif %}</div>{% endfor %}</div>
       </div>
       <details class="collapsible issue-turns">
         <summary>最近 AI 执行记录（{{ ai_summary.recent_turns|length }}）</summary>
