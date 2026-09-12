@@ -179,6 +179,21 @@ def loads(value: str | None, default: Any) -> Any:
         return default
     return json.loads(value)
 
+HUMAN_RECORD_MAX_CHARS = 180
+
+def validate_human_record(value: str, field_name: str) -> str:
+    """限制正式结论为可直接扫读的短文；技术细节应进入讨论或结构化证据。"""
+    text = value.strip()
+    if not text:
+        raise ValueError(f"{field_name} 不能为空")
+    if len(text) > HUMAN_RECORD_MAX_CHARS:
+        raise ValueError(f"{field_name} 不能超过 {HUMAN_RECORD_MAX_CHARS} 个字符")
+    if len([line for line in text.splitlines() if line.strip()]) > 3:
+        raise ValueError(f"{field_name} 最多写 3 行简短说明")
+    if "```" in text:
+        raise ValueError(f"{field_name} 不能包含代码块；技术细节请放入讨论或结构化证据")
+    return text
+
 def print_json(value: Any) -> None:
     print(json.dumps(value, ensure_ascii=False, indent=2))
 
@@ -1276,10 +1291,12 @@ def design_submit(args: argparse.Namespace) -> None:
     require_agent(args.agent)
     code_reference = json.loads(args.code_reference)
     metadata = json.loads(args.metadata)
+    human_summary = validate_human_record(args.summary, "design-submit 的 --summary")
     if not isinstance(code_reference, list):
         raise ValueError("code-reference 必须是 JSON 数组")
     if not isinstance(metadata, dict):
         raise ValueError("metadata 必须是 JSON 对象")
+    metadata = {**metadata, "human_summary": human_summary}
     with connect() as conn:
         result = apply_design_transition(
             conn, args, allowed_agents={"developer", "human"},
@@ -2240,6 +2257,7 @@ def record_issue_decision(
     source_discussion_ids: list[int] | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> int:
+    content = validate_human_record(content, "正式决策结论")
     previous = conn.execute(
         """SELECT id FROM issue_decision
            WHERE issue_id = ? AND decision_type = ? AND scope_key = ? AND effective = 1
@@ -2993,6 +3011,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("design-submit")
     p.add_argument("--issue-key", required=True)
+    p.add_argument("--summary", required=True)
     p.add_argument("--content", required=True)
     p.add_argument("--code-reference", default="[]")
     p.add_argument("--metadata", default="{}")

@@ -121,11 +121,12 @@ commands:
   design-submit:
     roles: [developer, human]
     purpose: 原子追加 DESIGN_SUBMITTED 并将问题转为 DESIGN_PENDING_REVIEW。
-    required: [--issue-key, --content]
+    required: [--issue-key, --summary, --content]
     optional: [--code-reference, --metadata]
     json_arguments: [--code-reference, --metadata]
     allowed_from: [DESIGN_REQUIRED, REDESIGN_REQUIRED]
     attempt_effect: none
+    summary_rule: --summary 用 1 至 3 句日常中文说明改哪里、大概怎么改、有什么影响；最多 180 字，不写代码块。完整技术方案继续放 --content。
   design-review:
     roles: [inspector, human]
     purpose: 绑定当前设计提交并原子记录审核结论；staged 批准同时创建并激活 Stage Plan。
@@ -327,6 +328,7 @@ commands:
     optional: [--scope-key, --source-discussion-ids, --metadata]
     json_arguments: [--source-discussion-ids, --metadata]
     purpose: 把讨论达成的一致整理为短小正式结论。
+    content_rule: 正式结论最多 180 字、最多 3 行且不含代码块；只写最终决定和主要影响，推理与技术细节留在来源讨论。
     supersession: 同一 issue、decision-type、scope-key 的旧有效结论自动转为 effective=0，并指向新结论。
   decision-list:
     roles: [inspector, developer, human]

@@ -206,6 +206,52 @@ def decision_label(value: str | None) -> str:
     return DECISION_LABELS.get(value or "", value or "—")
 
 
+def brief_text(value: str | None, limit: int = 180) -> str:
+    text = re.sub(r"\s+", " ", value or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit - 1].rstrip() + "…"
+
+
+@app.template_filter("brief")
+def brief(value: str | None, limit: int = 180) -> str:
+    return brief_text(value, limit)
+
+
+@app.template_filter("activity_history_summary")
+def activity_history_summary(activity: dict) -> str:
+    activity_type = activity.get("activity_type")
+    metadata = activity.get("metadata") or {}
+    stage_no = metadata.get("stage_no")
+    fixed = {
+        "ISSUE_CREATED": "问题已记录。",
+        "DESIGN_REQUESTED": "已要求先说明修改方案，暂未开始开发。",
+        "DESIGN_APPROVED": "设计已通过，Developer 可以开始修改。",
+        "DESIGN_REJECTED": "设计未通过，需要调整后重新提交。",
+        "STAGE_PLAN_CREATED": "分阶段执行计划已创建。",
+        "STAGE_PLAN_SUPERSEDED": "原执行计划已废弃，需要按新方案处理。",
+        "IMPLEMENTATION_SUBMITTED": "Developer 已提交完整实现，等待审核。",
+        "REVIEW_APPROVED": "实现审核已通过。",
+        "REVIEW_REJECTED": "实现审核未通过，需要继续修改。",
+        "VERIFICATION_PASSED": "最终验证已通过。",
+        "VERIFICATION_FAILED": "最终验证未通过，需要继续处理。",
+        "INSPECTOR_CONFIRMATION_PROVIDED": "Inspector 已给出边界确认。",
+        "HUMAN_CONFIRMATION_REQUESTED": "自动流程已暂停，等待人工决定。",
+        "HUMAN_CONFIRMATION_PROVIDED": "人工决定已记录，流程继续。",
+    }
+    if activity_type in {"DESIGN_SUBMITTED", "REDESIGN_SUBMITTED"}:
+        return metadata.get("human_summary") or "修改方案已提交，具体做法可在 AI 讨论中查看。"
+    if activity_type == "STAGE_SUBMITTED":
+        return f"第 {stage_no} 阶段已提交，等待验收。" if stage_no else "当前阶段已提交，等待验收。"
+    if activity_type == "STAGE_APPROVED":
+        return f"第 {stage_no} 阶段已验收通过。" if stage_no else "当前阶段已验收通过。"
+    if activity_type == "STAGE_REJECTED":
+        return f"第 {stage_no} 阶段未通过，需要继续修改。" if stage_no else "当前阶段未通过，需要继续修改。"
+    if activity_type == "STATUS_CHANGED":
+        return f"问题状态已变更为“{label(activity.get('result_status'))}”。"
+    return fixed.get(activity_type, label(activity_type))
+
+
 @app.template_filter("json_pretty")
 def json_pretty(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, indent=2)
@@ -306,6 +352,7 @@ def activity_with_json(row: dict) -> dict:
     row["code_reference"] = parse_json_field(row.get("code_reference_json"), [])
     row["metadata"] = parse_json_field(row.get("metadata_json"), {})
     row["record_kind"] = "activity"
+    row["is_collaborative_submission"] = row.get("activity_type") in COLLABORATIVE_SUBMISSION_TYPES
     return row
 
 
@@ -984,6 +1031,7 @@ def issue_design_submit(issue_key: str):
     try:
         run_human_command(
             "design-submit", "--issue-key", issue_key,
+            "--summary", request.form.get("summary", ""),
             "--content", request.form.get("content", ""),
         )
         return redirect_back("issue_detail", issue_key=issue_key, msg="设计方案已提交审核")

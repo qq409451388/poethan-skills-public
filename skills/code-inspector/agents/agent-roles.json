@@ -1,5 +1,5 @@
 {
-  "version": 11,
+  "version": 12,
   "skill_name": "code-inspector",
   "runtime": {
     "local_home": "${HOME}/.agent-review",

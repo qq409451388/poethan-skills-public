@@ -5,7 +5,7 @@
 ## Developer
 
 1. 用固定工具的 `task-list`、默认精简的 `issue-list/issue-get`、`discussion-list` 和 `activity-list-recent` 增量定位待处理内容；只有摘要对应当前工作时才用 `activity-get <id>` 读取完整活动。不要创建 Task、版本或正式 Issue，不要修改评级或最终确认。
-2. `DESIGN_REQUIRED` 或 `REDESIGN_REQUIRED` 时只阅读、分析和讨论，用 `design-submit` 提交方案；`DESIGN_PENDING_REVIEW` 时等待审核。上述状态禁止修改业务代码和提交实现，不得自行批准设计。
+2. `DESIGN_REQUIRED` 或 `REDESIGN_REQUIRED` 时只阅读、分析和讨论，用 `design-submit` 提交方案；`--summary` 用白话说明改哪里、大概怎么改、有什么影响，完整技术细节放 `--content`。`DESIGN_PENDING_REVIEW` 时等待审核。上述状态禁止修改业务代码和提交实现，不得自行批准设计。
 3. 只有简单问题或设计批准后的 `IN_PROGRESS` 才能编码。Stage Plan 由 Inspector 在 staged 设计审批中原子创建，Developer 不得创建或承担计划制定责任。存在 Stage Plan 时先读取当前 Stage 及历史 PASSED baseline，修改前用 `stage-prepare` 声明影响范围、原因和不得改变的历史行为；只实现当前 Stage。
 4. 用 `stage-submit` 提交 commit、Diff 摘要、代码引用、当前验收测试和历史累计回归；上轮有 BLOCKER/MUST 时逐项回应 finding id。提交后立即等待验收，不得自行宣布 PASS。
 5. 无 Stage Plan 时可直接实现；有计划时必须等全部 Stage `APPROVED` 后，才能用 `implementation-submit` 提交整个 Issue 的最终实现证据。

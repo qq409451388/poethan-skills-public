@@ -329,6 +329,8 @@ tbody tr:last-child td { border-bottom: 0; }
 .event-head strong { color: var(--text); }
 .event-operator { color: var(--muted); }
 .event-operator b { color: var(--text); font-weight: 700; }
+.record-summary { margin: 6px 0 0; color: var(--text); font-size: 14px; line-height: 1.65; }
+.design-brief-panel { border-left: 4px solid var(--blue); }
 .record-stream { display: grid; gap: 8px; }
 .record-stream .event { margin-bottom: 0; }
 .runtime-card { margin-top: 10px; padding: 12px; border: 1px solid var(--border); border-radius: 9px; background: #f8fafc; }

@@ -1130,7 +1130,9 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             self.assertEqual((requested["status"], requested["attempt_no"]), ("DESIGN_REQUIRED", 0))
             fails("developer", "implementation-submit", "--issue-key", "RI-DESIGN", "--content", "禁止实现")
             submitted = db(
-                "developer", "design-submit", "--issue-key", "RI-DESIGN", "--content", "按 Domain 拆分版本并兼容历史",
+                "developer", "design-submit", "--issue-key", "RI-DESIGN",
+                "--summary", "调整版本保存方式，同时保证旧数据仍可读取。",
+                "--content", "按 Domain 拆分版本并兼容历史",
                 "--code-reference", json.dumps([{"file_path": "writer.py", "line_start": 20}]),
                 "--metadata", json.dumps({"tests": ["backfill", "concurrency"]}),
             )
@@ -1155,7 +1157,9 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             )
             self.assertEqual((rejected["status"], rejected["attempt_no"]), ("DESIGN_REQUIRED", 0))
             resubmitted = db(
-                "developer", "design-submit", "--issue-key", "RI-DESIGN", "--content", "补充 legacy fallback",
+                "developer", "design-submit", "--issue-key", "RI-DESIGN",
+                "--summary", "补充旧版本数据的读取兼容，不改变现有新数据流程。",
+                "--content", "补充 legacy fallback",
             )
             stale_design = fails(
                 "inspector", "design-review", "--issue-key", "RI-DESIGN", "--decision", "approved",
@@ -1234,7 +1238,9 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             fails("developer", "implementation-submit", "--issue-key", "RI-DESIGN", "--content", "不得继续实现")
             fails("developer", "issue-update-status", "--issue-key", "RI-DESIGN", "--status", "IN_PROGRESS")
             redesigned_submission = db(
-                "developer", "design-submit", "--issue-key", "RI-DESIGN", "--content", "重做数据流方案",
+                "developer", "design-submit", "--issue-key", "RI-DESIGN",
+                "--summary", "重新调整数据处理顺序，避免旧数据被错误覆盖。",
+                "--content", "重做数据流方案",
             )
             db(
                 "inspector", "design-review", "--issue-key", "RI-DESIGN", "--decision", "approved",
@@ -1336,6 +1342,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             db("inspector", "design-request", "--issue-key", "RI-STAGE", "--content", "必须分阶段验收")
             design_submission = db(
                 "developer", "design-submit", "--issue-key", "RI-STAGE",
+                "--summary", "分三步完成版本模型、实时写入和历史数据处理，每步单独验收。",
                 "--content", "分模型、主链路、回灌三阶段",
             )
             stages = [
@@ -1686,7 +1693,8 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             )
             db("inspector", "design-request", "--issue-key", "RI-STAGE-REDESIGN", "--content", "先设计")
             first_design = db(
-                "developer", "design-submit", "--issue-key", "RI-STAGE-REDESIGN", "--content", "初版方案",
+                "developer", "design-submit", "--issue-key", "RI-STAGE-REDESIGN",
+                "--summary", "先建立基础模型，再接入主要处理流程。", "--content", "初版方案",
             )
             db("inspector", "design-review", "--issue-key", "RI-STAGE-REDESIGN", "--decision", "approved",
                "--design-activity-id", str(first_design["activity_id"]), "--execution-mode", "staged",
@@ -1722,7 +1730,8 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             self.assertEqual([item["status"] for item in old_plan], ["SUPERSEDED", "SUPERSEDED"])
             fails("developer", "implementation-submit", "--issue-key", "RI-STAGE-REDESIGN", "--content", "不能绕过")
             second_design = db(
-                "developer", "design-submit", "--issue-key", "RI-STAGE-REDESIGN", "--content", "新方案",
+                "developer", "design-submit", "--issue-key", "RI-STAGE-REDESIGN",
+                "--summary", "按新边界缩小修改范围，只保留一个可独立验收的阶段。", "--content", "新方案",
             )
             new_plan = db(
                 "inspector", "design-review", "--issue-key", "RI-STAGE-REDESIGN",
@@ -1904,6 +1913,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             )
             human_boundary_design = db(
                 "developer", "design-submit", "--issue-key", "RI-HUMAN",
+                "--summary", "按人工确认的数据边界调整冲突合并，保持原有对外结果不变。",
                 "--content", "按 Human 边界重做冲突合并方案",
             )
             db(
@@ -2236,7 +2246,8 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 )
                 self.assertEqual(db("inspector", "issue-get", "--issue-key", "RI-WEB-DESIGN")["status"], "DESIGN_REQUIRED")
                 client.post(
-                    "/issues/RI-WEB-DESIGN/design-submit", data={"content": "Human 代为补充具体方案"},
+                    "/issues/RI-WEB-DESIGN/design-submit",
+                    data={"summary": "调整问题处理流程，保持现有使用方式不变。", "content": "Human 代为补充具体方案"},
                     follow_redirects=False,
                 )
                 design_page = client.get("/issues/RI-WEB-DESIGN").get_data(as_text=True)

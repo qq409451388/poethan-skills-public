@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% from "components/task_modal.html" import task_modal %}
 {% from "components/evidence.html" import render_references %}
-{% macro render_collaboration_record(record) %}
+{% macro render_collaboration_record(record, compact=false) %}
 <article class="event {% if record.record_kind == 'discussion' %}discussion-item{% endif %}" data-record-kind="{{ record.record_kind }}"{% if record.record_kind == 'activity' %} data-activity-type="{{ record.activity_type }}"{% endif %}>
   <div class="event-head"><div>
     {% if record.record_kind == 'activity' %}<strong>{{ record.activity_type|label }}</strong>{% endif %}
@@ -10,8 +10,12 @@
     {% if record.result_status %}<span>→ <span class="badge badge-status-{{ record.result_status }}">{{ record.result_status|label }}</span></span>{% endif %}
     {% if record.amendment_count %}<span class="muted">已修订 {{ record.amendment_count }} 次</span>{% endif %}
   </div><time class="mono">{{ (record.amended_at or record.created_at)|localtime }}</time></div>
+  {% if compact and record.record_kind == 'activity' %}
+  <p class="record-summary">{{ record|activity_history_summary }}</p>
+  {% else %}
   <div class="markdown-body">{{ record.content|markdown }}</div>
   {% if record.code_reference %}<details class="collapsible event-details"><summary>代码引用</summary><div class="details-body">{{ render_references(record.code_reference) }}</div></details>{% endif %}
+  {% endif %}
 </article>
 {% endmacro %}
 {% block title %}{{ issue.issue_key }} · Issue 详情{% endblock %}
@@ -49,6 +53,14 @@
 
     <div data-live-region="evidence">{% if issue.evidence %}<section class="panel"><h2>关键证据</h2>{{ render_references(issue.evidence) }}</section>{% endif %}</div>
 
+    {% if latest_design_submission %}
+    <section class="panel design-brief-panel" data-live-region="design-brief">
+      <div class="section-head"><div><h2>方案概要</h2><p class="section-sub">这里只说明改哪里、大概怎么改、有什么影响。</p></div><span class="badge badge-blue">设计</span></div>
+      <p class="record-summary">{{ (latest_design_submission.metadata.human_summary or latest_design_submission.content)|brief }}</p>
+      <p class="muted">完整技术方案保留在下方“协作记录 → 讨论”中。</p>
+    </section>
+    {% endif %}
+
     <div data-live-region="decisions">
     {% if decisions %}
     <section class="panel decision-panel">
@@ -57,7 +69,7 @@
       {% for decision in decisions %}
         <article class="decision-item">
           <div class="event-head"><div><strong>{{ decision.decision_type|decision_label }}</strong><span class="badge badge-status-{{ decision.outcome }}">{{ decision.outcome|label }}</span>{% if decision.scope_key %}<span class="mono">{{ decision.scope_key }}</span>{% endif %}</div><time class="mono">{{ decision.created_at|localtime }}</time></div>
-          <div class="markdown-body">{{ decision.content|markdown }}</div>
+          <p class="record-summary">{{ decision.content|brief }}</p>
         </article>
       {% endfor %}
       </div>
@@ -148,7 +160,7 @@
       <div class="section-head"><div><h2>协作记录</h2><p class="section-sub">全部记录按最新优先汇总；协作提交也会进入讨论视图。</p></div></div>
       <div class="tabs" role="tablist"><button type="button" class="tab active" data-tab-target="all">全部 {{ all_records|length }}</button><button type="button" class="tab" data-tab-target="discussion">讨论 {{ discussion_records|length }}</button><button type="button" class="tab" data-tab-target="history">处理历史 {{ activities|length }}</button></div>
       <div class="tab-pane active" data-tab-pane="all">
-        <div class="record-stream">{% for record in all_records %}{{ render_collaboration_record(record) }}{% else %}<div class="empty">暂无协作记录。</div>{% endfor %}</div>
+        <div class="record-stream">{% for record in all_records %}{{ render_collaboration_record(record, record.record_kind == 'activity' and not record.is_collaborative_submission) }}{% else %}<div class="empty">暂无协作记录。</div>{% endfor %}</div>
       </div>
       <div class="tab-pane" data-tab-pane="discussion">
         <div class="record-stream">{% for record in discussion_records %}{{ render_collaboration_record(record) }}{% else %}<div class="empty">暂无讨论或协作提交。</div>{% endfor %}</div>
@@ -159,7 +171,7 @@
           <section class="round">
             <div class="round-head"><strong>{% if attempt_no == 0 %}初始记录{% else %}第 {{ attempt_no }} 轮{% endif %}</strong>{% if attempt_no == issue.current_attempt_no %}<span class="badge badge-blue">当前</span>{% endif %}</div>
             {% for activity in group %}
-            {{ render_collaboration_record(activity) }}
+            {{ render_collaboration_record(activity, true) }}
             {% endfor %}
           </section>
         {% endfor %}
@@ -211,7 +223,7 @@
       </form>
       {% elif issue.status in ('DESIGN_REQUIRED', 'REDESIGN_REQUIRED') %}
       <div class="action-head"><div><span>HUMAN · 设计阶段</span><h2>提交具体设计方案</h2></div><b>禁止直接实现</b></div>
-      <form method="post" action="{{ url_for('issue_design_submit', issue_key=issue.issue_key) }}"><div class="field"><label>方案内容 <span class="required">必填</span></label><textarea name="content" required placeholder="说明修改范围、数据流、兼容性、测试与风险"></textarea></div><button class="btn btn-primary btn-block" type="submit">提交设计审核</button></form>
+      <form method="post" action="{{ url_for('issue_design_submit', issue_key=issue.issue_key) }}"><div class="field"><label>给 Human 看的方案概要 <span class="required">必填</span></label><textarea name="summary" required maxlength="180" placeholder="用 1～3 句话说明：改哪里、大概怎么改、有什么影响"></textarea></div><div class="field"><label>完整技术方案 <span class="required">必填</span></label><textarea name="content" required placeholder="说明修改范围、数据流、兼容性、测试与风险"></textarea></div><button class="btn btn-primary btn-block" type="submit">提交设计审核</button></form>
       {% elif issue.status == 'IMPLEMENTED_PENDING_REVIEW' %}
       <div class="action-head"><div><span>HUMAN · 当前轮到你处理</span><h2>你现在可以做什么</h2></div><b>区分实现 / 设计失败</b></div>
       <p class="action-hint">这些操作会真正推进问题状态，最终规则由领域工具校验。</p>
