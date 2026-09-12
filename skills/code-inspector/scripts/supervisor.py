@@ -258,7 +258,7 @@ def process_event(event: dict, scope: SessionScope) -> dict:
             result = issue_thread.dispatch(
                 event["issue_key"], event["operator_id"], projection["pending_action"],
                 event["role"], event["event_id"], session_scope=scope,
-                projection_revision=projection["projection_revision"],
+                event_revision=projection["projection_revision"],
             )
         if not result.get("action_turn_completed"):
             raise RuntimeError("ACTION_TURN_NOT_COMPLETED")

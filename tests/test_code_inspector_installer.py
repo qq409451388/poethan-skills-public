@@ -1,4 +1,5 @@
 import importlib.util
+import io
 import json
 import os
 import shutil
@@ -8,8 +9,10 @@ import sys
 import tempfile
 import unittest
 from contextlib import closing
+from contextlib import redirect_stdout
 from unittest import mock
 from pathlib import Path
+from types import SimpleNamespace
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -18,6 +21,16 @@ INSTALLER_SPEC = importlib.util.spec_from_file_location("code_inspector_installe
 assert INSTALLER_SPEC and INSTALLER_SPEC.loader
 INSTALLER_MODULE = importlib.util.module_from_spec(INSTALLER_SPEC)
 INSTALLER_SPEC.loader.exec_module(INSTALLER_MODULE)
+
+RUNTIME_SCRIPT_DIR = ROOT / "skills" / "code-inspector" / "scripts"
+sys.path.insert(0, str(RUNTIME_SCRIPT_DIR))
+REVIEW_DB_SPEC = importlib.util.spec_from_file_location(
+    "code_inspector_runtime_review_db",
+    ROOT / "scripts" / "code-inspector-installer" / "runtime" / "review_db.py",
+)
+assert REVIEW_DB_SPEC and REVIEW_DB_SPEC.loader
+REVIEW_DB_MODULE = importlib.util.module_from_spec(REVIEW_DB_SPEC)
+REVIEW_DB_SPEC.loader.exec_module(REVIEW_DB_MODULE)
 
 
 class CodeInspectorInstallerTest(unittest.TestCase):
@@ -2740,7 +2753,12 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                     *command, cwd=workspace,
                 )
 
-            db("inspector", "task-create", "--task-key", "RT-DISCUSSION-BOUND", "--title", "讨论分页", "--objective", "验证最近讨论")
+            db(
+                "inspector", "task-create", "--task-key", "RT-DISCUSSION-BOUND",
+                "--title", "讨论分页", "--objective", "验证最近讨论",
+                "--review-level", "L2", "--review-scope", "src/payments",
+                "--baseline-ref", "main~1",
+            )
             db("inspector", "version-create", "--task-key", "RT-DISCUSSION-BOUND", "--reason", "首次检查")
             db(
                 "inspector", "issue-create", "--task-key", "RT-DISCUSSION-BOUND",
@@ -2749,6 +2767,8 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 "--remediation-benefit", "medium", "--remediation-cost", "low",
                 "--disposition", "current_iteration", "--confidence", "high",
                 "--description", "讨论应按需读取", "--facts", "超过 200 条", "--rationale", "控制上下文",
+                "--evidence", json.dumps([{"file_path": "src/payments/service.py", "line": 42}]),
+                "--local-terms", json.dumps({"结算日": "交易进入最终账本的日期"}, ensure_ascii=False),
             )
             database = home / ".agent-review" / "data" / "review.db"
             with closing(sqlite3.connect(database)) as conn, conn:
@@ -2779,14 +2799,97 @@ class CodeInspectorInstallerTest(unittest.TestCase):
 
             context = db("developer", "issue-context-get", "--issue-key", "RI-DISCUSSION-BOUND")
             self.assertEqual(context["pending_action"], "triage_or_implement_issue")
-            self.assertIn("implementation-submit", context["allowed_actions"])
-            self.assertEqual(context["lazy_load"], ["discussion-get", "activity-get", "stage-history-get"])
+            self.assertIn("implementation-submit", context["permitted_actions"])
+            self.assertEqual(context["exception_actions"], [])
+            self.assertEqual(context["issue"]["review_level"], "L2")
+            self.assertEqual(context["issue"]["review_scope"], "src/payments")
+            self.assertEqual(context["issue"]["baseline_ref"], "main~1")
+            self.assertEqual(
+                context["issue"]["evidence"],
+                [{"file_path": "src/payments/service.py", "line": 42}],
+            )
+            self.assertEqual(context["issue"]["local_terms"]["结算日"], "交易进入最终账本的日期")
+            self.assertEqual(
+                context["lazy_load"],
+                ["discussion-get", "activity-get", "stage-history-get", "design-preview"],
+            )
             self.assertNotIn("content", context["latest_activities"][0])
             self.assertEqual(len(context["latest_discussions"]), 8)
             self.assertEqual(
                 set(context["latest_discussions"][0]), {"id", "topic", "time", "summary"},
             )
             self.assertIn("讨论 204", context["latest_discussions"][0]["summary"])
+
+            with closing(sqlite3.connect(database)) as conn, conn:
+                conn.execute(
+                    "UPDATE review_issue SET status='DESIGN_REQUIRED' WHERE issue_key='RI-DISCUSSION-BOUND'"
+                )
+            developer_design = db(
+                "developer", "issue-context-get", "--issue-key", "RI-DISCUSSION-BOUND",
+            )
+            self.assertIn("design-submit", developer_design["permitted_actions"])
+            self.assertNotIn("issue-update-status", developer_design["permitted_actions"])
+            inspector_design = db(
+                "inspector", "issue-context-get", "--issue-key", "RI-DISCUSSION-BOUND",
+            )
+            self.assertIn("issue-update-status", inspector_design["permitted_actions"])
+            self.assertEqual(inspector_design["exception_actions"], ["human-escalate"])
+
+    def test_issue_context_uses_one_read_snapshot(self):
+        with tempfile.TemporaryDirectory() as temp:
+            home = Path(temp)
+            self.run_cmd(home, str(INSTALLER), "install")
+            database = home / ".agent-review" / "data" / "review.db"
+            with closing(sqlite3.connect(database)) as conn, conn:
+                conn.execute(
+                    """INSERT INTO review_task(task_key,project_name,project_path,title,objective,status)
+                       VALUES('RT-SNAPSHOT','p','/p','t','o','IN_PROGRESS')"""
+                )
+                conn.execute(
+                    """INSERT INTO review_issue(
+                           issue_key,task_id,introduced_version,title,dimension,severity,
+                           remediation_benefit,remediation_cost,disposition,confidence,status,
+                           description,facts,rationale,summary)
+                       VALUES('RI-SNAPSHOT',1,1,'i','code_quality','low','medium','low',
+                              'current_iteration','high','IN_PROGRESS','d','f','r','old summary')"""
+                )
+                old_revision = conn.execute(
+                    "SELECT projection_revision FROM review_issue WHERE issue_key='RI-SNAPSHOT'"
+                ).fetchone()[0]
+
+            original_projection = REVIEW_DB_MODULE.current_projection
+
+            def update_after_projection(conn, issue_key, role):
+                projection = original_projection(conn, issue_key, role)
+                with closing(sqlite3.connect(database)) as writer, writer:
+                    writer.execute(
+                        "UPDATE review_issue SET summary='new summary' WHERE issue_key='RI-SNAPSHOT'"
+                    )
+                return projection
+
+            output = io.StringIO()
+            args = SimpleNamespace(
+                agent="developer", operator_id="codex-dev", issue_key="RI-SNAPSHOT",
+            )
+            with mock.patch.object(REVIEW_DB_MODULE, "DEFAULT_DB_PATH", database), \
+                 mock.patch.dict(os.environ, {
+                     "AGENT_REVIEW_DB": str(database),
+                     "AGENT_REVIEW_HOME": str(home / ".agent-review"),
+                 }), \
+                 mock.patch.object(
+                     REVIEW_DB_MODULE, "current_projection", side_effect=update_after_projection,
+                 ), redirect_stdout(output):
+                REVIEW_DB_MODULE.issue_context_get(args)
+
+            context = json.loads(output.getvalue())
+            self.assertEqual(context["projection_revision"], old_revision)
+            self.assertEqual(context["issue"]["summary"], "old summary")
+            with closing(sqlite3.connect(database)) as conn:
+                current = conn.execute(
+                    "SELECT summary,projection_revision FROM review_issue WHERE issue_key='RI-SNAPSHOT'"
+                ).fetchone()
+            self.assertEqual(current[0], "new summary")
+            self.assertGreater(current[1], old_revision)
 
     def test_stage_get_stays_bounded_and_full_baseline_is_lazy(self):
         with tempfile.TemporaryDirectory() as temp:

@@ -79,7 +79,10 @@ commands:
     roles: [inspector, developer, human]
     required: [--issue-key]
     purpose: 一次返回当前角色处理 Issue 所需的有界 Working Set。
-    returns: [projection_revision, issue, current_stage, effective_decisions, latest_activities, latest_discussions, protected_constraints, pending_action, allowed_actions, resources, lazy_load]
+    returns: [projection_revision, issue, current_stage, effective_decisions, latest_activities, latest_discussions, protected_constraints, pending_action, permitted_actions, exception_actions, resources, lazy_load]
+    issue_governance_fields: [task_key, project_name, review_level, review_scope, baseline_ref, evidence, local_terms]
+    snapshot_semantics: Projection、Issue、Stage、Activity、Decision 与 Discussion 来自同一个显式 SQLite read snapshot；审计在快照释放后单独写入。
+    permission_semantics: pending_action 只表达当前应做什么；permitted_actions 与 exception_actions 是 Runtime 权限模块计算的当前可执行写动作，human-escalate 等低频通道只出现在 exception_actions；按需读取命令单列在 lazy_load。
     discussion_window: 最近 8 条 id/topic/time/summary；正文仍通过 discussion-get 延迟读取。
     revision_semantics: Issue 自身的单调 Working Set 版本；Issue、Task 投影字段、Activity、Discussion、Decision、Stage 的变更由数据库触发器推进。
     excludes: [完整讨论正文, 完整 Activity 正文, 全部历史 baseline, 大段重复测试证据]

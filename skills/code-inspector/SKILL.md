@@ -25,7 +25,7 @@ Multi-Thread 默认关闭。只有 `config/runtime.json` 允许且用户在当�
 - 状态机与状态变更：`references/workflow.yaml`
 - 数据库工具完整参数：`references/tool-contracts.yaml`
 
-普通 Issue 处理先调用一次 `issue-context-get`，以返回的 `pending_action`、`allowed_actions` 和资源 id 作为当前 Working Set；只有摘要指向必要明细时才使用 `discussion-get`、`activity-get` 或 `stage-history-get`。
+普通 Issue 处理先调用一次 `issue-context-get`，以返回的 `pending_action`、`permitted_actions`、`exception_actions` 和资源 id 作为当前 Working Set；只有摘要指向必要明细时才使用 `discussion-get`、`activity-get` 或 `stage-history-get`。
 
 其他文件继续按场景读取：
 - 审核等级：`references/review-levels.yaml`

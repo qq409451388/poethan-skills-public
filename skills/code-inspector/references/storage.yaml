@@ -19,6 +19,10 @@ database_pragmas:
   journal_mode: WAL
   busy_timeout_ms: 5000
 
+working_set_snapshot:
+  projection: 单条 SQL 同时读取 Issue、当前 Stage 与 active plan。
+  issue_context: 第一次读取前显式 BEGIN，完整装配后释放 snapshot；审计另开写事务。
+
 history:
   issue_activity:
     identity: append_only

@@ -4,82 +4,104 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
+from runtime_permissions import runtime_issue_actions
+
 
 TERMINAL_OR_WAITING = {
     "ON_HOLD", "BLOCKED", "HUMAN_CONFIRMATION_REQUIRED", "CONFIRMED", "CANCELLED",
 }
 
 
-def _current_stage(conn: sqlite3.Connection, issue_id: int) -> sqlite3.Row | None:
-    return conn.execute(
-        """SELECT id, plan_no, stage_no, title, status
-           FROM issue_stage
-           WHERE issue_id=? AND plan_status='ACTIVE'
-             AND status IN ('IN_PROGRESS','PENDING_REVIEW','PLANNED')
-           ORDER BY CASE status
-                      WHEN 'PENDING_REVIEW' THEN 0
-                      WHEN 'IN_PROGRESS' THEN 1
-                      ELSE 2
-                    END, stage_no
-           LIMIT 1""",
-        (issue_id,),
-    ).fetchone()
-
-
-def _has_active_plan(conn: sqlite3.Connection, issue_id: int) -> bool:
-    return conn.execute(
-        "SELECT 1 FROM issue_stage WHERE issue_id=? AND plan_status='ACTIVE' LIMIT 1",
-        (issue_id,),
-    ).fetchone() is not None
-
-
-def _action(status: str, role: str, stage: sqlite3.Row | None, has_plan: bool) -> tuple[str | None, list[str]]:
+def _pending_action(status: str, role: str, stage: dict[str, Any] | None, has_plan: bool) -> str | None:
     if status in TERMINAL_OR_WAITING:
-        return None, []
+        return None
     if role == "developer":
         if status in {"DESIGN_REQUIRED", "REDESIGN_REQUIRED"}:
-            return "submit_design", ["design-submit", "discussion-append", "issue-update-status"]
+            return "submit_design"
         if status == "IN_PROGRESS":
             if stage and stage["status"] == "IN_PROGRESS":
-                return "implement_stage", ["stage-prepare", "stage-submit", "discussion-append", "candidate-submit"]
+                return "implement_stage"
             if stage:
-                return None, []
+                return None
             if has_plan:
-                return "submit_final_implementation", ["implementation-submit", "discussion-append", "candidate-submit"]
-            return "implement_issue", ["implementation-submit", "discussion-append", "candidate-submit", "issue-update-status"]
+                return "submit_final_implementation"
+            return "implement_issue"
         if status == "PROPOSED":
-            return "triage_or_implement_issue", ["implementation-submit", "discussion-append", "candidate-submit", "issue-update-status"]
-        return None, []
+            return "triage_or_implement_issue"
+        return None
     if role == "inspector":
         if status == "DESIGN_PENDING_REVIEW":
-            return "review_design", ["design-preview", "design-review", "discussion-append", "design-choice-record"]
+            return "review_design"
         if status == "IMPLEMENTED_PENDING_REVIEW":
-            return "review_implementation", ["activity-get", "activity-append", "discussion-append", "issue-update-status"]
+            return "review_implementation"
         if status == "INSPECTOR_CONFIRMATION_REQUIRED":
-            return "answer_inspector_confirmation", ["activity-append", "discussion-append", "issue-update-status"]
+            return "answer_inspector_confirmation"
         if status == "IN_PROGRESS" and stage and stage["status"] == "PENDING_REVIEW":
-            return "review_stage", ["stage-review", "discussion-append", "activity-get", "stage-history-get"]
-        return None, []
-    return None, []
+            return "review_stage"
+        return None
+    return None
 
 
 def current_projection(conn: sqlite3.Connection, issue_key: str, role: str) -> dict[str, Any]:
-    issue = conn.execute(
-        "SELECT id, issue_key, status, projection_revision FROM review_issue WHERE issue_key=?",
+    # 单条 SQLite 语句自身就是 read snapshot。即使调用方没有显式事务，Issue、Stage
+    # 与 Plan 也不会来自不同版本。
+    row = conn.execute(
+        """SELECT i.id, i.issue_key, i.status, i.projection_revision,
+                  s.id AS stage_id, s.plan_no, s.stage_no, s.title AS stage_title,
+                  s.status AS stage_status, s.prepared_at AS stage_prepared_at,
+                  s.governance_version AS stage_governance_version,
+                  EXISTS(
+                    SELECT 1 FROM issue_stage p
+                    WHERE p.issue_id=i.id AND p.plan_status='ACTIVE'
+                  ) AS has_active_plan,
+                  NOT EXISTS(
+                    SELECT 1 FROM issue_stage p
+                    WHERE p.issue_id=i.id AND p.plan_status='ACTIVE' AND p.status!='APPROVED'
+                  ) AS active_plan_complete
+           FROM review_issue i
+           LEFT JOIN issue_stage s ON s.id=(
+             SELECT candidate.id FROM issue_stage candidate
+             WHERE candidate.issue_id=i.id AND candidate.plan_status='ACTIVE'
+               AND candidate.status IN ('IN_PROGRESS','PENDING_REVIEW','PLANNED')
+             ORDER BY CASE candidate.status
+                        WHEN 'PENDING_REVIEW' THEN 0
+                        WHEN 'IN_PROGRESS' THEN 1
+                        ELSE 2
+                      END, candidate.stage_no
+             LIMIT 1
+           )
+           WHERE i.issue_key=?""",
         (issue_key,),
     ).fetchone()
-    if not issue:
+    if not row:
         raise RuntimeError("ISSUE_NOT_FOUND")
-    stage = _current_stage(conn, issue["id"])
-    has_plan = _has_active_plan(conn, issue["id"])
-    action, allowed_actions = _action(issue["status"], role, stage, has_plan)
+    stage = None
+    if row["stage_id"] is not None:
+        stage = {
+            "id": row["stage_id"], "plan_no": row["plan_no"], "stage_no": row["stage_no"],
+            "title": row["stage_title"], "status": row["stage_status"],
+            "prepared_at": row["stage_prepared_at"],
+            "governance_version": row["stage_governance_version"],
+        }
+    has_plan = bool(row["has_active_plan"])
+    action = _pending_action(row["status"], role, stage, has_plan)
+    permission_state = {
+        "issue_status": row["status"], "role": role,
+        "current_stage_status": row["stage_status"],
+        "current_stage_prepared": bool(row["stage_prepared_at"]),
+        "current_stage_governance_version": row["stage_governance_version"],
+        "has_active_plan": has_plan,
+        "active_plan_complete": bool(row["active_plan_complete"]),
+    }
+    permitted_actions, exception_actions = runtime_issue_actions(permission_state)
     return {
-        "issue_id": issue["id"],
+        "issue_id": row["id"],
         "issue_key": issue_key,
-        "issue_status": issue["status"],
-        "projection_revision": int(issue["projection_revision"]),
+        "issue_status": row["status"],
+        "projection_revision": int(row["projection_revision"]),
         "pending_action": action,
-        "allowed_actions": allowed_actions,
-        "current_stage": dict(stage) if stage else None,
+        "permitted_actions": permitted_actions,
+        "exception_actions": exception_actions,
+        "current_stage": stage,
         "has_active_plan": has_plan,
     }

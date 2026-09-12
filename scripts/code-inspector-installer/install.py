@@ -161,6 +161,7 @@ def link_runtime(home: Path, skill_config: dict[str, Any], force: bool, skill_so
             "code-inspector-supervisor.py", "supervisor.py", "issue_thread.py",
             "codex_thread_runtime.py", "runtime_identity.py", "runtime_capabilities.py",
             "review_repository.py", "session_scope.py", "issue_projection.py",
+            "runtime_permissions.py",
         ):
             atomic_copy_path(skill_source / "scripts" / name, home / "bin" / name, force)
     for role, assignments in skill_config["bindings"].items():
@@ -290,7 +291,7 @@ def generated_skill_text(platform: str, identities: list[dict[str, Any]], target
     routing = (
         "激活后必须读取 `references/core-workflow.md`，并只读取 "
         "`references/role-workflows.md` 中当前锁定角色的章节。普通 Action Turn 先调用一次 "
-        "`issue-context-get`，以返回的 pending_action、allowed_actions 和资源 id 为 Working Set；只有需要正文时才 "
+        "`issue-context-get`，以返回的 pending_action、permitted_actions、exception_actions 和资源 id 为 Working Set；只有需要正文时才 "
         "lazy load。状态机、权限、参数和前置条件由 Runtime/CLI 强制校验；普通 Action 不读取完整 "
         "`workflow.yaml` 或 `tool-contracts.yaml`，仅在专项审计或修改规则本身时查阅。不得直接操作 SQLite。\n\n"
         "## 人类可读文案\n\n"

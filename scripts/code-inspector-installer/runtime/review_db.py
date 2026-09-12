@@ -15,9 +15,23 @@ from typing import Any
 
 try:
     from issue_projection import current_projection
+    from runtime_permissions import (
+        ALLOWED_STATUS_BY_AGENT,
+        ALLOWED_TRANSITIONS,
+        ALLOWED_ACTIVITY_BY_AGENT,
+        issue_action_permitted,
+        status_targets,
+    )
 except ModuleNotFoundError:  # 仓库内直接执行时，模块尚未复制到安装目录。
     sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "skills" / "code-inspector" / "scripts"))
     from issue_projection import current_projection
+    from runtime_permissions import (
+        ALLOWED_STATUS_BY_AGENT,
+        ALLOWED_TRANSITIONS,
+        ALLOWED_ACTIVITY_BY_AGENT,
+        issue_action_permitted,
+        status_targets,
+    )
 
 DEFAULT_DB_PATH = Path(os.path.expandvars(os.path.expanduser(
     os.environ.get("AGENT_REVIEW_DB", "~/.agent-review/data/review.db")
@@ -36,34 +50,6 @@ DIMENSION_WEIGHT = {
 }
 COST_WEIGHT = {"low": 1, "medium": 2, "high": 3, "extreme": 4}
 CONFIDENCE_WEIGHT = {"high": 3, "medium": 2, "low": 1}
-
-ALLOWED_STATUS_BY_AGENT = {
-    "inspector": {"IN_PROGRESS", "ON_HOLD", "BLOCKED", "REDESIGN_REQUIRED", "CONFIRMED", "CANCELLED"},
-    "developer": {"IN_PROGRESS", "ON_HOLD", "BLOCKED", "INSPECTOR_CONFIRMATION_REQUIRED", "IMPLEMENTED_PENDING_REVIEW"},
-    # Human 对普通 Issue 状态具有最高管理解释权。HUMAN_CONFIRMATION_REQUIRED 仍只能
-    # 由 inspector 的 human-escalate 进入，并由 human-confirmation-resolve 离开。
-    "human": {
-        "PROPOSED", "DESIGN_REQUIRED", "DESIGN_PENDING_REVIEW", "IN_PROGRESS", "ON_HOLD",
-        "BLOCKED", "INSPECTOR_CONFIRMATION_REQUIRED", "IMPLEMENTED_PENDING_REVIEW",
-        "REDESIGN_REQUIRED", "CONFIRMED", "CANCELLED",
-    },
-}
-
-# 核心设计与 Human 确认流转只能由专用原子命令执行，不能通过通用状态命令绕过活动记录。
-ALLOWED_TRANSITIONS = {
-    "PROPOSED": {"inspector": {"IN_PROGRESS", "ON_HOLD", "BLOCKED", "CONFIRMED", "CANCELLED"}, "developer": {"IN_PROGRESS", "ON_HOLD", "BLOCKED", "INSPECTOR_CONFIRMATION_REQUIRED", "IMPLEMENTED_PENDING_REVIEW"}, "human": {"IN_PROGRESS", "ON_HOLD", "BLOCKED", "INSPECTOR_CONFIRMATION_REQUIRED", "IMPLEMENTED_PENDING_REVIEW", "CANCELLED"}},
-    "IN_PROGRESS": {"inspector": {"ON_HOLD", "BLOCKED", "CANCELLED"}, "developer": {"ON_HOLD", "BLOCKED", "INSPECTOR_CONFIRMATION_REQUIRED", "IMPLEMENTED_PENDING_REVIEW"}, "human": {"ON_HOLD", "BLOCKED", "INSPECTOR_CONFIRMATION_REQUIRED", "IMPLEMENTED_PENDING_REVIEW", "CANCELLED"}},
-    "ON_HOLD": {"inspector": {"IN_PROGRESS", "BLOCKED", "CANCELLED"}, "developer": {"IN_PROGRESS", "BLOCKED", "INSPECTOR_CONFIRMATION_REQUIRED"}, "human": {"IN_PROGRESS", "BLOCKED", "INSPECTOR_CONFIRMATION_REQUIRED", "CANCELLED"}},
-    "BLOCKED": {"inspector": {"IN_PROGRESS", "ON_HOLD", "CANCELLED"}, "developer": {"IN_PROGRESS", "ON_HOLD", "INSPECTOR_CONFIRMATION_REQUIRED"}, "human": {"IN_PROGRESS", "ON_HOLD", "INSPECTOR_CONFIRMATION_REQUIRED", "CANCELLED"}},
-    "INSPECTOR_CONFIRMATION_REQUIRED": {"inspector": {"IN_PROGRESS", "ON_HOLD", "BLOCKED", "CANCELLED"}, "developer": set(), "human": {"IN_PROGRESS", "ON_HOLD", "BLOCKED", "CANCELLED"}},
-    "IMPLEMENTED_PENDING_REVIEW": {"inspector": {"IN_PROGRESS", "CONFIRMED", "REDESIGN_REQUIRED", "ON_HOLD", "BLOCKED", "CANCELLED"}, "developer": set(), "human": {"IN_PROGRESS", "CONFIRMED", "REDESIGN_REQUIRED", "ON_HOLD", "BLOCKED", "CANCELLED"}},
-    "HUMAN_CONFIRMATION_REQUIRED": {"inspector": set(), "developer": set(), "human": set()},
-    "DESIGN_REQUIRED": {"inspector": {"CANCELLED"}, "developer": set(), "human": {"CANCELLED"}},
-    "DESIGN_PENDING_REVIEW": {"inspector": {"CANCELLED"}, "developer": set(), "human": {"CANCELLED"}},
-    "REDESIGN_REQUIRED": {"inspector": {"ON_HOLD", "BLOCKED", "CANCELLED"}, "developer": {"ON_HOLD", "BLOCKED", "INSPECTOR_CONFIRMATION_REQUIRED"}, "human": {"ON_HOLD", "BLOCKED", "INSPECTOR_CONFIRMATION_REQUIRED", "CANCELLED"}},
-    "CONFIRMED": {"inspector": set(), "developer": set(), "human": set()},
-    "CANCELLED": {"inspector": set(), "developer": set(), "human": set()},
-}
 
 TASK_STATUSES = {"PENDING", "IN_PROGRESS", "ON_HOLD", "BLOCKED", "CLOSED", "CANCELLED"}
 TASK_TYPES = {"REVIEW", "CONTINUOUS"}
@@ -87,21 +73,6 @@ ALLOWED_DISPOSITIONS = {
     "opportunistic_fix", "observe", "defer", "business_confirmation",
 }
 
-ALLOWED_ACTIVITY_BY_AGENT = {
-    "inspector": {
-        "ISSUE_CREATED", "EVIDENCE_ADDED", "REVIEW_APPROVED", "REVIEW_REJECTED",
-        "DESIGN_GUIDANCE", "INSPECTOR_CONFIRMATION_PROVIDED",
-        "VERIFICATION_PASSED", "VERIFICATION_FAILED", "VERIFICATION_EVIDENCE_ADDED",
-        "STATUS_CHANGED", "COMMENT_ADDED",
-    },
-    "developer": {"IMPLEMENTATION_SUBMITTED", "REDESIGN_SUBMITTED", "STATUS_CHANGED", "COMMENT_ADDED"},
-    "human": {
-        "ISSUE_CREATED", "EVIDENCE_ADDED", "DESIGN_GUIDANCE", "IMPLEMENTATION_SUBMITTED",
-        "REVIEW_APPROVED", "REVIEW_REJECTED", "REDESIGN_SUBMITTED", "INSPECTOR_CONFIRMATION_PROVIDED",
-        "VERIFICATION_PASSED", "VERIFICATION_FAILED", "VERIFICATION_EVIDENCE_ADDED",
-        "STATUS_CHANGED", "COMMENT_ADDED"
-    },
-}
 ATOMIC_ACTIVITY_TYPES = {
     "DESIGN_REQUESTED", "DESIGN_SUBMITTED", "DESIGN_APPROVED", "DESIGN_REJECTED",
     "STAGE_PLAN_CREATED", "STAGE_SCOPE_DECLARED", "STAGE_SUBMITTED", "STAGE_APPROVED", "STAGE_REJECTED",
@@ -267,6 +238,31 @@ def operator_type(agent: str) -> str:
 
 def actor_id(args: argparse.Namespace) -> str:
     return args.operator_id or args.agent
+
+def require_runtime_issue_action(
+    action: str, role: str, issue_status: str, *, stage: sqlite3.Row | None = None,
+    has_active_plan: bool = False, active_plan_complete: bool = False,
+) -> None:
+    state = {
+        "role": role,
+        "issue_status": issue_status,
+        "current_stage_status": stage["status"] if stage else None,
+        "current_stage_prepared": bool(stage and stage["prepared_at"]),
+        "current_stage_governance_version": stage["governance_version"] if stage else None,
+        "has_active_plan": has_active_plan,
+        "active_plan_complete": active_plan_complete,
+    }
+    if not issue_action_permitted(action, state):
+        if (
+            action == "stage-submit" and role in {"developer", "human"}
+            and issue_status == "IN_PROGRESS" and stage
+            and stage["status"] == "IN_PROGRESS"
+            and int(stage["governance_version"]) >= 2 and not stage["prepared_at"]
+        ):
+            raise RuntimeError("修改业务代码前必须先用 stage-prepare 声明影响范围和历史保护项")
+        raise PermissionError(
+            f"agent {role} 在 Issue 状态 {issue_status} 下无权执行 {action}"
+        )
 
 def issue_row(conn: sqlite3.Connection, issue_key: str) -> sqlite3.Row:
     row = conn.execute(
@@ -1097,12 +1093,8 @@ def apply_status_update(
     ).fetchone()
     if not row:
         raise KeyError(f"问题不存在: {issue_key}")
-    human_override = (
-        args.agent == "human"
-        and row["status"] != "HUMAN_CONFIRMATION_REQUIRED"
-        and status != "HUMAN_CONFIRMATION_REQUIRED"
-    )
-    if not human_override and status not in ALLOWED_TRANSITIONS[row["status"]][args.agent]:
+    human_override = args.agent == "human" and row["status"] != "HUMAN_CONFIRMATION_REQUIRED"
+    if status not in status_targets(row["status"], args.agent):
         raise RuntimeError(f"不允许状态流转: {row['status']} -> {status} ({args.agent})")
     if (
         not human_override
@@ -1227,15 +1219,11 @@ def apply_design_transition(
     conn: sqlite3.Connection,
     args: argparse.Namespace,
     *,
-    allowed_agents: set[str],
-    allowed_sources: set[str],
     target_status: str,
     activity_type: str,
     code_reference: list[Any] | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    if args.agent not in allowed_agents:
-        raise PermissionError(f"agent {args.agent} 无权执行 {args.command}")
     content = (args.content or "").strip()
     if not content:
         raise ValueError(f"{args.command} 必须通过 --content 记录设计结论")
@@ -1245,10 +1233,7 @@ def apply_design_transition(
     ).fetchone()
     if not row:
         raise KeyError(f"问题不存在: {args.issue_key}")
-    if row["status"] not in allowed_sources:
-        raise RuntimeError(
-            f"不允许设计状态流转: {row['status']} -> {target_status} ({args.command})"
-        )
+    require_runtime_issue_action(args.command, args.agent, row["status"])
     activity_cursor = conn.execute(
         """INSERT INTO issue_activity(
             issue_id, attempt_no, activity_type, operator_type, operator_id,
@@ -1286,8 +1271,7 @@ def design_request(args: argparse.Namespace) -> None:
     with connect() as conn:
         row = issue_row(conn, args.issue_key)
         result = apply_design_transition(
-            conn, args, allowed_agents={"inspector", "human"},
-            allowed_sources={"PROPOSED", "IN_PROGRESS"}, target_status="DESIGN_REQUIRED",
+            conn, args, target_status="DESIGN_REQUIRED",
             activity_type="DESIGN_REQUESTED",
         )
         supersede_active_stage_plan(conn, args, row, args.content)
@@ -1308,9 +1292,7 @@ def design_submit(args: argparse.Namespace) -> None:
     metadata = {**metadata, "human_summary": human_summary, "scope_changes": scope_changes}
     with connect() as conn:
         result = apply_design_transition(
-            conn, args, allowed_agents={"developer", "human"},
-            allowed_sources={"DESIGN_REQUIRED", "REDESIGN_REQUIRED"},
-            target_status="DESIGN_PENDING_REVIEW", activity_type="DESIGN_SUBMITTED",
+            conn, args, target_status="DESIGN_PENDING_REVIEW", activity_type="DESIGN_SUBMITTED",
             code_reference=code_reference, metadata=metadata,
         )
     print_json(result)
@@ -1414,8 +1396,6 @@ def parse_confirmation_ids(raw: str | None) -> list[int]:
 def design_choice_record(args: argparse.Namespace) -> None:
     """记录用户在 Inspector CLI 中对当前设计做出的简短选择。"""
     require_agent(args.agent)
-    if args.agent != "inspector":
-        raise PermissionError("只有 inspector 可以记录当前 CLI 中的用户设计选择")
     question = (args.question or "").strip()
     answer = (args.answer or "").strip()
     summary = (args.summary or "").strip()
@@ -1451,6 +1431,7 @@ def design_choice_record(args: argparse.Namespace) -> None:
             raise ValueError("impacts 必须与 change-ids 对应范围变化的影响类型完全一致")
         if issue["status"] != "DESIGN_PENDING_REVIEW":
             raise RuntimeError("只能为 DESIGN_PENDING_REVIEW 的当前设计记录用户选择")
+        require_runtime_issue_action("design-choice-record", args.agent, issue["status"])
         decision_id = record_issue_decision(
             conn, args, issue, "CLI_DESIGN_CONFIRMATION", "CONFIRMED", summary,
             scope_key=f"design:{args.design_activity_id}:{','.join(sorted(change_ids))}",
@@ -1675,8 +1656,7 @@ def design_review(args: argparse.Namespace) -> None:
                         prepare_stage_definitions(args.stages, scope_change_ids),
                     )
         result = apply_design_transition(
-            conn, args, allowed_agents={"inspector", "human"},
-            allowed_sources={"DESIGN_PENDING_REVIEW"}, target_status=target_status,
+            conn, args, target_status=target_status,
             activity_type=activity_type,
         )
         record_issue_decision(
@@ -1995,16 +1975,16 @@ def stage_history_get(args: argparse.Namespace) -> None:
 def issue_context_get(args: argparse.Namespace) -> None:
     """一次返回当前角色的有界 Working Set，历史正文只提供可继续读取的 id。"""
     require_agent(args.agent)
-    if args.agent == "human":
-        role = "inspector"
-    else:
-        role = args.agent
+    role = args.agent
     with connect() as conn:
+        # sqlite3 不会因 SELECT 自动开启事务，因此必须在首次读取前显式建立 WAL snapshot。
+        conn.execute("BEGIN")
         projection = current_projection(conn, args.issue_key, role)
         issue = conn.execute(
             """SELECT i.issue_key, i.title, i.summary, i.expected_outcome, i.technical_note,
                       i.status, i.dimension, i.severity, i.current_attempt_no,
-                      t.task_key, t.project_name
+                      i.evidence_json, i.local_terms_json,
+                      t.task_key, t.project_name, t.review_level, t.review_scope, t.baseline_ref
                FROM review_issue i JOIN review_task t ON t.id=i.task_id
                WHERE i.issue_key=?""",
             (args.issue_key,),
@@ -2060,9 +2040,15 @@ def issue_context_get(args: argparse.Namespace) -> None:
                ORDER BY id DESC LIMIT ?""",
             (projection["issue_id"], DISCUSSION_CONTEXT_LIMIT),
         ).fetchall()
+        conn.commit()
+    # 审计在 read snapshot 释放后单独写入，避免并发提交后把旧快照升级为写事务时触发
+    # SQLITE_BUSY_SNAPSHOT。
+    with connect() as conn:
         audit(conn, actor_id(args), "issue.context-get", "review_issue", args.issue_key, True,
               f"projection_revision={projection['projection_revision']}")
     issue_json = dict(issue)
+    issue_json["evidence"] = loads(issue_json.pop("evidence_json"), [])
+    issue_json["local_terms"] = loads(issue_json.pop("local_terms_json"), {})
     for field in ("summary", "expected_outcome", "technical_note"):
         value = issue_json.get(field)
         if isinstance(value, str) and len(value) > 600:
@@ -2076,7 +2062,8 @@ def issue_context_get(args: argparse.Namespace) -> None:
         "latest_discussions": [dict(item) for item in discussions],
         "protected_constraints": constraints,
         "pending_action": projection["pending_action"],
-        "allowed_actions": projection["allowed_actions"],
+        "permitted_actions": projection["permitted_actions"],
+        "exception_actions": projection["exception_actions"],
         "resources": {
             "activity_ids": [item["id"] for item in activities],
             "discussion_ids": [item["id"] for item in discussions],
@@ -2085,13 +2072,11 @@ def issue_context_get(args: argparse.Namespace) -> None:
             ][-STAGE_HISTORY_LIMIT:],
             "stage_history_count": len(stage_rows),
         },
-        "lazy_load": ["discussion-get", "activity-get", "stage-history-get"],
+        "lazy_load": ["discussion-get", "activity-get", "stage-history-get", "design-preview"],
     })
 
 def stage_prepare(args: argparse.Namespace) -> None:
     require_agent(args.agent)
-    if args.agent not in {"developer", "human"}:
-        raise PermissionError("只有 developer 或 human 可以声明 Stage 开发影响范围")
     reason = (args.change_reason or "").strip()
     if not reason:
         raise ValueError("stage-prepare 的 --change-reason 不能为空")
@@ -2120,6 +2105,9 @@ def stage_prepare(args: argparse.Namespace) -> None:
             raise KeyError(f"Stage 不存在: plan={plan_no}, stage={args.stage_no}")
         if stage["status"] != "IN_PROGRESS":
             raise RuntimeError(f"Stage {args.stage_no} 当前为 {stage['status']}，不能声明开发范围")
+        require_runtime_issue_action(
+            "stage-prepare", args.agent, issue["status"], stage=stage, has_active_plan=True,
+        )
         previous = conn.execute(
             """SELECT stage_no, title, baseline_json, baseline_status
                FROM issue_stage
@@ -2165,8 +2153,6 @@ def stage_prepare(args: argparse.Namespace) -> None:
 
 def stage_submit(args: argparse.Namespace) -> None:
     require_agent(args.agent)
-    if args.agent not in {"developer", "human"}:
-        raise PermissionError("只有 developer 或 human 可以提交 Stage")
     content = (args.content or "").strip()
     commit_sha = (args.commit_sha or "").strip()
     diff_summary = (args.diff_summary or "").strip()
@@ -2199,6 +2185,9 @@ def stage_submit(args: argparse.Namespace) -> None:
             raise KeyError(f"Stage 不存在: plan={plan_no}, stage={args.stage_no}")
         if stage["status"] != "IN_PROGRESS":
             raise RuntimeError(f"Stage {args.stage_no} 当前为 {stage['status']}，不能提交")
+        require_runtime_issue_action(
+            "stage-submit", args.agent, issue["status"], stage=stage, has_active_plan=True,
+        )
         if int(stage["governance_version"]) >= 2:
             if not stage["prepared_at"]:
                 raise RuntimeError("修改业务代码前必须先用 stage-prepare 声明影响范围和历史保护项")
@@ -2252,8 +2241,6 @@ def stage_submit(args: argparse.Namespace) -> None:
 
 def stage_review(args: argparse.Namespace) -> None:
     require_agent(args.agent)
-    if args.agent not in {"inspector", "human"}:
-        raise PermissionError("只有 inspector 或 human 可以验收 Stage")
     content = (args.content or "").strip()
     if not content:
         raise ValueError("stage-review 必须通过 --content 记录验收结论")
@@ -2274,6 +2261,9 @@ def stage_review(args: argparse.Namespace) -> None:
             raise KeyError(f"Stage 不存在: plan={plan_no}, stage={args.stage_no}")
         if stage["status"] != "PENDING_REVIEW":
             raise RuntimeError(f"Stage {args.stage_no} 当前为 {stage['status']}，不能验收")
+        require_runtime_issue_action(
+            "stage-review", args.agent, issue["status"], stage=stage, has_active_plan=True,
+        )
 
         review_result: dict[str, Any] | None = None
         baseline: dict[str, Any] | None = None
@@ -2416,8 +2406,6 @@ def stage_review(args: argparse.Namespace) -> None:
 
 def human_escalate(args: argparse.Namespace) -> None:
     require_agent(args.agent)
-    if args.agent != "inspector":
-        raise PermissionError("只有 inspector 可以发起 Human 最终确认")
     reason = (args.reason or "").strip()
     question = (args.question or "").strip()
     if not reason or not question:
@@ -2435,11 +2423,6 @@ def human_escalate(args: argparse.Namespace) -> None:
         "recommended_option": args.recommended_option,
         "evidence": evidence,
     }
-    allowed_sources = {
-        "PROPOSED", "DESIGN_REQUIRED", "DESIGN_PENDING_REVIEW", "IN_PROGRESS",
-        "ON_HOLD", "BLOCKED", "INSPECTOR_CONFIRMATION_REQUIRED",
-        "IMPLEMENTED_PENDING_REVIEW", "REDESIGN_REQUIRED",
-    }
     with connect() as conn:
         row = conn.execute(
             "SELECT id, status, current_attempt_no FROM review_issue WHERE issue_key = ?",
@@ -2447,8 +2430,7 @@ def human_escalate(args: argparse.Namespace) -> None:
         ).fetchone()
         if not row:
             raise KeyError(f"问题不存在: {args.issue_key}")
-        if row["status"] not in allowed_sources:
-            raise RuntimeError(f"状态 {row['status']} 不允许升级 Human")
+        require_runtime_issue_action("human-escalate", args.agent, row["status"])
         content = f"为什么必须人工决定：{reason}\n\nHuman 只需回答：{question}"
         conn.execute(
             """INSERT INTO issue_activity(
@@ -2529,8 +2511,6 @@ def human_confirmation_resolve(args: argparse.Namespace) -> None:
 
 def implementation_submit(args: argparse.Namespace) -> None:
     require_agent(args.agent)
-    if args.agent not in {"developer", "human"}:
-        raise PermissionError("只有 developer 或 human 可以提交实现")
     code_reference = json.loads(args.code_reference)
     metadata = json.loads(args.metadata)
     if not isinstance(code_reference, list):
@@ -2549,6 +2529,7 @@ def implementation_submit(args: argparse.Namespace) -> None:
                 f"状态 {row['status']} 禁止提交实现；设计阶段必须先完成 design-review approved"
             )
         plan_no = active_stage_plan_no(conn, row["id"])
+        active_plan_complete = True
         if plan_no is not None:
             incomplete = conn.execute(
                 """SELECT stage_no, status FROM issue_stage
@@ -2559,6 +2540,10 @@ def implementation_submit(args: argparse.Namespace) -> None:
             if incomplete:
                 summary = ", ".join(f"Stage {item['stage_no']}={item['status']}" for item in incomplete)
                 raise RuntimeError(f"Stage Plan #{plan_no} 尚未全部验收通过: {summary}")
+        require_runtime_issue_action(
+            "implementation-submit", args.agent, row["status"],
+            has_active_plan=plan_no is not None, active_plan_complete=active_plan_complete,
+        )
         next_attempt = row["current_attempt_no"] + 1
         activity_cursor = conn.execute(
             """INSERT INTO issue_activity(
@@ -2638,6 +2623,7 @@ def discussion_append(args: argparse.Namespace) -> None:
         raise ValueError("discussion-append 的 --content 不能为空")
     with connect() as conn:
         issue = issue_row(conn, args.issue_key)
+        require_runtime_issue_action("discussion-append", args.agent, issue["status"])
         cursor = conn.execute(
             """INSERT INTO issue_discussion(
                    issue_id, topic, operator_type, operator_id, content

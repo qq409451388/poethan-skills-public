@@ -215,7 +215,6 @@ def start(
     issue_key: str, operator_id: str, expected_role: str | None = None,
     model: str | None = None, *, session_scope: SessionScope | None = None,
     acquire_dispatch_lock: bool = True, event_id: str | None = None,
-    projection_revision: int | None = None,
 ) -> dict[str, Any]:
     config = load_config(config_path())
     if session_scope is None:
@@ -282,11 +281,13 @@ def start(
                     identity.runtime_backend, thread_id, "WAITING", issue["status"],
                      "await_event", "INITIALIZED", cwd, tokens, window),
                 )
-                revision = projection_revision
-                if revision is None:
-                    revision = current_projection(conn, issue_key, role)["projection_revision"]
+                execution_revision = int(
+                    current_projection(conn, issue_key, role)["projection_revision"]
+                )
             if init_turn:
-                record_turn_metric(issue_key, role, operator_id, int(revision), "INIT", init_turn, event_id)
+                record_turn_metric(
+                    issue_key, role, operator_id, execution_revision, "INIT", init_turn, event_id,
+                )
         except Exception as exc:
             try:
                 runtime_call(config, lambda runtime: runtime.archive(thread_id))
@@ -302,7 +303,7 @@ def start(
 def resume(
     issue_key: str, operator_id: str, reason: str, expected_role: str | None = None,
     event_id: str | None = None, *, session_scope: SessionScope | None = None,
-    acquire_dispatch_lock: bool = True, projection_revision: int | None = None,
+    acquire_dispatch_lock: bool = True, event_revision: int | None = None,
 ) -> dict[str, Any]:
     config = load_config(config_path())
     if session_scope is None:
@@ -324,7 +325,7 @@ def resume(
         with connect() as conn:
             issue = ReviewRepository(conn).issue(issue_key)
             projection = current_projection(conn, issue_key, role)
-            revision = int(projection_revision if projection_revision is not None else projection["projection_revision"])
+            execution_revision = int(projection["projection_revision"])
             item = mapping(conn, issue_key, operator_id)
             if not item:
                 raise RuntimeError("MAPPING_NOT_FOUND")
@@ -348,14 +349,14 @@ def resume(
             direct_boundary = bool(
                 not projection["has_active_plan"] and projection["pending_action"]
                 and metric_revisions["last_action_revision"] is not None
-                and revision > int(metric_revisions["last_action_revision"])
+                and execution_revision > int(metric_revisions["last_action_revision"])
                 and (
                     metric_revisions["last_compact_revision"] is None
-                    or revision > int(metric_revisions["last_compact_revision"])
+                    or execution_revision > int(metric_revisions["last_compact_revision"])
                 )
             )
             compact_work_unit = boundary if boundary is not None else (
-                f"projection:{revision}" if direct_boundary else None
+                f"projection:{execution_revision}" if direct_boundary else None
             )
             should_compact = bool(
                 compact_flags["enabled"] and capability(review_home(), compact_flags["required_capability"])
@@ -376,9 +377,12 @@ def resume(
                 with execution_lock(lock_key):
                     prompt = (
                         f"ACTION issue={issue_key} role={role} action={reason} "
-                        f"projection_revision={revision} event_id={event_id or '-'}。\n"
+                        f"execution_revision={execution_revision} "
+                        f"event_revision={event_revision if event_revision is not None else '-'} "
+                        f"event_id={event_id or '-'}。\n"
                         f"先且通常只调用一次：{identity.fixed_tool_path} issue-context-get --issue-key {issue_key}。"
-                        "以返回的 pending_action 和 allowed_actions 执行；只有摘要明确指向必要明细时才 lazy load。"
+                        "以返回的 pending_action、permitted_actions 和 exception_actions 执行；"
+                        "只有摘要明确指向必要明细时才 lazy load。"
                     )
                     def execute(runtime: CodexThreadRuntime):
                         nonlocal action_started
@@ -414,8 +418,12 @@ def resume(
             tokens, window = usage_values(turn)
             compact_turn = turn.pop("compact_turn", None)
             if compact_turn:
-                record_turn_metric(issue_key, role, operator_id, revision, "COMPACT", compact_turn, event_id)
-            record_turn_metric(issue_key, role, operator_id, revision, "ACTION", turn, event_id)
+                record_turn_metric(
+                    issue_key, role, operator_id, execution_revision, "COMPACT", compact_turn, event_id,
+                )
+            record_turn_metric(
+                issue_key, role, operator_id, execution_revision, "ACTION", turn, event_id,
+            )
             with connect() as conn:
                 issue = ReviewRepository(conn).issue(issue_key)
                 status = "COMPLETED" if issue["status"] in TERMINAL_ISSUES else "WAITING"
@@ -436,7 +444,13 @@ def resume(
                 except Exception as exc:
                     with connect() as conn:
                         conn.execute("UPDATE code_inspector_thread SET error_code='ARCHIVE_FAILED',error_message=? WHERE issue_key=? AND operator_id=?", (str(exc)[:1000], issue_key, operator_id))
-            return {"issue_key": issue_key, "role": role, "operator_id": operator_id, "thread_id": thread_id, "thread_status": status, "issue_status": issue["status"], "managed_compact": compact_work_unit if should_compact else None, "action_turn_completed": True, "projection_revision": revision}
+            return {
+                "issue_key": issue_key, "role": role, "operator_id": operator_id,
+                "thread_id": thread_id, "thread_status": status, "issue_status": issue["status"],
+                "managed_compact": compact_work_unit if should_compact else None,
+                "action_turn_completed": True, "event_revision": event_revision,
+                "execution_revision": execution_revision,
+            }
         except Exception as exc:
             with connect() as conn:
                 if action_started:
@@ -461,7 +475,7 @@ def resume(
 def dispatch(
     issue_key: str, operator_id: str, reason: str, expected_role: str | None = None,
     event_id: str | None = None, *, session_scope: SessionScope | None = None,
-    projection_revision: int | None = None,
+    event_revision: int | None = None,
 ) -> dict[str, Any]:
     config = load_config(config_path())
     identity = resolve_identity(review_home(), operator_id, expected_role)
@@ -486,12 +500,11 @@ def dispatch(
             initialized = start(
                 issue_key, operator_id, expected_role, session_scope=session_scope,
                 acquire_dispatch_lock=False, event_id=event_id,
-                projection_revision=projection_revision,
             )
         result = resume(
             issue_key, operator_id, reason, expected_role, event_id,
-            session_scope=session_scope,
-            acquire_dispatch_lock=False, projection_revision=projection_revision,
+            session_scope=session_scope, acquire_dispatch_lock=False,
+            event_revision=event_revision,
         )
         result["initialized"] = bool(initialized)
         return result

@@ -14,7 +14,7 @@
 
 ## Inspector
 
-1. 已绑定 Issue 的 Action Turn 先且通常只调用一次 `issue-context-get`，按其 `pending_action/allowed_actions` 工作；仅在专项规则审计时读取完整 `workflow.yaml`，创建或继续扫描时才按需读取 `review-levels.yaml` 并使用 `task-resolve`。
+1. 已绑定 Issue 的 Action Turn 先且通常只调用一次 `issue-context-get`，按其 `pending_action/permitted_actions/exception_actions` 工作；仅在专项规则审计时读取完整 `workflow.yaml`，创建或继续扫描时才按需读取 `review-levels.yaml` 并使用 `task-resolve`。
 2. 区分 `scan` 与 `report`：扫描期间先收集候选，主审核者必须额外串联跨模块数据流；向 `CONTINUOUS` 报告单个线上问题只核实证据、判定成立和去重。
 3. 初步合并后先做覆盖面回查和补充扫描，再按根因、修复边界和风险链路去重、评级，最后用 `issue-create-batch` 创建正式 Issue。
 4. 对复杂或方向不确定的问题使用 `design-request`，只定义当前目标必须解决的问题、不可破坏语义和方案问题；旁支发现转 Candidate，不能写成当前 MUST。
