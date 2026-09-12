@@ -205,6 +205,8 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             review_home = home / ".agent-review"
             database = review_home / "data" / "review.db"
             inspector_tool = review_home / "bin" / "review-db-codex-insp.py"
+            developer_tool = review_home / "bin" / "review-db-codex-dev.py"
+            db_tool = review_home / "bin" / "review-db.py"
             with closing(sqlite3.connect(database)) as conn, conn:
                 task_id = conn.execute(
                     """INSERT INTO review_task(
@@ -273,20 +275,53 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 "--content", secret,
             )
 
-            # FastMode 不依赖 pending_action 或 Developer Runtime，PASS/FAIL 只记录验证事实。
-            self.run_cmd(home, str(inspector_tool), "issue-context-get", "--issue-key", "RI-FAST-B")
-            fast_metadata = json.dumps({"workflow_mode": "FASTMODE"})
-            for key, activity_type, result in (
-                ("RI-FAST-A", "VERIFICATION_EVIDENCE_ADDED", "PASS"),
-                ("RI-FAST-A", "VERIFICATION_PASSED", "PASS"),
-                ("RI-FAST-B", "VERIFICATION_EVIDENCE_ADDED", "FAIL"),
-                ("RI-FAST-B", "VERIFICATION_FAILED", "FAIL"),
-            ):
-                self.run_cmd(
-                    home, str(inspector_tool), "activity-append", "--issue-key", key,
-                    "--activity-type", activity_type, "--content", f"{key} {activity_type}",
-                    "--result-status", result, "--metadata", fast_metadata,
+            # 普通 activity-append 不能通过伪造 metadata 改变标准失败投递。
+            spoof_metadata = json.dumps({"workflow_mode": "FASTMODE"})
+            self.run_cmd(
+                home, str(inspector_tool), "activity-append", "--issue-key", "RI-OUTSIDE",
+                "--activity-type", "VERIFICATION_FAILED", "--content", "标准审核失败",
+                "--result-status", "FAIL", "--metadata", spoof_metadata,
+            )
+            with closing(sqlite3.connect(database)) as conn:
+                self.assertEqual(
+                    conn.execute(
+                        """SELECT COUNT(*) FROM code_inspector_event
+                           WHERE issue_key='RI-OUTSIDE' AND event_type='VERIFICATION_FAILED'
+                             AND role='developer'"""
+                    ).fetchone()[0],
+                    1,
                 )
+
+            # FastMode 不依赖 pending_action 或 Developer Runtime，专用命令只记录验证事实。
+            self.run_cmd(home, str(inspector_tool), "issue-context-get", "--issue-key", "RI-FAST-B")
+            fast_content = "FAST-REVIEW-CONTENT-MUST-NOT-BE-METRIC"
+            fast_evidence = "FAST-REVIEW-EVIDENCE-MUST-NOT-BE-METRIC"
+            passed = self.run_cmd(
+                home, str(inspector_tool), "fast-review-record", "--issue-key", "RI-FAST-A",
+                "--decision", "pass", "--content", fast_content, "--evidence", fast_evidence,
+            )
+            failed_review = self.run_cmd(
+                home, str(inspector_tool), "fast-review-record", "--issue-key", "RI-FAST-B",
+                "--decision", "fail", "--content", "检查未通过，仍存在边界错误",
+            )
+            self.assertEqual(passed["activity_type"], "VERIFICATION_PASSED")
+            self.assertIsNotNone(passed["evidence_activity_id"])
+            self.assertEqual(failed_review["activity_type"], "VERIFICATION_FAILED")
+            self.assertIsNone(failed_review["evidence_activity_id"])
+
+            developer_denied = self.run_raw(
+                home, str(developer_tool), "fast-review-record", "--issue-key", "RI-FAST-A",
+                "--decision", "pass", "--content", "Developer 越权",
+            )
+            self.assertNotEqual(developer_denied.returncode, 0)
+            self.assertIn("只有 inspector", developer_denied.stderr)
+            human_denied = self.run_raw(
+                home, str(db_tool), "--agent", "human", "--operator-id", "human",
+                "fast-review-record", "--issue-key", "RI-FAST-A", "--decision", "pass",
+                "--content", "Human 越权",
+            )
+            self.assertNotEqual(human_denied.returncode, 0)
+            self.assertIn("只有 inspector", human_denied.stderr)
 
             with closing(sqlite3.connect(database)) as conn:
                 evidence_activity_id = conn.execute(
@@ -315,6 +350,8 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                     ensure_ascii=False,
                 )
                 self.assertNotIn(secret, serialized_metrics)
+                self.assertNotIn(fast_content, serialized_metrics)
+                self.assertNotIn(fast_evidence, serialized_metrics)
                 self.assertEqual(
                     conn.execute(
                         """SELECT issue_key FROM review_tool_call_metric
@@ -325,12 +362,19 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 self.assertEqual(
                     conn.execute(
                         """SELECT COUNT(*) FROM review_tool_call_metric
-                           WHERE command='activity-append' AND issue_key IN ('RI-FAST-A','RI-FAST-B')"""
+                           WHERE command='fast-review-record' AND success=1"""
                     ).fetchone()[0],
-                    4,
+                    2,
+                )
+                self.assertEqual(
+                    conn.execute(
+                        """SELECT COUNT(*) FROM review_tool_call_metric
+                           WHERE command='fast-review-record' AND success=0"""
+                    ).fetchone()[0],
+                    2,
                 )
                 self.assertEqual(conn.execute("SELECT COUNT(*) FROM code_inspector_thread").fetchone()[0], 0)
-                self.assertEqual(conn.execute("SELECT COUNT(*) FROM code_inspector_event").fetchone()[0], 0)
+                self.assertEqual(conn.execute("SELECT COUNT(*) FROM code_inspector_event").fetchone()[0], 1)
                 self.assertEqual(
                     conn.execute(
                         "SELECT COUNT(*) FROM issue_activity WHERE operator_type='DEVELOPMENT_AGENT'"
@@ -340,7 +384,8 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 conclusions = conn.execute(
                     """SELECT i.issue_key,a.activity_type,a.metadata_json
                        FROM issue_activity a JOIN review_issue i ON i.id=a.issue_id
-                       WHERE a.activity_type IN ('VERIFICATION_PASSED','VERIFICATION_FAILED')
+                       WHERE i.issue_key IN ('RI-FAST-A','RI-FAST-B')
+                         AND a.activity_type IN ('VERIFICATION_PASSED','VERIFICATION_FAILED')
                        ORDER BY i.issue_key"""
                 ).fetchall()
                 self.assertEqual(
@@ -403,6 +448,8 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             self.assertIn("$code-inspector fastmode RI-XXX [RI-YYY ...]", codex_skill_text)
             self.assertIn("FastMode 固定使用 Inspector 身份", codex_skill_text)
             self.assertIn("Developer Agent 不是前置条件", codex_skill_text)
+            self.assertIn("fast-review-record --issue-key <issue_key>", codex_skill_text)
+            self.assertIn("普通 `metadata` 只记录事实", codex_skill_text)
             self.assertIn("references/fastmode.md", codex_skill_text)
             self.assertIn("references/core-workflow.md", codex_skill_text)
             self.assertIn("references/role-workflows.md", codex_skill_text)
@@ -413,6 +460,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             self.assertIn("$code-inspector fastmode RI-XXX [RI-YYY ...]", source_skill_text)
             self.assertIn("FastMode 固定使用 Inspector 身份", source_skill_text)
             self.assertIn("Developer Agent 不是前置条件", source_skill_text)
+            self.assertIn("专用 `fast-review-record`", source_skill_text)
             self.assertIn("`issue-context-get` 使用 `--issue-key`，不使用 `--issue-id`", source_skill_text)
             self.assertIn("`issue-context-get` 使用 `--issue-key`，不使用 `--issue-id`", codex_skill_text)
             self.assertIn(
@@ -454,6 +502,8 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             self.assertIn("<issue_key> 不存在", fastmode_text)
             self.assertIn("pending_action=null", fastmode_text)
             self.assertIn("不自动设置 `CONFIRMED`", fastmode_text)
+            self.assertIn("fast-review-record --issue-key <issue_key> --decision pass", fastmode_text)
+            self.assertNotIn("activity-append --issue-key <issue_key> --activity-type VERIFICATION", fastmode_text)
             self.assertIn("$code-inspector start` 即可启动", trae_skill_text)
             self.assertIn('固定工具：`python "', codex_skill_text)
             codex_rules_text = codex_rules.read_text(encoding="utf-8")

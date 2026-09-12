@@ -1,4 +1,4 @@
-version: 4.3.0
+version: 4.4.0
 
 command: review-db.py
 identity:
@@ -274,6 +274,18 @@ commands:
     allowed_from: [HUMAN_CONFIRMATION_REQUIRED]
     effects: [追加 HUMAN_CONFIRMATION_PROVIDED, 离开 HUMAN_CONFIRMATION_REQUIRED]
     note: 该专用决策命令不直接转 CONFIRMED；正常恢复后仍由 Inspector 技术闭环。Human 可另用 issue-update-status 覆盖普通状态，但任何角色 CONFIRMED 前仍必须为当前 implementation attempt 留有 VERIFICATION_PASSED。
+  fast-review-record:
+    roles: [inspector]
+    purpose: FastMode 专用原子写入口；不依赖 Developer Session、IMPLEMENTATION_SUBMITTED、pending_action 或 Runtime Event。
+    required: [--issue-key, --decision, --content]
+    optional: [--evidence]
+    enum: {decision: [pass, fail]}
+    effects:
+      pass: [追加 VERIFICATION_PASSED, 写入 VERIFICATION APPROVED decision]
+      fail: [追加 VERIFICATION_FAILED, 写入 VERIFICATION REJECTED decision]
+      evidence_present: [先追加 VERIFICATION_EVIDENCE_ADDED]
+    metadata: 命令内部固定写入 workflow_mode=FASTMODE，仅用于审计展示，不参与权限或控制流判断。
+    forbidden_effects: [创建 Developer Thread, 创建 Developer Event, 修改 Issue 状态, 自动 CONFIRMED, 自动 CANCELLED]
   activity-append:
     roles: [inspector, developer, human]
     required: [--issue-key, --activity-type, --content]
@@ -281,7 +293,7 @@ commands:
     json_arguments: [--code-reference, --metadata]
     forbidden_atomic_types: [DESIGN_REQUESTED, DESIGN_SUBMITTED, DESIGN_APPROVED, DESIGN_REJECTED, STAGE_PLAN_CREATED, STAGE_SCOPE_DECLARED, STAGE_SUBMITTED, STAGE_APPROVED, STAGE_REJECTED, STAGE_PLAN_SUPERSEDED, HUMAN_CONFIRMATION_REQUESTED, HUMAN_CONFIRMATION_PROVIDED]
     forbidden_discussion_types: [COMMENT_ADDED, DESIGN_GUIDANCE]
-    note: 讨论一律使用 discussion-append；审核、验证等结论会同步建立 issue_decision，核心工作流活动必须由对应原子命令生成。FastMode 仅允许 Inspector 追加 VERIFICATION_EVIDENCE_ADDED、VERIFICATION_PASSED、VERIFICATION_FAILED，并以 metadata.workflow_mode=FASTMODE 标记；其中 VERIFICATION_FAILED 不触发 Developer Runtime Event。
+    note: 讨论一律使用 discussion-append；审核、验证等结论会同步建立 issue_decision，核心工作流活动必须由对应原子命令生成。metadata 只记录业务事实，不能改变权限、模式或控制流；FastMode 结论必须使用 fast-review-record。普通 VERIFICATION_FAILED 始终按标准 Workflow 投递 Developer Runtime Event。
     content_format:
       short: 单行纯文本，不添加 Markdown 装饰。
       multiline: 多个独立说明可直接换行；无需强制使用列表。

@@ -20,7 +20,7 @@ Multi-Thread 默认关闭。只有 `config/runtime.json` 允许且用户在当�
 - 所有角色：`references/core-workflow.md`
 - 当前角色：`references/role-workflows.md` 中对应的 Developer 或 Inspector 章节
 
-FastMode 固定使用 Inspector 身份。启动时改为读取 `references/fastmode.md`，锁定命令中的 Issue Scope，并按输入顺序串行审核；Developer Agent 不是前置条件，Human 负责开发沟通与最终状态，Inspector 只负责代码检查、验证和记录。FastMode 不依赖 `pending_action`，不启动 Runtime、Watch、Multi-Thread 或 Developer，不自动关闭 Issue。
+FastMode 固定使用 Inspector 身份。启动时改为读取 `references/fastmode.md`，锁定命令中的 Issue Scope，并按输入顺序串行审核；Developer Agent 不是前置条件，Human 负责开发沟通与最终状态，Inspector 只负责代码检查、验证和记录。FastMode 不依赖 `pending_action`，不启动 Runtime、Watch、Multi-Thread 或 Developer，不自动关闭 Issue。FastMode 的验证结论只用专用 `fast-review-record` 写入；普通 `metadata` 只记录事实，不能启用 FastMode 或改变权限和控制流。
 
 以下大型文件由 Runtime/CLI 强制执行，普通 Action Turn 不读取；仅在专项审计或修改规则本身时按需查阅：
 

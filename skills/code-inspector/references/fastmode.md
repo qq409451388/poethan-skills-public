@@ -35,13 +35,14 @@ $code-inspector fastmode RI-XXX [RI-YYY ...]
 
 需要正文时仍可使用 `issue-get`、`activity-get`、`discussion-get`、`stage-history-get`；可以执行测试和静态检查，并用 `discussion-append` 补充讨论。
 
-每个 Issue 的验证证据和结论分开记录，并在 `--metadata` 中只标记来源：
+每个 Issue 使用专用命令原子记录结论和可选验证证据：
 
 ```bash
-<fixed_tool> activity-append --issue-key <issue_key> --activity-type VERIFICATION_EVIDENCE_ADDED --content <evidence_summary> --metadata '{"workflow_mode":"FASTMODE"}'
-<fixed_tool> activity-append --issue-key <issue_key> --activity-type VERIFICATION_PASSED --content <result_summary> --result-status PASS --metadata '{"workflow_mode":"FASTMODE"}'
+<fixed_tool> fast-review-record --issue-key <issue_key> --decision pass --content <result_summary> [--evidence <evidence_summary>]
 ```
 
-失败时将最后一条替换为 `VERIFICATION_FAILED` 和 `--result-status FAIL`，正文明确列出失败证据与必须修改项。FastMode 的 `VERIFICATION_FAILED` 不触发 Developer Runtime Event。
+失败时使用 `--decision fail`，正文明确列出失败原因与必须修改项。命令内部自动写入 `metadata.workflow_mode=FASTMODE` 作为审计事实；调用方不能传入或伪造模式 metadata。PASS 写入 `VERIFICATION_PASSED`，FAIL 写入 `VERIFICATION_FAILED`；提供 `--evidence` 时同时写入 `VERIFICATION_EVIDENCE_ADDED`。该命令不触发 Developer Runtime Event，也不修改 Issue 状态。
+
+不要使用 `activity-append ... --metadata '{"workflow_mode":"FASTMODE"}'` 表达 FastMode。`metadata` 不能决定权限、模式或控制流；普通 `activity-append` 始终执行标准 Workflow 语义。
 
 PASS 后只告知“结果已记录，等待你决定是否关闭 Issue”；FAIL 后提供可直接转发给开发的必须修改项。全部 Issue 完成后可以汇总，但每个 Issue 的结论必须保持独立。

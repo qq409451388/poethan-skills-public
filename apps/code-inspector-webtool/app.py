@@ -782,6 +782,7 @@ def review_db_tool_counts(rows: list[dict]) -> list[dict]:
     preferred = [
         "issue-context-get", "issue-get", "activity-get", "discussion-get",
         "stage-get", "stage-history-get", "design-preview", "decision-list",
+        "fast-review-record",
     ]
     ordered = [
         {"name": name, **totals.pop(name, {"count": 0, "failure_count": 0})}

@@ -2893,6 +2893,66 @@ def decision_list(args: argparse.Namespace) -> None:
         result.append(item)
     print_json(result)
 
+def fast_review_record(args: argparse.Namespace) -> None:
+    """以专用 Inspector 命令原子记录 FastMode 证据和结论。"""
+    require_agent(args.agent)
+    if args.agent != "inspector":
+        raise PermissionError("只有 inspector 可以调用 fast-review-record")
+    require_choice(args.decision, {"pass", "fail"}, "decision")
+    content = (args.content or "").strip()
+    if not content:
+        raise ValueError("fast-review-record 的 --content 不能为空")
+    evidence = (args.evidence or "").strip()
+    metadata = {"workflow_mode": "FASTMODE"}
+    conclusion_type = "VERIFICATION_PASSED" if args.decision == "pass" else "VERIFICATION_FAILED"
+    result_status = "PASS" if args.decision == "pass" else "FAIL"
+
+    with connect() as conn:
+        issue = issue_row(conn, args.issue_key)
+        evidence_activity_id = None
+        if evidence:
+            evidence_cursor = conn.execute(
+                """INSERT INTO issue_activity(
+                     issue_id,attempt_no,activity_type,operator_type,operator_id,
+                     content,result_status,code_reference_json,metadata_json
+                   ) VALUES(?,?,'VERIFICATION_EVIDENCE_ADDED','INSPECTOR_AGENT',?,?,?, '[]',?)""",
+                (
+                    issue["id"], issue["current_attempt_no"], actor_id(args), evidence,
+                    result_status, dumps(metadata),
+                ),
+            )
+            evidence_activity_id = int(evidence_cursor.lastrowid)
+        conclusion_cursor = conn.execute(
+            """INSERT INTO issue_activity(
+                 issue_id,attempt_no,activity_type,operator_type,operator_id,
+                 content,result_status,code_reference_json,metadata_json
+               ) VALUES(?, ?, ?, 'INSPECTOR_AGENT', ?, ?, ?, '[]', ?)""",
+            (
+                issue["id"], issue["current_attempt_no"], conclusion_type,
+                actor_id(args), content, result_status, dumps(metadata),
+            ),
+        )
+        conclusion_activity_id = int(conclusion_cursor.lastrowid)
+        decision_id = record_issue_decision(
+            conn, args, issue, "VERIFICATION",
+            "APPROVED" if args.decision == "pass" else "REJECTED", content,
+            scope_key=f"attempt:{issue['current_attempt_no']}",
+            source_activity_id=conclusion_activity_id,
+            metadata=metadata,
+        )
+        audit(
+            conn, actor_id(args), "fast-review.record", "review_issue", args.issue_key, True,
+            dumps({"decision": args.decision, "evidence_recorded": bool(evidence)}),
+        )
+    print_json({
+        "issue_key": args.issue_key,
+        "decision": args.decision,
+        "activity_type": conclusion_type,
+        "evidence_activity_id": evidence_activity_id,
+        "conclusion_activity_id": conclusion_activity_id,
+        "decision_id": decision_id,
+    })
+
 def activity_append(args: argparse.Namespace) -> None:
     require_agent(args.agent)
     if args.activity_type not in ALLOWED_ACTIVITY_BY_AGENT[args.agent]:
@@ -2902,14 +2962,6 @@ def activity_append(args: argparse.Namespace) -> None:
     metadata = json.loads(args.metadata)
     if not isinstance(metadata, dict):
         raise ValueError("metadata 必须是 JSON 对象")
-    fastmode = metadata.get("workflow_mode") == "FASTMODE"
-    if fastmode and (
-        args.agent != "inspector"
-        or args.activity_type not in {
-            "VERIFICATION_EVIDENCE_ADDED", "VERIFICATION_PASSED", "VERIFICATION_FAILED",
-        }
-    ):
-        raise PermissionError("FastMode 只允许 Inspector 记录验证证据和 PASS/FAIL 结论")
 
     with connect() as conn:
         row = conn.execute(
@@ -2953,7 +3005,7 @@ def activity_append(args: argparse.Namespace) -> None:
                 scope_key=scope_key, source_activity_id=activity_cursor.lastrowid,
                 metadata=metadata,
             )
-        if args.activity_type in {"REVIEW_REJECTED", "VERIFICATION_FAILED"} and not fastmode:
+        if args.activity_type in {"REVIEW_REJECTED", "VERIFICATION_FAILED"}:
             enqueue_runtime_event(
                 conn, args.issue_key, args.activity_type,
                 activity_cursor.lastrowid, "developer",
@@ -3654,6 +3706,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--code-reference", default="[]")
     p.add_argument("--metadata", default="{}")
     p.set_defaults(func=activity_append)
+
+    p = sub.add_parser("fast-review-record")
+    p.add_argument("--issue-key", required=True)
+    p.add_argument("--decision", required=True, choices=["pass", "fail"])
+    p.add_argument("--content", required=True)
+    p.add_argument("--evidence")
+    p.set_defaults(func=fast_review_record)
 
     p = sub.add_parser("activity-amend")
     p.add_argument("--issue-key", required=True)

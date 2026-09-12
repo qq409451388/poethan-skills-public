@@ -28,6 +28,8 @@ history:
   issue_activity:
     identity: append_only
     purpose: 工作流里程碑及其审计来源；正式协作提交保存在此表，页面可将其只读投影到讨论视图。
+    fastmode_write: 仅由 inspector 的 fast-review-record 原子写入验证证据和 PASS/FAIL；内部 metadata 只作来源展示。
+    metadata_control_flow: forbidden
     current_content: 只有尚未被审核消费的提交和补充证据可由原逻辑身份通过 activity-amend 覆盖。
     revisions: 被替换正文保存在 issue_activity_revision；审核、验证与人工决定等最终结论不可 amend。
   issue_discussion:
