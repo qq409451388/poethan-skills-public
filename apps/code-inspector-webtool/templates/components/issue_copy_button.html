@@ -1,0 +1,7 @@
+{% macro issue_copy_button(issue_key) -%}
+<button type="button" class="issue-copy-button" data-copy-text="{{ issue_key }}" aria-label="复制 Issue 号 {{ issue_key }}" title="复制 Issue 号">
+  <svg class="issue-copy-icon" viewBox="0 0 20 20" aria-hidden="true"><rect x="6.5" y="6.5" width="9" height="9" rx="1.5"></rect><path d="M5 13.5H4.5A1.5 1.5 0 0 1 3 12V4.5A1.5 1.5 0 0 1 4.5 3H12a1.5 1.5 0 0 1 1.5 1.5V5"></path></svg>
+  <svg class="issue-copy-success-icon" viewBox="0 0 20 20" aria-hidden="true"><path d="m4.5 10.5 3.3 3.3 7.7-8"></path></svg>
+  <span class="sr-only" data-copy-feedback aria-live="polite"></span>
+</button>
+{%- endmacro %}

@@ -30,7 +30,58 @@
     lastTrigger?.focus();
   }
 
-  document.addEventListener('click', (event) => {
+  async function copyText(value) {
+    if (navigator.clipboard?.writeText && window.isSecureContext) {
+      try {
+        await navigator.clipboard.writeText(value);
+        return;
+      } catch (_error) {
+        // 权限被拒时继续尝试兼容复制路径。
+      }
+    }
+    const temporary = document.createElement('textarea');
+    temporary.value = value;
+    temporary.setAttribute('readonly', '');
+    temporary.style.position = 'fixed';
+    temporary.style.opacity = '0';
+    document.body.appendChild(temporary);
+    temporary.select();
+    const copied = document.execCommand('copy');
+    temporary.remove();
+    if (!copied) throw new Error('copy failed');
+  }
+
+  function showCopyResult(button, value, copied) {
+    window.clearTimeout(Number(button.dataset.copyResetTimer || 0));
+    button.classList.toggle('is-copied', copied);
+    button.classList.toggle('copy-failed', !copied);
+    button.title = copied ? '已复制' : '复制失败，请重试';
+    button.setAttribute('aria-label', copied ? `已复制 ${value}` : `复制 ${value} 失败，请重试`);
+    const feedback = button.querySelector('[data-copy-feedback]');
+    if (feedback) feedback.textContent = copied ? `已复制 ${value}` : `复制 ${value} 失败`;
+    button.dataset.copyResetTimer = window.setTimeout(() => {
+      button.classList.remove('is-copied', 'copy-failed');
+      button.title = '复制 Issue 号';
+      button.setAttribute('aria-label', `复制 Issue 号 ${value}`);
+      if (feedback) feedback.textContent = '';
+    }, 1600);
+  }
+
+  document.addEventListener('click', async (event) => {
+    const copyButton = event.target.closest('[data-copy-text]');
+    if (copyButton) {
+      event.preventDefault();
+      event.stopPropagation();
+      const value = copyButton.dataset.copyText;
+      try {
+        await copyText(value);
+        showCopyResult(copyButton, value, true);
+      } catch (_error) {
+        showCopyResult(copyButton, value, false);
+      }
+      return;
+    }
+
     const reviewButton = event.target.closest('[data-candidate-review]');
     if (reviewButton) {
       const form = document.getElementById('candidate-review-form');
@@ -96,6 +147,65 @@ document.querySelectorAll('form[method="post" i]').forEach((form) => {
   input.value = token;
   form.prepend(input);
 });
+
+// “仅待办”切换后立即应用；切回待办时清除可能冲突的完成态精确筛选。
+document.querySelectorAll('[data-only-pending-switch]').forEach((toggle) => {
+  toggle.addEventListener('change', () => {
+    const form = toggle.closest('form');
+    if (!form) return;
+    const completedInput = form.querySelector('[data-show-completed-input]');
+    if (completedInput) completedInput.value = toggle.checked ? '0' : '1';
+    const tabInput = form.elements.namedItem('tab');
+    if (tabInput) tabInput.value = 'all';
+    const statusInput = form.elements.namedItem('issue_status');
+    if (statusInput) statusInput.value = '';
+    form.requestSubmit();
+  });
+});
+
+// GET 筛选会重新加载页面；仅在本次筛选跳转中恢复提交前的滚动位置。
+(() => {
+  const triggers = document.querySelectorAll('[data-preserve-scroll]');
+  if (!triggers.length) return;
+
+  const storageKey = (pathname) => `code-inspector-filter-scroll:${pathname}`;
+
+  function saveScrollPosition(trigger, event) {
+    if (trigger.matches('a')
+        && (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey)) return;
+    const destination = trigger.matches('a')
+      ? new URL(trigger.href, window.location.href)
+      : new URL(trigger.action || window.location.href, window.location.href);
+    try {
+      window.sessionStorage.setItem(storageKey(destination.pathname), JSON.stringify({
+        top: window.scrollY,
+        savedAt: Date.now(),
+      }));
+    } catch (_error) {
+      // 浏览器禁用存储时保持普通跳转，不影响筛选本身。
+    }
+  }
+
+  triggers.forEach((trigger) => {
+    trigger.addEventListener(trigger.matches('form') ? 'submit' : 'click', (event) => {
+      saveScrollPosition(trigger, event);
+    });
+  });
+
+  try {
+    const key = storageKey(window.location.pathname);
+    const saved = JSON.parse(window.sessionStorage.getItem(key));
+    window.sessionStorage.removeItem(key);
+    if (!saved || !Number.isFinite(saved.top) || !Number.isFinite(saved.savedAt)
+        || Date.now() - saved.savedAt > 30_000) return;
+    if ('scrollRestoration' in window.history) window.history.scrollRestoration = 'manual';
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => window.scrollTo(0, saved.top));
+    });
+  } catch (_error) {
+    // 无有效记录时从页面默认位置开始。
+  }
+})();
 
 // 将任务、问题和 Stage 的变化派发为浏览器事件；桌面提醒必须由用户主动开启。
 (() => {

@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% from "components/task_modal.html" import task_modal %}
+{% from "components/issue_copy_button.html" import issue_copy_button %}
 {% block title %}{{ task.task_key }} · 检查任务{% endblock %}
 {% block content %}
 <nav class="breadcrumb" aria-label="面包屑"><a href="{{ url_for('task_list') }}">检查任务</a><span>/</span><span>{{ task.task_key }}</span></nav>
@@ -57,17 +58,18 @@
 <section class="panel issue-list-panel">
   <div class="section-head"><div><h2>问题</h2><p class="section-sub">{{ issues|length }} 条符合当前筛选</p></div></div>
   <nav class="filter-tabs" aria-label="问题快速筛选">
-    <a class="filter-tab {% if filters.tab == 'all' %}active{% endif %}" href="{{ url_for('task_detail', task_key=task.task_key, tab='all') }}">全部 <strong>{{ summary.total }}</strong></a>
-    <a class="filter-tab {% if filters.tab == 'mine' %}active{% endif %}" href="{{ url_for('task_detail', task_key=task.task_key, tab='mine') }}">待我处理 <strong>{{ summary.mine }}</strong></a>
-    <a class="filter-tab {% if filters.tab == 'review' %}active{% endif %}" href="{{ url_for('task_detail', task_key=task.task_key, tab='review') }}">待审核 <strong>{{ summary.review }}</strong></a>
-    <a class="filter-tab {% if filters.tab == 'blocked' %}active{% endif %}" href="{{ url_for('task_detail', task_key=task.task_key, tab='blocked') }}">受阻 <strong>{{ summary.blocked }}</strong></a>
-    <a class="filter-tab {% if filters.tab == 'confirmed' %}active{% endif %}" href="{{ url_for('task_detail', task_key=task.task_key, tab='confirmed') }}">已确认 <strong>{{ summary.confirmed }}</strong></a>
+    <a class="filter-tab {% if filters.tab == 'all' %}active{% endif %}" data-preserve-scroll href="{{ url_for('task_detail', task_key=task.task_key, tab='all', show_completed='1' if filters.show_completed else None) }}">全部 <strong>{{ summary.listed_total }}</strong></a>
+    <a class="filter-tab {% if filters.tab == 'mine' %}active{% endif %}" data-preserve-scroll href="{{ url_for('task_detail', task_key=task.task_key, tab='mine') }}">待我处理 <strong>{{ summary.mine }}</strong></a>
+    <a class="filter-tab {% if filters.tab == 'review' %}active{% endif %}" data-preserve-scroll href="{{ url_for('task_detail', task_key=task.task_key, tab='review') }}">待审核 <strong>{{ summary.review }}</strong></a>
+    <a class="filter-tab {% if filters.tab == 'blocked' %}active{% endif %}" data-preserve-scroll href="{{ url_for('task_detail', task_key=task.task_key, tab='blocked') }}">受阻 <strong>{{ summary.blocked }}</strong></a>
+    <a class="filter-tab {% if filters.tab in ('completed', 'confirmed') %}active{% endif %}" data-preserve-scroll href="{{ url_for('task_detail', task_key=task.task_key, tab='completed', show_completed='1') }}">已完成 <strong>{{ summary.completed }}</strong></a>
   </nav>
-  <form method="get" class="toolbar">
+  <form method="get" class="toolbar" data-preserve-scroll>
     <input type="hidden" name="tab" value="{{ filters.tab }}">
     <label for="issue-status">状态</label><select id="issue-status" name="issue_status"><option value="">全部</option>{% for s in issue_statuses %}<option value="{{ s }}" {% if filters.issue_status == s %}selected{% endif %}>{{ s|label }}</option>{% endfor %}</select>
     <label for="issue-severity">严重度</label><select id="issue-severity" name="severity"><option value="">全部</option>{% for value, name in severities %}<option value="{{ value }}" {% if filters.severity == value %}selected{% endif %}>{{ name }}</option>{% endfor %}</select>
     <label for="issue-dimension">维度</label><select id="issue-dimension" name="dimension"><option value="">全部</option>{% for value, name in dimensions %}<option value="{{ value }}" {% if filters.dimension == value %}selected{% endif %}>{{ name }}</option>{% endfor %}</select>
+    {% if task.task_type == 'CONTINUOUS' %}<label class="todo-switch" for="only-pending"><span>仅待办</span><span class="todo-switch-control"><input id="only-pending" type="checkbox" role="switch" data-only-pending-switch {% if not filters.show_completed %}checked{% endif %}><span class="todo-switch-track" aria-hidden="true"></span></span></label><input type="hidden" name="show_completed" value="{{ '1' if filters.show_completed else '0' }}" data-show-completed-input>{% endif %}
     <button type="submit" class="btn btn-primary">筛选</button><a class="btn" href="{{ url_for('task_detail', task_key=task.task_key) }}">重置</a>
   </form>
   {% if issues %}
@@ -76,7 +78,7 @@
       <thead><tr><th>问题</th><th>问题摘要</th><th>维度</th><th>严重度</th><th>状态</th><th>更新</th></tr></thead>
       <tbody>{% for issue in issues %}
         <tr class="clickable-row" tabindex="0" data-href="{{ url_for('issue_detail', issue_key=issue.issue_key) }}">
-          <td class="mono nowrap"><a href="{{ url_for('issue_detail', issue_key=issue.issue_key) }}">{{ issue.issue_key }}</a></td>
+          <td class="mono nowrap"><span class="issue-key-copy"><a href="{{ url_for('issue_detail', issue_key=issue.issue_key) }}">{{ issue.issue_key }}</a>{{ issue_copy_button(issue.issue_key) }}</span></td>
           <td class="issue-title-cell"><strong>{{ issue.title }}</strong><span>{{ issue.summary|truncate(100) }}</span></td>
           <td class="nowrap">{{ issue.dimension|label }}</td><td class="sev-{{ issue.severity }}">{{ issue.severity|label }}</td>
           <td><span class="badge badge-status-{{ issue.status }}">{{ issue.status|label }}</span></td><td class="mono muted nowrap">{{ issue.updated_at|localtime }}</td>

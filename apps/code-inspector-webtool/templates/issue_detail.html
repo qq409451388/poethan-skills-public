@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% from "components/task_modal.html" import task_modal %}
 {% from "components/evidence.html" import render_references %}
+{% from "components/issue_copy_button.html" import issue_copy_button %}
 {% macro render_collaboration_record(record, compact=false) %}
 <article class="event {% if record.record_kind == 'discussion' %}discussion-item{% endif %}" data-record-kind="{{ record.record_kind }}"{% if record.record_kind == 'activity' %} data-activity-type="{{ record.activity_type }}"{% endif %}>
   <div class="event-head"><div>
@@ -20,7 +21,7 @@
 {% endmacro %}
 {% block title %}{{ issue.issue_key }} · Issue 详情{% endblock %}
 {% block content %}
-<nav class="breadcrumb" aria-label="面包屑" data-issue-auto-refresh data-refresh-interval="1000"><a href="{{ url_for('task_list') }}">检查任务</a><span>/</span><a href="{{ url_for('task_detail', task_key=issue.task_key) }}">{{ issue.task_key }}</a><span>/</span><span>{{ issue.issue_key }}</span></nav>
+<nav class="breadcrumb" aria-label="面包屑" data-issue-auto-refresh data-refresh-interval="1000"><a href="{{ url_for('task_list') }}">检查任务</a><span>/</span><a href="{{ url_for('task_detail', task_key=issue.task_key) }}">{{ issue.task_key }}</a><span>/</span><span class="issue-key-copy"><span>{{ issue.issue_key }}</span>{{ issue_copy_button(issue.issue_key) }}</span></nav>
 
 <header class="issue-head" data-live-region="issue-head">
   <div class="issue-title">

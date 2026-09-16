@@ -2519,6 +2519,35 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                     if item["title"] == "长期线上 Bug 汇报"
                 )
                 self.assertEqual(continuous_web_task["project_path"], str(workspace.resolve()))
+                active_continuous_issue = {
+                    **issue,
+                    "title": "持续治理中的未完成问题",
+                    "description": "仍需继续治理",
+                }
+                completed_continuous_issue = {
+                    **issue,
+                    "title": "持续治理中已完成的问题",
+                    "description": "已经完成治理",
+                }
+                db(
+                    "inspector", "issue-create-batch", "--task-key", continuous_web_task["task_key"],
+                    "--reason", "验证持续治理列表筛选", "--issues",
+                    json.dumps([active_continuous_issue], ensure_ascii=False),
+                )
+                completed_created = db(
+                    "inspector", "issue-create-batch", "--task-key", continuous_web_task["task_key"],
+                    "--reason", "验证持续治理完成态筛选", "--issues",
+                    json.dumps([completed_continuous_issue], ensure_ascii=False),
+                )
+                completed_issue_key = completed_created["created"][0]
+                db(
+                    "inspector", "activity-append", "--issue-key", completed_issue_key,
+                    "--activity-type", "VERIFICATION_PASSED", "--content", "验证通过",
+                )
+                db(
+                    "inspector", "issue-update-status", "--issue-key", completed_issue_key,
+                    "--status", "CONFIRMED", "--content", "完成治理",
+                )
                 ordered_listing = client.get("/tasks?project_name=project").get_data(as_text=True)
                 self.assertLess(ordered_listing.index(continuous_web_task["task_key"]), ordered_listing.index(task["task_key"]))
                 self.assertIn("badge-task-type-CONTINUOUS", ordered_listing)
@@ -2526,6 +2555,23 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 continuous_detail = client.get(f"/tasks/{continuous_web_task['task_key']}").get_data(as_text=True)
                 self.assertIn("持续治理", continuous_detail)
                 self.assertIn("创建后不可修改", continuous_detail)
+                self.assertIn("持续治理中的未完成问题", continuous_detail)
+                self.assertNotIn("持续治理中已完成的问题", continuous_detail)
+                self.assertIn("仅待办", continuous_detail)
+                self.assertIn("data-only-pending-switch checked", continuous_detail)
+                self.assertIn('name="show_completed" value="0"', continuous_detail)
+                self.assertIn('<form method="get" class="toolbar" data-preserve-scroll>', continuous_detail)
+                self.assertIn('class="filter-tab active" data-preserve-scroll', continuous_detail)
+                self.assertIn("全部 <strong>1</strong>", continuous_detail)
+                self.assertIn("已完成 <strong>1</strong>", continuous_detail)
+                continuous_with_completed = client.get(
+                    f"/tasks/{continuous_web_task['task_key']}?show_completed=1"
+                ).get_data(as_text=True)
+                self.assertIn("持续治理中的未完成问题", continuous_with_completed)
+                self.assertIn("持续治理中已完成的问题", continuous_with_completed)
+                self.assertIn("全部 <strong>2</strong>", continuous_with_completed)
+                self.assertIn('name="show_completed" value="1"', continuous_with_completed)
+                self.assertNotIn("data-only-pending-switch checked", continuous_with_completed)
                 self.assertEqual(client.get("/issues", follow_redirects=False).status_code, 302)
                 detail = client.get(f"/tasks/{task['task_key']}")
                 self.assertEqual(detail.status_code, 200)
@@ -2533,6 +2579,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 self.assertIn("编辑当前任务", detail.get_data(as_text=True))
                 self.assertIn("快捷变更状态", detail.get_data(as_text=True))
                 self.assertIn("关闭任务会同步取消所有尚未结束的 Issue", detail.get_data(as_text=True))
+                self.assertIn(f'data-copy-text="{issue_key}"', detail.get_data(as_text=True))
                 self.assertEqual(
                     client.get(f"/tasks/{task['task_key']}?dimension=data_security").status_code, 200,
                 )
@@ -2603,6 +2650,8 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 issue_html = issue_page.get_data(as_text=True)
                 self.assertEqual(issue_page.status_code, 200)
                 self.assertIn("编辑当前 Issue", issue_html)
+                self.assertIn(f'data-copy-text="{issue_key}"', issue_html)
+                self.assertIn(f'aria-label="复制 Issue 号 {issue_key}"', issue_html)
                 self.assertIn("关键证据", issue_html)
                 self.assertIn('class="tab active" data-tab-target="all"', issue_html)
                 self.assertIn('class="tab-pane active" data-tab-pane="all"', issue_html)
@@ -3044,6 +3093,12 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 self.assertIn("new CustomEvent('code-inspector:changed'", refresh_script)
                 self.assertIn("Notification.requestPermission()", refresh_script)
                 self.assertIn("window.setInterval(readChanges, 1000)", refresh_script)
+                self.assertIn("code-inspector-filter-scroll", refresh_script)
+                self.assertIn("window.scrollTo(0, saved.top)", refresh_script)
+                self.assertIn("data-only-pending-switch", refresh_script)
+                self.assertIn("form.requestSubmit()", refresh_script)
+                self.assertIn("navigator.clipboard?.writeText", refresh_script)
+                self.assertIn("document.execCommand('copy')", refresh_script)
 
                 denied = client.post("/runtime/events/evt-visible/retry", follow_redirects=False)
                 self.assertEqual(denied.status_code, 403)

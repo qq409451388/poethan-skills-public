@@ -65,6 +65,9 @@ ISSUE_STATUSES = [
     "PROPOSED", "DESIGN_REQUIRED", "DESIGN_PENDING_REVIEW", "IN_PROGRESS", "ON_HOLD", "BLOCKED", "INSPECTOR_CONFIRMATION_REQUIRED",
     "HUMAN_CONFIRMATION_REQUIRED", "IMPLEMENTED_PENDING_REVIEW", "REDESIGN_REQUIRED", "CONFIRMED", "CANCELLED",
 ]
+# “已完成”是列表展示概念，不等同于某个具体工作流状态。以后新增完成态时只需扩展这里。
+COMPLETED_ISSUE_STATUSES = ("CONFIRMED",)
+NON_OPEN_ISSUE_STATUSES = (*COMPLETED_ISSUE_STATUSES, "CANCELLED")
 CANDIDATE_STATUSES = ["SUBMITTED", "UNDER_REVIEW", "ACCEPTED", "REJECTED"]
 DIMENSIONS = [
     ("functional_correctness", "功能正确性"), ("data_security", "数据一致性与安全"),
@@ -683,10 +686,18 @@ def task_detail(task_key: str):
     issue_status = request.args.get("issue_status", "")
     severity = request.args.get("severity", "")
     dimension = request.args.get("dimension", "")
+    show_completed = (
+        request.args.get("show_completed") == "1"
+        or tab in {"completed", "confirmed"}
+        or issue_status in COMPLETED_ISSUE_STATUSES
+    )
     filters, params = ["WHERE i.task_id = ?"], [task["id"]]
     tab_statuses = {
         "mine": ("IMPLEMENTED_PENDING_REVIEW", "HUMAN_CONFIRMATION_REQUIRED", "BLOCKED"),
-        "review": ("IMPLEMENTED_PENDING_REVIEW",), "blocked": ("BLOCKED",), "confirmed": ("CONFIRMED",),
+        "review": ("IMPLEMENTED_PENDING_REVIEW",), "blocked": ("BLOCKED",),
+        "completed": COMPLETED_ISSUE_STATUSES,
+        # 兼容旧的已确认页签链接。
+        "confirmed": COMPLETED_ISSUE_STATUSES,
     }
     if tab in tab_statuses:
         values = tab_statuses[tab]
@@ -701,27 +712,41 @@ def task_detail(task_key: str):
     if dimension:
         filters.append("AND i.dimension = ?")
         params.append(dimension)
+    if task["task_type"] == "CONTINUOUS" and not show_completed:
+        filters.append(f"AND i.status NOT IN ({','.join('?' for _ in COMPLETED_ISSUE_STATUSES)})")
+        params.extend(COMPLETED_ISSUE_STATUSES)
     issues = [issue_with_json(row) for row in query_all(
         f"""SELECT i.* FROM review_issue i {' '.join(filters)}
             ORDER BY CASE i.severity WHEN 'critical' THEN 4 WHEN 'high' THEN 3 WHEN 'medium' THEN 2 ELSE 1 END DESC,
                      i.updated_at DESC, i.issue_key ASC""", params,
     )]
     versions = query_all("SELECT * FROM review_task_version WHERE task_id = ? ORDER BY version_no DESC", (task["id"],))
+    non_open_placeholders = ",".join("?" for _ in NON_OPEN_ISSUE_STATUSES)
+    completed_placeholders = ",".join("?" for _ in COMPLETED_ISSUE_STATUSES)
     counts = query_one(
-        """SELECT COUNT(*) AS total,
-           SUM(CASE WHEN status NOT IN ('CONFIRMED','CANCELLED') THEN 1 ELSE 0 END) AS open,
-           SUM(CASE WHEN severity IN ('critical','high') AND status NOT IN ('CONFIRMED','CANCELLED') THEN 1 ELSE 0 END) AS priority,
+        f"""SELECT COUNT(*) AS total,
+           SUM(CASE WHEN status NOT IN ({non_open_placeholders}) THEN 1 ELSE 0 END) AS open,
+           SUM(CASE WHEN severity IN ('critical','high') AND status NOT IN ({non_open_placeholders}) THEN 1 ELSE 0 END) AS priority,
            SUM(CASE WHEN status IN ('IMPLEMENTED_PENDING_REVIEW','HUMAN_CONFIRMATION_REQUIRED','BLOCKED') THEN 1 ELSE 0 END) AS mine,
            SUM(CASE WHEN status = 'IMPLEMENTED_PENDING_REVIEW' THEN 1 ELSE 0 END) AS review,
            SUM(CASE WHEN status = 'BLOCKED' THEN 1 ELSE 0 END) AS blocked,
-           SUM(CASE WHEN status = 'CONFIRMED' THEN 1 ELSE 0 END) AS confirmed
-           FROM review_issue WHERE task_id = ?""", (task["id"],),
+           SUM(CASE WHEN status IN ({completed_placeholders}) THEN 1 ELSE 0 END) AS completed
+           FROM review_issue WHERE task_id = ?""",
+        (*NON_OPEN_ISSUE_STATUSES, *NON_OPEN_ISSUE_STATUSES, *COMPLETED_ISSUE_STATUSES, task["id"]),
     ) or {}
-    summary = {key: int(counts.get(key) or 0) for key in ("total", "open", "priority", "mine", "review", "blocked", "confirmed")}
+    summary = {key: int(counts.get(key) or 0) for key in ("total", "open", "priority", "mine", "review", "blocked", "completed")}
+    summary["listed_total"] = (
+        summary["total"]
+        if task["task_type"] != "CONTINUOUS" or show_completed
+        else summary["total"] - summary["completed"]
+    )
     return render_template(
         "task_detail.html", task=task, issues=issues, versions=versions, summary=summary,
         statuses=TASK_STATUSES, issue_statuses=ISSUE_STATUSES, severities=SEVERITIES, dimensions=DIMENSIONS,
-        filters={"tab": tab, "issue_status": issue_status, "severity": severity, "dimension": dimension},
+        filters={
+            "tab": tab, "issue_status": issue_status, "severity": severity, "dimension": dimension,
+            "show_completed": show_completed,
+        },
     )
 
 
