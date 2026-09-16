@@ -373,6 +373,7 @@ def record_tool_call_metric(args: argparse.Namespace, success: bool) -> None:
 def require_runtime_issue_action(
     action: str, role: str, issue_status: str, *, stage: sqlite3.Row | None = None,
     has_active_plan: bool = False, active_plan_complete: bool = False,
+    redesign_guidance_required: bool = False,
 ) -> None:
     state = {
         "role": role,
@@ -382,6 +383,7 @@ def require_runtime_issue_action(
         "current_stage_governance_version": stage["governance_version"] if stage else None,
         "has_active_plan": has_active_plan,
         "active_plan_complete": active_plan_complete,
+        "redesign_guidance_required": redesign_guidance_required,
     }
     if not issue_action_permitted(action, state):
         if (
@@ -391,6 +393,14 @@ def require_runtime_issue_action(
             and int(stage["governance_version"]) >= 2 and not stage["prepared_at"]
         ):
             raise RuntimeError("修改业务代码前必须先用 stage-prepare 声明影响范围和历史保护项")
+        if (
+            action == "design-submit" and role in {"developer", "human"}
+            and issue_status == "REDESIGN_REQUIRED" and redesign_guidance_required
+        ):
+            raise RuntimeError(
+                "设计方向已被推翻：Inspector 必须先用 design-request 修订 Root Cause、"
+                "Architecture Direction、Boundaries 和 Acceptance，Developer 才能重新提交方案"
+            )
         raise PermissionError(
             f"agent {role} 在 Issue 状态 {issue_status} 下无权执行 {action}"
         )
@@ -416,6 +426,33 @@ def active_stage_plan_no(conn: sqlite3.Connection, issue_id: int) -> int | None:
         (issue_id,),
     ).fetchone()
     return int(row["plan_no"]) if row else None
+
+
+def redesign_guidance_required(conn: sqlite3.Connection, issue_id: int, status: str) -> bool:
+    """方向失败进入重设计后，Inspector 是否尚未提交修订版架构指导。
+
+    最近的 REDESIGN_REQUIRED 起点活动（STATUS_CHANGED 或 stage-review redesign 的
+    STAGE_REJECTED）之后没有新的 DESIGN_REQUESTED 时，Developer 的 design-submit
+    被阻止。旧数据没有起点标记时保持兼容，不设置门槛。
+    """
+    if status != "REDESIGN_REQUIRED":
+        return False
+    entry = conn.execute(
+        """SELECT id FROM issue_activity
+           WHERE issue_id = ? AND result_status = 'REDESIGN_REQUIRED'
+             AND activity_type IN ('STATUS_CHANGED', 'STAGE_REJECTED')
+           ORDER BY id DESC LIMIT 1""",
+        (issue_id,),
+    ).fetchone()
+    if entry is None:
+        return False
+    refreshed = conn.execute(
+        """SELECT 1 FROM issue_activity
+           WHERE issue_id = ? AND activity_type = 'DESIGN_REQUESTED' AND id > ?
+           LIMIT 1""",
+        (issue_id, entry["id"]),
+    ).fetchone()
+    return refreshed is None
 
 def supersede_active_stage_plan(
     conn: sqlite3.Connection,
@@ -1309,6 +1346,12 @@ def apply_status_update(
             conn, issue_key, "STATUS_CHANGED_IMPLEMENTED_PENDING_REVIEW",
             activity_cursor.lastrowid, "inspector",
         )
+    elif status == "REDESIGN_REQUIRED" and row["status"] != status:
+        # 方向失败进入重设计：先唤醒 Inspector 修订架构指导，Developer 等待新的 design-request。
+        enqueue_runtime_event(
+            conn, issue_key, "STATUS_CHANGED_REDESIGN_REQUIRED",
+            activity_cursor.lastrowid, "inspector",
+        )
     audit(conn, actor_id(args), "issue.update-status", "review_issue", issue_key, True)
     return {"issue_key": issue_key, "status": status, "attempt_no": attempt_no}
 
@@ -1364,7 +1407,10 @@ def apply_design_transition(
     ).fetchone()
     if not row:
         raise KeyError(f"问题不存在: {args.issue_key}")
-    require_runtime_issue_action(args.command, args.agent, row["status"])
+    require_runtime_issue_action(
+        args.command, args.agent, row["status"],
+        redesign_guidance_required=redesign_guidance_required(conn, row["id"], row["status"]),
+    )
     activity_cursor = conn.execute(
         """INSERT INTO issue_activity(
             issue_id, attempt_no, activity_type, operator_type, operator_id,
@@ -1398,6 +1444,7 @@ def apply_design_transition(
     }
 
 def design_request(args: argparse.Namespace) -> None:
+    """记录 Inspector 的设计要求；从 REDESIGN_REQUIRED 调用时即修订版架构指导。"""
     require_agent(args.agent)
     with connect() as conn:
         row = issue_row(conn, args.issue_key)
@@ -2197,6 +2244,7 @@ def issue_context_get(args: argparse.Namespace) -> None:
         "pending_action": projection["pending_action"],
         "permitted_actions": projection["permitted_actions"],
         "exception_actions": projection["exception_actions"],
+        "redesign_guidance_required": projection["redesign_guidance_required"],
         "resources": {
             "activity_ids": [item["id"] for item in activities],
             "discussion_ids": [item["id"] for item in discussions],
@@ -2527,6 +2575,11 @@ def stage_review(args: argparse.Namespace) -> None:
             conn.execute(
                 "UPDATE review_issue SET status = 'REDESIGN_REQUIRED', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                 (issue["id"],),
+            )
+            # 整案失效：唤醒 Inspector 先修订架构指导；Developer 在新 design-request 前无待办。
+            enqueue_runtime_event(
+                conn, args.issue_key, "STATUS_CHANGED_REDESIGN_REQUIRED",
+                activity_cursor.lastrowid, "inspector",
             )
         audit(conn, actor_id(args), "stage.review", "review_issue", args.issue_key, True)
     print_json({

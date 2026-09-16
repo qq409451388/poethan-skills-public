@@ -1704,6 +1704,16 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             self.assertEqual(redesign["attempt_no"], 2)
             fails("developer", "implementation-submit", "--issue-key", "RI-DESIGN", "--content", "不得继续实现")
             fails("developer", "issue-update-status", "--issue-key", "RI-DESIGN", "--status", "IN_PROGRESS")
+            gated_resubmission = fails(
+                "developer", "design-submit", "--issue-key", "RI-DESIGN",
+                "--summary", "抢先重交方案。", "--content", "抢先方案", "--scope-changes", "[]",
+            )
+            self.assertIn("先用 design-request 修订", gated_resubmission.stderr)
+            revised_request = db(
+                "inspector", "design-request", "--issue-key", "RI-DESIGN", "--content",
+                "修订指导：根因是生命周期归属错误，方向改为由调度方统一管理，验收补充幂等回归",
+            )
+            self.assertEqual(revised_request["status"], "DESIGN_REQUIRED")
             redesigned_submission = db(
                 "developer", "design-submit", "--issue-key", "RI-DESIGN",
                 "--summary", "重新调整数据处理顺序，避免旧数据被错误覆盖。",
@@ -2218,6 +2228,15 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             old_plan = db("developer", "stage-list", "--issue-key", "RI-STAGE-REDESIGN", "--plan-no", "1")
             self.assertEqual([item["status"] for item in old_plan], ["SUPERSEDED", "SUPERSEDED"])
             fails("developer", "implementation-submit", "--issue-key", "RI-STAGE-REDESIGN", "--content", "不能绕过")
+            gated_stage_resubmission = fails(
+                "developer", "design-submit", "--issue-key", "RI-STAGE-REDESIGN",
+                "--summary", "未等修订指导就重交方案。", "--content", "抢跑方案", "--scope-changes", "[]",
+            )
+            self.assertIn("先用 design-request 修订", gated_stage_resubmission.stderr)
+            db(
+                "inspector", "design-request", "--issue-key", "RI-STAGE-REDESIGN", "--content",
+                "修订指导：领域模型方向不成立，改为在服务层收敛状态，旧接口语义不变",
+            )
             second_design = db(
                 "developer", "design-submit", "--issue-key", "RI-STAGE-REDESIGN",
                 "--summary", "按新边界缩小修改范围，只保留一个可独立验收的阶段。", "--content", "新方案",

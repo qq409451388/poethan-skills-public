@@ -1,6 +1,9 @@
 """Runtime 唯一持有的 Issue 动作与状态权限。
 
 Projection 只消费本模块，不再维护第二套动作表；命令处理器也用同一份规则校验写操作。
+
+REDESIGN_REQUIRED 门槛：方向失败进入重设计后，state 中的 redesign_guidance_required 为真时，
+Developer 的 design-submit 被拒绝，直到 Inspector 用 design-request 提交修订版架构指导。
 """
 from __future__ import annotations
 
@@ -98,9 +101,13 @@ def runtime_issue_actions(state: dict[str, Any]) -> tuple[list[str], list[str]]:
     if role in ACTION_ROLES["activity-append"]:
         actions.append("activity-append")
 
-    if role in ACTION_ROLES["design-request"] and status in {"PROPOSED", "IN_PROGRESS"}:
+    if role in ACTION_ROLES["design-request"] and status in {"PROPOSED", "IN_PROGRESS", "REDESIGN_REQUIRED"}:
         actions.append("design-request")
-    if role in ACTION_ROLES["design-submit"] and status in {"DESIGN_REQUIRED", "REDESIGN_REQUIRED"}:
+    if (
+        role in ACTION_ROLES["design-submit"]
+        and status in {"DESIGN_REQUIRED", "REDESIGN_REQUIRED"}
+        and not (status == "REDESIGN_REQUIRED" and state.get("redesign_guidance_required"))
+    ):
         actions.append("design-submit")
     if status == "DESIGN_PENDING_REVIEW":
         if role in ACTION_ROLES["design-choice-record"]:

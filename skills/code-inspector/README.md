@@ -133,9 +133,18 @@ Inspector 修改 Task 状态时遵守标准状态机。Human 具有 Task 状态�
 
 ## 设计与实现协作
 
-复杂或高风险 Issue 应在编码前进入设计阶段：Inspector 用 `design-request` 写清根因、约束、不可破坏语义、风险、推荐方向和方案必须回答的问题；Developer 用 `design-submit` 提交具体类、方法、数据流、兼容与测试方案；Inspector 用 `design-review` 绑定当前设计提交并明确批准或驳回。批准时必须选择 `direct` 或 `staged`；staged 会在同一事务中创建 Stage Plan、批准设计并默认激活 Stage 1。设计状态下 Developer 不得修改业务代码或提交实现。
+设计职责按层划分：Inspector 是能力更强的模型，用 `design-request` 负责 What / Why / Boundary / Architecture Direction / Acceptance——根因、应在哪一层解决、推荐和禁止的架构方向、不可破坏语义、方案必须回答的问题和验收条件；Developer 用 `design-submit` 在该框架内决定具体 How——修改哪些类和方法、数据流与 API/DB/状态落地、幂等并发事务、测试方案。Inspector 不下沉到具体代码实现，Developer 不重新决定已确定的架构方向；Developer 认为方向有事实错误时通过讨论反馈，由 Inspector 修订，不得静默改向。Inspector 用 `design-review` 绑定当前设计提交并明确批准或驳回，审批时检查方向遵守、根因解决、边界、Design Questions 回答、验收可验证、无必要复杂化和 scope change；实现方式与自身偏好不同不构成驳回理由。
 
-实现审核失败时，若只是代码未按批准方案正确落地，则记录 `VERIFICATION_FAILED` 并回 `IN_PROGRESS`；若方向本身被新证据推翻，则转 `REDESIGN_REQUIRED`，强制重新走方案审核。连续两次失败后 Inspector 必须主动重新判断失败属于实现还是设计，避免重复阅读与大范围返工。
+设计深度随复杂度分级（规则见 `references/workflow.yaml` 的 `design_depth`）：SIMPLE 问题确认边界后直接实现，不要求 design-request 和 Stage Plan；NORMAL 问题设计至少覆盖 Root Cause、Boundaries、Design Questions、Acceptance；COMPLEX / HIGH-RISK 问题（跨模块职责、核心链路、状态机、并发事务一致性、持久化模型、数据迁移、对外行为、新依赖、大重构、高回归风险）还必须给出明确到架构层的 Architecture Direction（状态归属、source of truth、push/pull、生命周期管理、允许与禁止路径、必须幂等的路径），禁止“注意兼容”“考虑并发”这类空话。批准时必须选择 `direct` 或 `staged`；staged 会在同一事务中创建 Stage Plan、批准设计并默认激活 Stage 1。设计状态下 Developer 不得修改业务代码或提交实现。
+
+```text
+SIMPLE      Inspector(问题+边界) → Developer(实现) → Inspector(验证)
+NORMAL      Inspector(四段式设计要求) → Developer(方案) → Inspector(审) → Developer(实现) → Inspector(验证)
+COMPLEX     Inspector(五段式含架构方向) → Developer(方案) → Inspector(审/Stage Plan)
+            → 分 Stage 实施与验收 → 最终实现 → 最终验证
+```
+
+实现审核失败时，若只是代码未按批准方案正确落地，则记录 `VERIFICATION_FAILED` 并回 `IN_PROGRESS`；若方向本身被新证据推翻，则转 `REDESIGN_REQUIRED`。转入后 Runtime 先唤醒 Inspector 并拒绝 Developer 直接重交方案：Inspector 必须重新检查 Root Cause、Architecture Direction、Boundaries、Acceptance 哪些判断失误，先用 `design-request` 提交修订后的架构级指导，Developer 再提交新方案。连续两次失败后 Inspector 必须主动重新判断失败属于实现还是设计，避免重复阅读与大范围返工。
 
 复杂 Issue 可在设计批准前创建 Stage Plan。Stage 独立于 Issue 状态，按 `PLANNED → IN_PROGRESS → PENDING_REVIEW → APPROVED` 串行推进。Developer 在改码前先用 `stage-prepare` 声明影响范围、原因和历史保护项，完成后通过 `stage-submit` 提交 commit、Diff、当前测试、历史累计回归与代码证据。Inspector 默认从 `stage-get` 读取当前 Stage、合并后的有界保护约束和历史摘要；确需核验证据时再用 `stage-history-get` 按 stage 读取完整 baseline。审核使用 BLOCKER/MUST/SHOULD/NIT 四级 finding，只有前两级阻断。通过时建立包含已验证行为、输入输出契约、业务语义和测试集合的 `PASSED` baseline，自动激活下一 Stage。第二轮起不得新增无关 SHOULD/NIT，新 BLOCKER/MUST 必须解释此前遗漏原因和实际风险；阻断项清零且所有验收通过后必须 PASS。若发现整案错误则显式进入 `REDESIGN_REQUIRED`，旧计划完整保留。所有 Stage 通过后才允许 `implementation-submit`，且仍需最终整体验证。简单 Issue 无需 Stage。
 

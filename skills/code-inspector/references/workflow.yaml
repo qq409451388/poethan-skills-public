@@ -1,4 +1,4 @@
-version: 4.1.0
+version: 4.2.0
 
 issue_content:
   default_required: [title, summary, dimension, severity]
@@ -148,6 +148,8 @@ runtime_events:
     IMPLEMENTATION_SUBMITTED: inspector
     REVIEW_REJECTED: developer
     VERIFICATION_FAILED: developer
+    # 方向失败进入重设计时唤醒 Inspector 先修订架构指导；Developer 需等新 design-request。
+    STATUS_CHANGED_REDESIGN_REQUIRED: inspector
     INSPECTOR_CONFIRMATION_REQUIRED: inspector
     HUMAN_CONFIRMATION_PROVIDED_to_DESIGN_REQUIRED_or_IN_PROGRESS: developer
     HUMAN_STATUS_OVERRIDE_to_DESIGN_PENDING_REVIEW_or_IMPLEMENTED_PENDING_REVIEW: inspector
@@ -195,6 +197,7 @@ transitions:
     inspector: [IN_PROGRESS, REDESIGN_REQUIRED, CONFIRMED, ON_HOLD, BLOCKED, CANCELLED]
     developer: []
     human: *human_issue_override_statuses
+  # REDESIGN_REQUIRED 下 Inspector 的 design-request 修订边是原子命令，不走通用状态表。
   REDESIGN_REQUIRED:
     inspector: [ON_HOLD, BLOCKED, CANCELLED]
     developer: [DESIGN_PENDING_REVIEW, ON_HOLD, BLOCKED, INSPECTOR_CONFIRMATION_REQUIRED]
@@ -213,14 +216,41 @@ issue_status_authority:
   final_confirmation_exception: 任一角色转 CONFIRMED 前必须为当前 implementation attempt 留有 VERIFICATION_PASSED，Human 也不能跳过最终技术验证证据。
 
 design_workflow:
-  principle: Inspector 定义必须解决什么、不能破坏什么和推荐方向；Developer 决定具体代码如何实现。
+  principle: >-
+    Inspector 决定 What / Why / Boundary / Architecture Direction / Acceptance，Developer 决定 How / Code / Test。
+    Inspector 是能力更强的模型，负责高层判断与技术方向，但不下沉到具体类、方法和代码实现；
+    Developer 是执行模型，在 Inspector 给出的框架内自主决定具体实现，不重新决定已确定的架构级方向。
+  responsibility_split:
+    inspector_owns:
+      root_cause: 问题为什么发生、真正应该解决的根因是什么。
+      architecture_direction: >-
+        问题应该在哪一层解决、推荐采用什么架构方向、明确禁止哪些明显错误的方向；
+        必要时明确数据流、生命周期、职责归属、source of truth 等架构级约束。
+        不要求指定具体类、方法和代码结构，不把 Developer 变成纯打字工具。
+      boundaries: >-
+        哪些业务语义不可破坏、哪些模块/接口/数据兼容性需要保护、
+        哪些变化属于当前 Issue、哪些属于 scope change。
+      design_questions: Developer 的具体方案必须回答哪些关键问题。
+      acceptance: 什么条件满足后才能认为问题真正解决，包括必要的测试、兼容性、回归要求。
+    developer_owns:
+      - 修改哪些模块、类、方法与具体代码组织。
+      - 数据如何在具体实现中流转，API / DB / 状态如何落地。
+      - 幂等、并发、事务等具体实现与测试怎么写。
+      - 具体 Diff 与 Commit。
+    direction_dispute:
+      - Developer 发现 Architecture Direction 存在事实错误或无法实现时，必须通过 discussion（topic DESIGN）或 INSPECTOR_CONFIRMATION_REQUIRED 反馈，由 Inspector 修订方向；不得静默改用另一套架构方向。
+      - Inspector 可以修改自己的 Architecture Direction，但不能因为 Developer 的具体实现方式和自己偏好不同就要求重做；满足方向、边界、验收且风险可控时应允许 Developer 自主选择实现。
   request:
     atomic_command: design-request
     roles: [inspector, human]
-    allowed_from: [PROPOSED, IN_PROGRESS]
+    allowed_from: [PROPOSED, IN_PROGRESS, REDESIGN_REQUIRED]
     activity: DESIGN_REQUESTED
     target: DESIGN_REQUIRED
-    content_should_cover: [不宜直接编码的原因, 核心根因, 必须满足的约束, 不可破坏的语义, 推荐方向, 关键风险, 方案必须回答的问题]
+    content_structure: 正文仍是自由文本，按 design_depth 分级组织内容；结构由本契约和文档约束，不做机器级拆分校验，不为字段结构化迁移数据库。
+    redesign_note: >-
+      从 REDESIGN_REQUIRED 发起的 design-request 是修订版架构指导。Inspector 必须先重新检查
+      Root Cause 是否判断错误、Architecture Direction 是否需要改变、Boundaries 是否遗漏、
+      Acceptance 是否错误，再提交修订后的指导；不能只重复原文，也不能把修订责任留给 Developer。
   submit:
     atomic_command: design-submit
     roles: [developer, human]
@@ -228,6 +258,9 @@ design_workflow:
     activity: DESIGN_SUBMITTED
     target: DESIGN_PENDING_REVIEW
     attempt_effect: none
+    redesign_gate: >-
+      REDESIGN_REQUIRED 状态下，Runtime 在 Inspector 提交新的 design-request（修订版架构指导）之前
+      拒绝 Developer 的 design-submit；Human 仍可用 issue-update-status 人工纠正。
     scope_changes:
       argument: --scope-changes
       developer_required: true
@@ -260,13 +293,49 @@ design_workflow:
     activity: DESIGN_REJECTED
     target: DESIGN_REQUIRED
     content_required: [理解错误, 无效边界, 必须调整点, 下一版建议方向]
+  review_quality:
+    checks:
+      - Developer 是否遵守 Architecture Direction
+      - 是否解决 Root Cause，而不是局部打补丁
+      - 是否突破 Boundaries
+      - 是否回答全部 Design Questions
+      - Acceptance 是否可验证
+      - 是否出现无必要的复杂化
+      - 是否引入 scope change
+    approve_when: >-
+      满足方向、边界、验收且风险可控时，Inspector 必须允许 Developer 自主选择的具体实现通过；
+      SHOULD/NIT 级别的实现偏好差异不构成驳回理由。
   guidance:
     discussion_command: discussion-append --topic DESIGN
     roles: [inspector, developer, human]
     status_effect: none
   coding_prohibited_in: [DESIGN_REQUIRED, DESIGN_PENDING_REVIEW, REDESIGN_REQUIRED]
 
-design_trigger_guidance:
+design_depth:
+  rule: >-
+    设计深度随 Issue 复杂度自适应：SIMPLE 保持简单，COMPLEX 才要求完整架构指导。
+    分级由 Inspector 在决定是否发起设计时判定，复用现有状态和命令，不新增状态、不落库；
+    内容长度随复杂度伸缩，禁止让所有 Issue 强制输出五段式长设计文档。
+  tiers:
+    SIMPLE:
+      signals: [局部且明确的Bug, 唯一合理修复方式, 不改变外部行为, 不新增持久化, 不改变基础设施, 不涉及跨模块职责调整, 风险低]
+      flow: Inspector 确认问题和边界后直接 PROPOSED -> IN_PROGRESS -> implementation-submit。
+      not_required: [design-request, Architecture Direction, design-submit, Stage Plan]
+    NORMAL:
+      signals: [需要Developer做一定设计判断, 可能涉及多个类或方法, 存在兼容/状态/事务/数据流问题, 不涉及明显架构调整或高风险变更]
+      request_must_cover: [root_cause, boundaries, design_questions, acceptance]
+      architecture_direction: 可选；只在确实存在方向性约束时提供。
+      flow: design-request -> design-submit -> design-review -> 实现 -> 验证。
+    COMPLEX:
+      signals: [跨模块职责调整, runtime/scheduler/supervisor/event核心链路, 状态机调整, 并发事务一致性设计, 持久化模型变化, 数据迁移, 对外接口或行为变化, 新基础设施或新依赖, 大范围重构, 高回归风险, 多种实现方向且影响差异明显]
+      request_must_cover: [root_cause, architecture_direction, boundaries, design_questions, acceptance]
+      architecture_direction_required: true
+      architecture_direction_floor: >-
+        必须明确到架构层，例如：状态归属于哪个领域对象、谁是 source of truth、数据 push 还是 pull、
+        生命周期由谁管理、是否允许跨层直接访问、应在哪一层解决而不是在哪一层打补丁、
+        哪些路径必须保持幂等、哪种旧方案明确不应继续扩展。
+      vague_direction_forbidden: [注意兼容, 考虑并发, 避免破坏现有逻辑, 请给出合理方案]
+      flow: design-request（五段式）-> design-submit -> design-review（优先 staged）-> Stage 实施/验收 -> 最终实现 -> 最终验证。
   prefer_design_for: [跨模块, Schema或数据迁移, 历史修复或回灌, 状态机变化, 幂等并发变化, ACK重试恢复变化, 多数据源融合, 公共API或第三方兼容, 大范围重构, 边界不确定, 方向曾被推翻, 连续实现失败, 高验证成本]
   simple_issue: 可直接 PROPOSED -> IN_PROGRESS -> implementation-submit，不机械增加设计流程。
 
@@ -347,7 +416,7 @@ stage_workflow:
     activities: [STAGE_REJECTED, STAGE_PLAN_SUPERSEDED]
     issue_transition: IN_PROGRESS -> REDESIGN_REQUIRED
     plan_effect: 当前计划 plan_status -> SUPERSEDED；未完成 Stage -> SUPERSEDED，已 APPROVED Stage 保留原状态、时间和验收记录。
-    recovery: design-submit -> DESIGN_PENDING_REVIEW -> design-review approved --execution-mode staged --stages <json>。
+    recovery: design-request（Inspector 修订架构指导）-> design-submit -> DESIGN_PENDING_REVIEW -> design-review approved --execution-mode staged --stages <json>。
   final_submission_gate: 有 active Stage Plan 时，全部 Stage APPROVED 后才允许 implementation-submit；最终整体验证不可被阶段验收替代。
   historical_regression_gate:
     required_for: Stage 2 及以后每轮验收
@@ -390,7 +459,12 @@ implementation_review:
     condition: 新证据推翻方向、范围显著扩大、破坏其他链路或需要重做数据模型、状态、幂等或数据流。
     transition: IMPLEMENTED_PENDING_REVIEW -> REDESIGN_REQUIRED
     runtime_precondition: 状态 content 必填，必须明确记录推翻原设计的原因。
-    rule: 禁止继续直接编码；必须 design-submit -> DESIGN_PENDING_REVIEW -> DESIGN_APPROVED -> IN_PROGRESS。
+    guidance_gate: >-
+      进入 REDESIGN_REQUIRED 时 Runtime 唤醒 Inspector 而不是 Developer，并阻止 Developer 直接
+      design-submit。Inspector 必须重新检查 Root Cause 是否判断错误、Architecture Direction 是否
+      需要改变、Boundaries 是否遗漏、Acceptance 是否错误，先用 design-request 提交修订后的架构级
+      指导，Developer 才能提交新的 Concrete Design。Human 仍可用 issue-update-status 人工纠正。
+    rule: 禁止继续直接编码；必须 design-request（修订指导）-> design-submit -> DESIGN_PENDING_REVIEW -> DESIGN_APPROVED -> IN_PROGRESS。
   repeated_failure_guard:
     threshold: 2
     runtime_auto_transition: false

@@ -12,13 +12,17 @@ Task 与普通 Issue 状态由 Inspector/Developer 按标准状态机维护；Hu
 
 ## 设计与 Stage
 
-Code Inspector 的目标不是让 Developer 无限提交、Inspector 无限驳回。简单问题可直接实现；跨模块、数据库结构或数据迁移、历史数据补处理、状态流转、重复执行与并发、消息确认和失败恢复、公共 API、大重构或方向不确定的问题，Inspector 应在编码前使用 `design-request`，主动写清根因、不可破坏语义、设计约束、风险、推荐方向和必须回答的问题。Inspector 决定“必须解决什么、不能破坏什么、推荐往哪里做”，Developer 决定“具体代码怎么实现”。
+Code Inspector 的目标不是让 Developer 无限提交、Inspector 无限驳回。设计职责按层划分：Inspector 是能力更强的模型，负责 What / Why / Boundary / Architecture Direction / Acceptance——问题为什么发生（Root Cause）、应在哪一层解决和推荐或禁止哪些架构方向（Architecture Direction）、哪些业务语义和兼容性不可破坏、方案必须回答哪些问题（Design Questions）、什么条件满足才算解决（Acceptance）；Developer 负责具体 How——修改哪些模块、类、方法，代码如何组织，数据流、API、DB、状态如何落地，幂等并发事务怎么实现，测试怎么写，Diff 和 Commit 怎么提交。Inspector 不下沉到具体类、方法和代码实现，不把 Developer 变成纯打字工具；Developer 也不重新决定 Inspector 已确定的架构级方向。Developer 发现 Architecture Direction 有事实错误或无法实现时，必须通过讨论或 `INSPECTOR_CONFIRMATION_REQUIRED` 反馈并由 Inspector 修订方向，不得静默改用另一套架构。
+
+设计深度随复杂度自适应，分级规则见 `workflow.yaml` 的 `design_depth`：SIMPLE 问题（局部明确、唯一合理修复、不改外部行为、低风险）由 Inspector 确认问题和边界后直接 `PROPOSED -> IN_PROGRESS`，不要求 design-request 和 Stage Plan；NORMAL 问题（需要一定设计判断，但无架构级调整）的 design-request 至少覆盖 Root Cause、Boundaries、Design Questions、Acceptance，Architecture Direction 仅在确有方向性约束时提供；COMPLEX / HIGH-RISK 问题（跨模块职责调整、runtime/scheduler/supervisor/event 核心链路、状态机、并发事务一致性、持久化模型、数据迁移、对外行为变化、新基础设施、大范围重构、高回归风险、多实现方向且影响差异明显）必须走完整设计流程，Architecture Direction 为必填语义，且要明确到架构层——状态归属的领域对象、source of truth、push 还是 pull、生命周期由谁管理、是否允许跨层访问、在哪一层解决而不是打补丁、哪些路径必须幂等、哪种旧方案不应继续扩展；禁止只写“注意兼容”“考虑并发”“避免破坏现有逻辑”“请给出合理方案”。内容长度随复杂度伸缩，不允许让简单问题也输出五段式长设计文档。
+
+跨模块、数据库结构或数据迁移、历史数据补处理、状态流转、重复执行与并发、消息确认和失败恢复、公共 API、大重构或方向不确定的问题，Inspector 应在编码前使用 `design-request`；旁支发现转 Candidate，不写成当前 MUST。
 
 `DESIGN_REQUIRED`、`DESIGN_PENDING_REVIEW`、`REDESIGN_REQUIRED` 期间 Developer 只能阅读、分析、讨论和用 `design-submit` 提交方案，禁止修改业务代码或 `implementation-submit`；只有 `design-review approved` 转为 `IN_PROGRESS` 后才能编码。设计批准只表示基于当时证据允许实现，出现新事实时仍可显式转 `REDESIGN_REQUIRED`。
 
 批准设计时，Inspector 必须在同一次 `design-review` 中明确选择执行模式：简单问题使用 `direct`；复杂 Issue 使用 `staged` 并提交少量可独立验收、默认串行的 Stage。`staged` 审批会在一个事务中创建 Stage Plan、批准设计并激活第一个 Stage；任何一步失败都整体回滚。每个 Stage 必须明确目标和验收标准。不再提供独立的计划创建命令，Developer 也不承担 Stage Plan 制定责任。
 
-`design-review` 必须绑定当前 Issue 最新的 `DESIGN_SUBMITTED` activity，禁止审核旧设计或其他 Issue 的设计。只有原子审批成功、Issue 进入 `IN_PROGRESS` 后，Developer 才开始实现；staged 模式先执行 `stage-get -> stage-prepare -> 实现 -> stage-submit`，direct 模式走无 Stage Plan 的直接实现路径。
+`design-review` 必须绑定当前 Issue 最新的 `DESIGN_SUBMITTED` activity，禁止审核旧设计或其他 Issue 的设计。审批时 Inspector 检查：Developer 是否遵守 Architecture Direction、是否解决 Root Cause 而不是局部打补丁、是否突破 Boundaries、是否回答全部 Design Questions、Acceptance 是否可验证、是否出现无必要复杂化、是否引入 scope change。Inspector 可以在审核中修订自己的 Architecture Direction 并记录原因；但不能因为 Developer 的具体实现方式和自己偏好不同就要求重做——满足方向、边界、验收且风险可控时必须放行。只有原子审批成功、Issue 进入 `IN_PROGRESS` 后，Developer 才开始实现；staged 模式先执行 `stage-get -> stage-prepare -> 实现 -> stage-submit`，direct 模式走无 Stage Plan 的直接实现路径。
 
 Inspector 可以收紧实现约束，但不能把旁支问题变成当前需求。Developer 必须用 `--scope-changes` 列出范围扩大或新增持久化、迁移、外部行为等需确认变化；Inspector 审批前用 `design-preview` 在 CLI 展示“原目标、方案概要、额外变化”。这些变化只能删除、转 Candidate，或经 `design-choice-record --change-ids` 确认；staged 计划中的 `scope_change_ids` 必须逐项对应。Runtime 拒绝未覆盖确认的变化，设计修订后旧确认失效。
 
@@ -36,7 +40,7 @@ Inspector 的 Stage finding 只分四级：`BLOCKER` 是功能、数据、安全
 
 当 `BLOCKER=0`、`MUST=0`、当前 Stage 验收全部 PASS、历史 Stage 累计回归全部 PASS 时，Inspector 必须输出 `PASS` 并结束审核，不能以“还可优化”“最好重构”“不够优雅”继续循环。`stage-review --content` 固定包含 Inspection Result、四级 findings、Historical Regression、Current Stage Acceptance 和 Final Decision；`--summary` 只保存最多 180 字的正式决策摘要，可省略并由 Runtime 从完整 content 生成。SHOULD/NIT 存入 baseline/Activity Backlog 后继续通过。governance v2 优先使用 `stage-review --decision auto` 让 Runtime 计算最终 Gate；只有整案失效才显式使用 `redesign`。
 
-实现审核失败必须区分两类：方案正确但实现遗漏或有 Bug 时记录 `VERIFICATION_FAILED` 并回 `IN_PROGRESS`；方案方向失效时转 `REDESIGN_REQUIRED`，重新经过设计提交和批准。连续两次实现失败后，Inspector 必须重新判断是实现错误还是设计错误；即便仍属实现错误，也必须给出具体失败原因、必改点和验证标准，禁止机械重复循环。
+实现审核失败必须区分两类：方案正确但实现遗漏或有 Bug 时记录 `VERIFICATION_FAILED` 并回 `IN_PROGRESS`，Developer 继续按原设计修复；方案方向被新代码证据、测试或实际约束推翻时转 `REDESIGN_REQUIRED`。进入 `REDESIGN_REQUIRED` 后 Runtime 会先唤醒 Inspector 并阻止 Developer 直接重交方案：Inspector 必须重新检查 Root Cause 是否判断错误、Architecture Direction 是否需要改变、Boundaries 是否遗漏、Acceptance 是否错误，先用 `design-request` 提交修订后的架构级指导，Developer 才能提交新的具体方案。Human 仍可用 `issue-update-status` 人工纠正。连续两次实现失败后，Inspector 必须重新判断是实现错误还是设计错误；即便仍属实现错误，也必须给出具体失败原因、必改点和验证标准，禁止机械重复循环。
 
 ## Human 升级
 

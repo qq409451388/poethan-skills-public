@@ -188,7 +188,7 @@ STATUS_PRESENTATION = {
     "INSPECTOR_CONFIRMATION_REQUIRED": (3, "Developer 请求确认技术边界，等待 Inspector 决策，不需要 Human 介入。"),
     "HUMAN_CONFIRMATION_REQUIRED": (2, "Inspector 已暂停自动工作流，等待 Human 提供最终业务边界或安全决定。"),
     "IMPLEMENTED_PENDING_REVIEW": (4, "Developer 已提交实现，等待 Inspector / Human 复核。"),
-    "REDESIGN_REQUIRED": (2, "原设计需要推翻，Developer 必须重新提交方案并获批后才能编码。"),
+    "REDESIGN_REQUIRED": (2, "原设计方向被推翻：Inspector 先修订架构级指导，Developer 再重新提交方案并获批后才能编码。"),
     "CONFIRMED": (5, "实现已验证通过，问题已经确认关闭。"),
     "CANCELLED": (5, "问题已取消，不再继续处理。"),
 }
