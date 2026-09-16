@@ -809,16 +809,33 @@ def review_db_tool_counts(rows: list[dict]) -> list[dict]:
         "stage-get", "stage-history-get", "design-preview", "decision-list",
         "fast-review-record",
     ]
-    ordered = [
-        {"name": name, **totals.pop(name, {"count": 0, "failure_count": 0})}
-        for name in preferred
-    ]
+    entries = {
+        name: {
+            "name": name,
+            **counts,
+            "failure_rate": round(100 * counts["failure_count"] / counts["count"], 1)
+            if counts["count"] else 0.0,
+        }
+        for name, counts in totals.items()
+    }
+    failed_names = sorted(
+        (name for name, entry in entries.items() if entry["failure_count"]),
+        key=lambda name: (-entries[name]["failure_rate"], -entries[name]["failure_count"], name),
+    )
+    ordered = [entries.pop(name) for name in failed_names]
     ordered.extend(
-        {"name": name, **counts}
-        for name, counts in sorted(
-            totals.items(), key=lambda item: (-item[1]["count"], item[0])
+        entries.pop(name, {
+            "name": name, "count": 0, "failure_count": 0, "failure_rate": 0.0,
+        })
+        for name in preferred
+        if name not in failed_names
+    )
+    ordered.extend(
+        entry
+        for name, entry in sorted(
+            entries.items(), key=lambda item: (-item[1]["count"], item[0])
         )
-        if counts["count"]
+        if entry["count"]
     )
     return ordered
 
@@ -1431,6 +1448,8 @@ def issue_stage_review(issue_key: str, stage_no: int):
         "--review-result", request.form.get("review_result", "{}"),
         "--baseline", request.form.get("baseline", "{}"),
     ]
+    if summary := request.form.get("summary", "").strip():
+        args.extend(["--summary", summary])
     if plan_no := request.form.get("plan_no"):
         args.extend(["--plan-no", plan_no])
     try:

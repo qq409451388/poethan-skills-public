@@ -226,8 +226,10 @@ commands:
     purpose: 原子验收当前 PENDING_REVIEW Stage；redesign 是兼容 UI 人工接管的显式整案失效扩展。
     required: [--issue-key, --stage-no, --decision, --content]
     governance_v2_required: [--review-result, approved 时 --baseline]
-    optional: [--plan-no]
+    optional: [--plan-no, --summary]
     json_arguments: [--review-result, --baseline]
+    content_rule: --content 保存完整验收结论，可包含 Inspection Result、四级 findings、历史回归、当前验收和最终决定。
+    summary_rule: --summary 保存最多 180 字、3 行的正式决策摘要；省略时 Runtime 从 --content 生成，不因完整结论较长而拒绝调用。
     enum: {decision: [auto, approved, rejected, redesign]}
     allowed_issue_status: IN_PROGRESS
     allowed_stage_status: PENDING_REVIEW
@@ -289,11 +291,11 @@ commands:
   activity-append:
     roles: [inspector, developer, human]
     required: [--issue-key, --activity-type, --content]
-    optional: [--attempt-no, --result-status, --code-reference, --metadata]
+    optional: [--attempt-no, --result-status, --code-reference, --metadata, --summary]
     json_arguments: [--code-reference, --metadata]
     forbidden_atomic_types: [DESIGN_REQUESTED, DESIGN_SUBMITTED, DESIGN_APPROVED, DESIGN_REJECTED, STAGE_PLAN_CREATED, STAGE_SCOPE_DECLARED, STAGE_SUBMITTED, STAGE_APPROVED, STAGE_REJECTED, STAGE_PLAN_SUPERSEDED, HUMAN_CONFIRMATION_REQUESTED, HUMAN_CONFIRMATION_PROVIDED]
     forbidden_discussion_types: [COMMENT_ADDED, DESIGN_GUIDANCE]
-    note: 讨论一律使用 discussion-append；审核、验证等结论会同步建立 issue_decision，核心工作流活动必须由对应原子命令生成。metadata 只记录业务事实，不能改变权限、模式或控制流；FastMode 结论必须使用 fast-review-record。普通 VERIFICATION_FAILED 始终按标准 Workflow 投递 Developer Runtime Event。
+    note: 讨论一律使用 discussion-append；审核、验证等结论会同步建立 issue_decision，核心工作流活动必须由对应原子命令生成。正式结论类型可用 --summary 提供短摘要；省略时 Runtime 从 --content 生成，完整内容仍保留在 Activity。metadata 只记录业务事实，不能改变权限、模式或控制流；FastMode 结论必须使用 fast-review-record。普通 VERIFICATION_FAILED 始终按标准 Workflow 投递 Developer Runtime Event。
     content_format:
       short: 单行纯文本，不添加 Markdown 装饰。
       multiline: 多个独立说明可直接换行；无需强制使用列表。

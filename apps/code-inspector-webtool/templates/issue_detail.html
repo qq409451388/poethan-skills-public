@@ -123,7 +123,8 @@
                 {% if is_active_plan and execution_stage.status == 'PENDING_REVIEW' %}
                 <form class="stage-review-form" method="post" action="{{ url_for('issue_stage_review', issue_key=issue.issue_key, stage_no=execution_stage.stage_no) }}">
                   <input type="hidden" name="plan_no" value="{{ plan_no }}">
-                  <div class="field"><label>人工验收意见 <span class="required">必填</span></label><textarea name="content" required placeholder="按本阶段验收标准记录通过、驳回或设计失效的依据"></textarea></div>
+                  <div class="field"><label>决策摘要</label><textarea name="summary" maxlength="180" placeholder="最多 180 字、3 行；留空时从完整验收意见生成"></textarea></div>
+                  <div class="field"><label>完整验收意见 <span class="required">必填</span></label><textarea name="content" required placeholder="按本阶段验收标准记录通过、驳回或设计失效的完整依据，不受 180 字限制"></textarea></div>
                   {% if execution_stage.governance_version >= 2 %}
                   <div class="field"><label>结构化审核结果 JSON <span class="required">必填</span></label><textarea class="mono" name="review_result" required placeholder='{"findings":{"BLOCKER":[],"MUST":[],"SHOULD":[],"NIT":[]},"historical_regression":{},"current_acceptance":[{"criterion":"逐字复制验收标准","status":"PASS","evidence":["测试或检查证据"]}]}'></textarea></div>
                   <div class="field"><label>通过后建立的 Baseline JSON</label><textarea class="mono" name="baseline" placeholder='{"verified_behaviors":["已验证行为"],"input_output_contracts":[],"business_semantics":[],"tests":["测试集合"]}'></textarea><span class="form-note">通过时必填；驳回或重新设计时可留空。</span></div>
@@ -204,7 +205,7 @@
       <div class="tool-reads">
         <h3>工具调用</h3>
         <p class="section-sub">Review DB CLI 真实调用，普通模式与 Runtime 模式统一统计。</p>
-        <div class="tool-read-grid">{% for tool in ai_summary.tool_calls %}<div><span>{{ tool.name }}</span><strong>{{ tool.count }}</strong>{% if tool.failure_count %}<small>失败 {{ tool.failure_count }}</small>{% endif %}</div>{% endfor %}</div>
+        <div class="tool-read-grid">{% for tool in ai_summary.tool_calls %}<div><span>{{ tool.name }}</span><strong>{{ tool.count }}</strong>{% if tool.failure_count %}<small>失败 {{ tool.failure_count }}</small><small>失败率 {{ tool.failure_rate }}%</small>{% endif %}</div>{% endfor %}</div>
       </div>
       <details class="collapsible issue-turns">
         <summary>最近 AI 执行记录（{{ ai_summary.recent_turns|length }}）</summary>

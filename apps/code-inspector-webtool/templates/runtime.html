@@ -36,7 +36,7 @@
 
 <section class="panel" aria-labelledby="tool-calls-title">
   <div class="section-head"><div><h2 id="tool-calls-title">今日工具调用</h2><p class="section-sub">直接按 Review DB CLI 的真实调用统计，不与 Turn Metric 重复累计。</p></div></div>
-  <div class="tool-read-grid">{% for tool in today_tool_calls %}<div><span>{{ tool.name }}</span><strong>{{ tool.count }}</strong>{% if tool.failure_count %}<small>失败 {{ tool.failure_count }}</small>{% endif %}</div>{% endfor %}</div>
+  <div class="tool-read-grid">{% for tool in today_tool_calls %}<div><span>{{ tool.name }}</span><strong>{{ tool.count }}</strong>{% if tool.failure_count %}<small>失败 {{ tool.failure_count }}</small><small>失败率 {{ tool.failure_rate }}%</small>{% endif %}</div>{% endfor %}</div>
 </section>
 
 <div class="runtime-summary-grid">

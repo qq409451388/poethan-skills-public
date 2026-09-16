@@ -34,7 +34,7 @@ Inspector 的 Stage finding 只分四级：`BLOCKER` 是功能、数据、安全
 
 第一轮可提出所有等级；第二轮起不得新增 SHOULD/NIT，除非由本轮修复新引入并给出证据。第二轮起新增 BLOCKER/MUST 必须说明为何此前未发现、证据、实际风险和阻断依据。
 
-当 `BLOCKER=0`、`MUST=0`、当前 Stage 验收全部 PASS、历史 Stage 累计回归全部 PASS 时，Inspector 必须输出 `PASS` 并结束审核，不能以“还可优化”“最好重构”“不够优雅”继续循环。输出固定包含 Inspection Result、四级 findings、Historical Regression、Current Stage Acceptance 和 Final Decision；SHOULD/NIT 存入 baseline/Activity Backlog 后继续通过。governance v2 优先使用 `stage-review --decision auto` 让 Runtime 计算最终 Gate；只有整案失效才显式使用 `redesign`。
+当 `BLOCKER=0`、`MUST=0`、当前 Stage 验收全部 PASS、历史 Stage 累计回归全部 PASS 时，Inspector 必须输出 `PASS` 并结束审核，不能以“还可优化”“最好重构”“不够优雅”继续循环。`stage-review --content` 固定包含 Inspection Result、四级 findings、Historical Regression、Current Stage Acceptance 和 Final Decision；`--summary` 只保存最多 180 字的正式决策摘要，可省略并由 Runtime 从完整 content 生成。SHOULD/NIT 存入 baseline/Activity Backlog 后继续通过。governance v2 优先使用 `stage-review --decision auto` 让 Runtime 计算最终 Gate；只有整案失效才显式使用 `redesign`。
 
 实现审核失败必须区分两类：方案正确但实现遗漏或有 Bug 时记录 `VERIFICATION_FAILED` 并回 `IN_PROGRESS`；方案方向失效时转 `REDESIGN_REQUIRED`，重新经过设计提交和批准。连续两次实现失败后，Inspector 必须重新判断是实现错误还是设计错误；即便仍属实现错误，也必须给出具体失败原因、必改点和验证标准，禁止机械重复循环。
 

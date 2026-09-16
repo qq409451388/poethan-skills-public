@@ -236,6 +236,39 @@ def validate_human_record(value: str, field_name: str) -> str:
         raise ValueError(f"{field_name} 不能包含代码块；技术细节请放入讨论或结构化证据")
     return text
 
+_NO_JSON_DEFAULT = object()
+
+def parse_json_argument(
+    raw: str | None,
+    field_name: str,
+    expected_type: type,
+    *,
+    empty_default: Any = _NO_JSON_DEFAULT,
+) -> Any:
+    """解析 CLI JSON 参数，并把空值、语法错误和类型错误定位到具体字段。"""
+    text = str(raw or "").strip()
+    if not text:
+        if empty_default is not _NO_JSON_DEFAULT:
+            return empty_default.copy() if isinstance(empty_default, (dict, list)) else empty_default
+        raise ValueError(f"{field_name} 不能为空；必须是合法 JSON")
+    try:
+        value = json.loads(text)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field_name} 必须是合法 JSON") from exc
+    if not isinstance(value, expected_type):
+        expected = "对象" if expected_type is dict else "数组" if expected_type is list else expected_type.__name__
+        raise ValueError(f"{field_name} 必须是 JSON {expected}")
+    return value
+
+def decision_summary(summary: str | None, content: str, field_name: str) -> str:
+    """正式决策保留短摘要；完整技术结论继续留在来源 Activity 中。"""
+    if summary is not None and summary.strip():
+        return validate_human_record(summary, field_name)
+    compact = " ".join(content.replace("```", "").split())
+    if len(compact) > HUMAN_RECORD_MAX_CHARS:
+        compact = compact[: HUMAN_RECORD_MAX_CHARS - 1].rstrip() + "…"
+    return validate_human_record(compact, field_name)
+
 def print_json(value: Any) -> None:
     print(json.dumps(value, ensure_ascii=False, indent=2))
 
@@ -296,7 +329,8 @@ def require_agent(agent: str) -> None:
 
 def require_choice(value: str, allowed: set[str], field: str) -> None:
     if value not in allowed:
-        raise ValueError(f"{field} 无效: {value}")
+        choices = ", ".join(sorted(allowed))
+        raise ValueError(f"{field} 无效: {value}；可选值: {choices}")
 
 def operator_type(agent: str) -> str:
     return {"inspector": "INSPECTOR_AGENT", "developer": "DEVELOPMENT_AGENT", "human": "HUMAN"}[agent]
@@ -1376,13 +1410,11 @@ def design_request(args: argparse.Namespace) -> None:
 
 def design_submit(args: argparse.Namespace) -> None:
     require_agent(args.agent)
-    code_reference = json.loads(args.code_reference)
-    metadata = json.loads(args.metadata)
+    code_reference = parse_json_argument(
+        args.code_reference, "code-reference", list, empty_default=[],
+    )
+    metadata = parse_json_argument(args.metadata, "metadata", dict, empty_default={})
     human_summary = validate_human_record(args.summary, "design-submit 的 --summary")
-    if not isinstance(code_reference, list):
-        raise ValueError("code-reference 必须是 JSON 数组")
-    if not isinstance(metadata, dict):
-        raise ValueError("metadata 必须是 JSON 对象")
     if args.scope_changes is None and args.agent == "developer":
         raise ValueError("Developer 提交设计必须通过 --scope-changes 明确声明需确认变化；没有则传 []")
     scope_changes = validate_scope_changes(args.scope_changes or "[]")
@@ -2467,6 +2499,8 @@ def stage_review(args: argparse.Namespace) -> None:
             activity_metadata["review_result"] = review_result
         if baseline is not None:
             activity_metadata["baseline"] = baseline
+        short_summary = decision_summary(args.summary, content, "stage-review 的 --summary")
+        activity_metadata["decision_summary"] = short_summary
         activity_cursor = conn.execute(
             """INSERT INTO issue_activity(
                 issue_id, attempt_no, activity_type, operator_type, operator_id,
@@ -2484,7 +2518,7 @@ def stage_review(args: argparse.Namespace) -> None:
         )
         record_issue_decision(
             conn, args, issue, "STAGE_REVIEW",
-            "APPROVED" if decision == "approved" else "REJECTED", content,
+            "APPROVED" if decision == "approved" else "REJECTED", short_summary,
             scope_key=f"{plan_no}:{args.stage_no}", source_activity_id=activity_cursor.lastrowid,
             metadata=activity_metadata,
         )
@@ -2959,9 +2993,10 @@ def activity_append(args: argparse.Namespace) -> None:
         raise PermissionError(f"agent {args.agent} 无权追加活动 {args.activity_type}")
     if args.activity_type in {"COMMENT_ADDED", "DESIGN_GUIDANCE"}:
         raise ValueError("讨论内容必须使用 discussion-append，不再追加到处理历史")
-    metadata = json.loads(args.metadata)
-    if not isinstance(metadata, dict):
-        raise ValueError("metadata 必须是 JSON 对象")
+    metadata = parse_json_argument(args.metadata, "metadata", dict, empty_default={})
+    code_reference = parse_json_argument(
+        args.code_reference, "code-reference", list, empty_default=[],
+    )
 
     with connect() as conn:
         row = conn.execute(
@@ -2986,7 +3021,7 @@ def activity_append(args: argparse.Namespace) -> None:
                 args.activity_type,
                 {"inspector":"INSPECTOR_AGENT","developer":"DEVELOPMENT_AGENT","human":"HUMAN"}[args.agent],
                 actor_id(args), args.content, args.result_status,
-                dumps(json.loads(args.code_reference)),
+                dumps(code_reference),
                 dumps(metadata),
             ),
         )
@@ -3000,8 +3035,9 @@ def activity_append(args: argparse.Namespace) -> None:
         if args.activity_type in decision_mapping:
             decision_type, outcome = decision_mapping[args.activity_type]
             scope_key = f"attempt:{attempt_no}" if decision_type in {"IMPLEMENTATION_REVIEW", "VERIFICATION"} else ""
+            short_summary = decision_summary(args.summary, args.content, "activity-append 的 --summary")
             record_issue_decision(
-                conn, args, row, decision_type, outcome, args.content,
+                conn, args, row, decision_type, outcome, short_summary,
                 scope_key=scope_key, source_activity_id=activity_cursor.lastrowid,
                 metadata=metadata,
             )
@@ -3608,6 +3644,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--plan-no", type=int)
     p.add_argument("--decision", required=True, choices=["auto", "approved", "rejected", "redesign"])
     p.add_argument("--content", required=True)
+    p.add_argument("--summary", help="最多 180 字、3 行的正式决策摘要；省略时从 content 生成")
     p.add_argument("--review-result", default="{}", help="structured findings/regression/acceptance JSON")
     p.add_argument("--baseline", default="{}", help="approved Stage baseline contract JSON")
     p.set_defaults(func=stage_review)
@@ -3702,6 +3739,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--activity-type", required=True)
     p.add_argument("--attempt-no", type=int)
     p.add_argument("--content", required=True)
+    p.add_argument("--summary", help="正式结论类 Activity 的短摘要；省略时从 content 生成")
     p.add_argument("--result-status")
     p.add_argument("--code-reference", default="[]")
     p.add_argument("--metadata", default="{}")

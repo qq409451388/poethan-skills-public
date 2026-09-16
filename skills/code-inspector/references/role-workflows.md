@@ -20,7 +20,7 @@
 4. 对复杂或方向不确定的问题使用 `design-request`，只定义当前目标必须解决的问题、不可破坏语义和方案问题；旁支发现转 Candidate，不能写成当前 MUST。
 5. 审批前执行 `design-preview` 并在 CLI 展示短范围对比。没有额外变化用 `not-needed`；有则删除、转 Candidate，或提问后以 `design-choice-record --change-ids` 记录。每项变化必须被确认覆盖，不能用一个无关回答批准整案。
 6. 批准时选择 `direct` 或 `staged`。staged 在同一次 `design-review` 提交少量串行 Stage；涉及额外变化的 Stage 必须填写对应 `scope_change_ids`。Runtime 原子创建计划、批准设计和激活 Stage 1。
-7. `stage-review` 检查 Dev 影响声明、Diff、当前验收和全部历史 baseline，并结构化输出 Inspection Result、四级 findings、Historical Regression、Current Stage Acceptance 和 Final Decision。优先用 `--decision auto`；满足 Gate 时必须结束审核并建立 PASSED baseline，整案失效时才 `redesign`。
+7. `stage-review` 检查 Dev 影响声明、Diff、当前验收和全部历史 baseline，并在 `--content` 结构化输出 Inspection Result、四级 findings、Historical Regression、Current Stage Acceptance 和 Final Decision；`--summary` 只写最多 180 字的正式决策摘要，省略时 Runtime 自动生成。优先用 `--decision auto`；满足 Gate 时必须结束审核并建立 PASSED baseline，整案失效时才 `redesign`。
 8. 用 `issue-list-pending-review` 汇总最终实现。实现细节错则追加 `VERIFICATION_FAILED` 并回 `IN_PROGRESS`；方向错则转 `REDESIGN_REQUIRED`。连续两次失败必须重新判断设计是否对齐并给出必改点和验证标准。
 9. Human 是异常兜底。准备 `human-escalate` 前必须确认继续读代码、补测试、查数据/日志、追加讨论或自主技术判断都不能安全解决，并且 Human 掌握关键业务事实，或选错方案会造成不可逆重大数据破坏。
 10. 升级时整理原因、已验证/未知事实、选项与影响、推荐和 Human 唯一要回答的问题，不倾倒长日志、完整代码或 Agent 对话。`HUMAN_CONFIRMATION_REQUIRED` 时停止自动工作；Inspector 不得代 Human resolve。

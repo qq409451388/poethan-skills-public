@@ -293,6 +293,30 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                     1,
                 )
 
+            long_verification = "\n".join([
+                "Inspection Result: PASS",
+                "BLOCKER/MUST/SHOULD/NIT 均为 0",
+                "Historical Regression: PASS",
+                "Current Acceptance: 所有验收项均通过",
+                "Final Decision: PASS " + "回归证据完整。" * 30,
+            ])
+            self.run_cmd(
+                home, str(inspector_tool), "activity-append", "--issue-key", "RI-OUTSIDE",
+                "--activity-type", "VERIFICATION_PASSED", "--content", long_verification,
+                "--metadata", "", "--code-reference", "",
+            )
+            with closing(sqlite3.connect(database)) as conn:
+                activity_content, decision_content = conn.execute(
+                    """SELECT a.content,d.content FROM issue_activity a
+                       JOIN issue_decision d ON d.source_activity_id=a.id
+                       JOIN review_issue i ON i.id=a.issue_id
+                       WHERE i.issue_key='RI-OUTSIDE' AND a.activity_type='VERIFICATION_PASSED'
+                       ORDER BY a.id DESC LIMIT 1"""
+                ).fetchone()
+                self.assertEqual(activity_content, long_verification)
+                self.assertLessEqual(len(decision_content), 180)
+                self.assertNotIn("\n", decision_content)
+
             # FastMode 不依赖 pending_action 或 Developer Runtime，专用命令只记录验证事实。
             self.run_cmd(home, str(inspector_tool), "issue-context-get", "--issue-key", "RI-FAST-B")
             fast_content = "FAST-REVIEW-CONTENT-MUST-NOT-BE-METRIC"
@@ -1478,13 +1502,18 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             )
             self.assertEqual((requested["status"], requested["attempt_no"]), ("DESIGN_REQUIRED", 0))
             fails("developer", "implementation-submit", "--issue-key", "RI-DESIGN", "--content", "禁止实现")
+            malformed_design = fails(
+                "developer", "design-submit", "--issue-key", "RI-DESIGN",
+                "--summary", "调整版本保存方式。", "--content", "方案",
+                "--scope-changes", "[]", "--code-reference", "{",
+            )
+            self.assertIn("code-reference 必须是合法 JSON", malformed_design.stderr)
             submitted = db(
                 "developer", "design-submit", "--issue-key", "RI-DESIGN",
                 "--summary", "调整版本保存方式，同时保证旧数据仍可读取。",
                 "--content", "按 Domain 拆分版本并兼容历史",
                 "--scope-changes", "[]",
-                "--code-reference", json.dumps([{"file_path": "writer.py", "line_start": 20}]),
-                "--metadata", json.dumps({"tests": ["backfill", "concurrency"]}),
+                "--code-reference", "", "--metadata", "",
             )
             self.assertEqual((submitted["status"], submitted["attempt_no"]), ("DESIGN_PENDING_REVIEW", 0))
             submitted_activity = next(
@@ -2032,7 +2061,13 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             self.assertIn("Inspector 必须 PASS", should_only_reject.stderr)
             db(
                 "inspector", "stage-review", "--issue-key", "RI-STAGE", "--stage-no", "2",
-                "--decision", "approved", "--content", "Stage 2 达到交付标准；优化进入 Backlog",
+                "--decision", "approved", "--content", "\n".join([
+                    "Inspection Result: PASS",
+                    "Findings: BLOCKER=0, MUST=0, SHOULD=1, NIT=0",
+                    "Historical Regression: Stage 1 PASS",
+                    "Current Stage Acceptance: PASS",
+                    "Final Decision: PASS；" + "完整验收证据已记录。" * 20,
+                ]),
                 "--review-result", review_payload(
                     ["并发写入不能互相覆盖"],
                     history={"1": {"status": "PASS", "evidence": ["stage1_regression: passed"]}},
@@ -2043,6 +2078,18 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 ),
                 "--baseline", stage_baseline(2),
             )
+            with sqlite3.connect(database) as conn:
+                full_content, short_content = conn.execute(
+                    """SELECT a.content,d.content FROM issue_activity a
+                       JOIN issue_decision d ON d.source_activity_id=a.id
+                       JOIN review_issue i ON i.id=a.issue_id
+                       WHERE i.issue_key='RI-STAGE' AND a.activity_type='STAGE_APPROVED'
+                         AND json_extract(a.metadata_json,'$.stage_no')=2
+                       ORDER BY a.id DESC LIMIT 1"""
+                ).fetchone()
+                self.assertGreater(len(full_content), 180)
+                self.assertLessEqual(len(short_content), 180)
+                self.assertNotIn("\n", short_content)
 
             prepared_stage3 = prepare(3, ["Stage 1 behavior", "Stage 1 I/O", "Stage 2 behavior"])
             self.assertEqual(prepared_stage3["historical_stage_nos"], [1, 2])
@@ -3002,6 +3049,8 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 self.assertIn("Cached Input Tokens", runtime_html)
                 self.assertIn("今日工具调用", runtime_html)
                 self.assertIn('<span>issue-context-get</span><strong>2</strong>', runtime_html)
+                self.assertIn("失败率 100.0%", runtime_html)
+                self.assertLess(runtime_html.index("activity-get"), runtime_html.index("issue-context-get"))
                 self.assertIn("今日节省情况", runtime_html)
                 self.assertIn('<span>拦截过期事件</span><strong>1</strong>', runtime_html)
                 self.assertIn('<span>避免模型唤醒</span><strong>1</strong>', runtime_html)
@@ -3035,6 +3084,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 self.assertIn("activity-get", issue_html)
                 self.assertIn('<span>issue-context-get</span><strong>1</strong>', issue_html)
                 self.assertIn('<span>activity-get</span><strong>1</strong><small>失败 1</small>', issue_html)
+                self.assertIn("失败率 100.0%", issue_html)
                 self.assertIn("最近 AI 执行记录", issue_html)
                 self.assertIn("高级诊断", issue_html)
                 self.assertIn("检查者", issue_html)
