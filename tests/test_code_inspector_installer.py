@@ -132,6 +132,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                     "codex": {"enabled": True, "skills_dir": str(root / ".codex" / "skills")},
                     "trae-cn": {"enabled": True, "skills_dir": str(root / ".trae-cn" / "skills")},
                     "claude": {"enabled": True, "skills_dir": str(root / ".claude" / "skills")},
+                    "dsh": {"enabled": True, "skills_dir": str(root / ".dsh" / "skills")},
                 }
             }
             INSTALLER_MODULE.ensure_dirs(review_home)
@@ -407,8 +408,10 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             self.assertEqual(second["status"], "ok")
             codex_skill = home / ".codex" / "skills" / "code-inspector"
             trae_skill = home / ".trae-cn" / "skills" / "code-inspector"
+            dsh_skill = home / ".dsh" / "skills" / "code-inspector"
             self.assertTrue((codex_skill / ".code-inspector-generated").exists())
             self.assertTrue((trae_skill / ".code-inspector-generated").exists())
+            self.assertTrue((dsh_skill / ".code-inspector-generated").exists())
             self.assertTrue((codex_skill / "references").is_dir())
             self.assertTrue((codex_skill / "scripts" / "watch.py").is_file())
             self.assertTrue((home / ".agent-review" / "bin" / "review-db.py").is_file())
@@ -432,7 +435,13 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             self.assertEqual(bindings["codex-insp"]["runtime_backend"], "codex-app-server")
             self.assertEqual(bindings["trae-inspector"]["role"], "inspector")
             self.assertEqual(bindings["trae-inspector"]["runtime_backend"], "external")
+            self.assertEqual(bindings["dsh-developer"]["role"], "developer")
+            self.assertEqual(bindings["dsh-developer"]["runtime_backend"], "external")
+            self.assertEqual(bindings["dsh-inspector"]["role"], "inspector")
+            self.assertEqual(bindings["dsh-inspector"]["runtime_backend"], "external")
             self.assertTrue((home / ".agent-review" / "bin" / "review-db-trae-inspector.py").exists())
+            self.assertTrue((home / ".agent-review" / "bin" / "review-db-dsh-developer.py").exists())
+            self.assertTrue((home / ".agent-review" / "bin" / "review-db-dsh-inspector.py").exists())
             wrapper_text = (
                 home / ".agent-review" / "bin" / "review-db-codex-dev.py"
             ).read_text(encoding="utf-8")
@@ -440,9 +449,15 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             self.assertNotIn("with_name('review-db.py')", wrapper_text)
             codex_skill_text = (codex_skill / "SKILL.md").read_text(encoding="utf-8")
             trae_skill_text = (trae_skill / "SKILL.md").read_text(encoding="utf-8")
+            dsh_skill_text = (dsh_skill / "SKILL.md").read_text(encoding="utf-8")
             self.assertIn(str(codex_skill / "tools" / "review-db-codex-dev.py"), codex_skill_text)
             self.assertIn(str(codex_skill / "tools" / "review-db-codex-insp.py"), codex_skill_text)
             self.assertIn(str(trae_skill / "tools" / "review-db-trae-inspector.py"), trae_skill_text)
+            self.assertIn(str(dsh_skill / "tools" / "review-db-dsh-developer.py"), dsh_skill_text)
+            self.assertIn(str(dsh_skill / "tools" / "review-db-dsh-inspector.py"), dsh_skill_text)
+            self.assertIn("$code-inspector start dev", dsh_skill_text)
+            self.assertIn("$code-inspector start insp", dsh_skill_text)
+            self.assertIn("$code-inspector fastmode RI-XXX [RI-YYY ...]", dsh_skill_text)
             self.assertIn("$code-inspector start dev", codex_skill_text)
             self.assertIn("$code-inspector start insp", codex_skill_text)
             self.assertIn("$code-inspector fastmode RI-XXX [RI-YYY ...]", codex_skill_text)
@@ -481,7 +496,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             self.assertIn("Multi-Thread 默认关闭", codex_skill_text)
             self.assertIn("SESSION_SCOPE_VIOLATION", codex_skill_text)
             self.assertIn("Watch 不授权 Multi-Thread", codex_skill_text)
-            self.assertIn("禁止创建或恢复 Codex Goal", codex_skill_text)
+            self.assertIn("禁止创建或恢复宿主 Goal", codex_skill_text)
             self.assertIn("当前平台仅配置 `inspector` 角色", trae_skill_text)
             self.assertIn("$code-inspector fastmode RI-XXX [RI-YYY ...]", trae_skill_text)
 
@@ -539,7 +554,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             self.assertNotIn("stage-plan-create", role_text)
             self.assertIn("连续两次失败必须重新判断设计是否对齐", role_text)
             self.assertIn("默认关闭", watch_text)
-            self.assertIn("禁止创建或维持 Codex Goal", watch_text)
+            self.assertIn("禁止创建或维持宿主 Goal", watch_text)
             workflow_text = (trae_skill / "references" / "workflow.yaml").read_text(encoding="utf-8")
             levels_text = (trae_skill / "references" / "review-levels.yaml").read_text(encoding="utf-8")
             self.assertIn("确认动作不能被默认视为清理动作", workflow_text)

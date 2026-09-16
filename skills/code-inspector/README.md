@@ -12,6 +12,8 @@
 | `codex-insp` | Codex | `inspector`：创建任务和问题、提出设计约束、审核方案和实现、最终确认 |
 | `trae-inspector` | Trae-CN | `inspector`：创建任务和问题、提出设计约束、审核方案和实现、最终确认 |
 | `claude-inspector` | Claude | `inspector`：创建任务和问题、提出设计约束、审核方案和实现、最终确认 |
+| `dsh-developer` | DeepSeek Harness | `developer`：提交具体方案，获批后修改代码并提交实现 |
+| `dsh-inspector` | DeepSeek Harness | `inspector`：创建任务和问题、提出设计约束、审核方案和实现、最终确认 |
 
 `inspector` 同时承担验证职责，不使用独立 `verifier` Agent。
 
@@ -40,6 +42,8 @@ python scripts/code-inspector-installer/install.py verify
 ```text
 ~/.codex/skills/code-inspector/       # 为 Codex 生成的角色 Skill
 ~/.trae-cn/skills/code-inspector/     # 为 Trae-CN 生成的角色 Skill
+~/.claude/skills/code-inspector/      # 为 Claude 生成的角色 Skill
+~/.dsh/skills/code-inspector/         # 为 DeepSeek Harness 生成的角色 Skill
 
 以上目录中的 references/ 复制自：
 <repository>/skills/code-inspector/references

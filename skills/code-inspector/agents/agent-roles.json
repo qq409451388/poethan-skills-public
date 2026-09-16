@@ -1,5 +1,5 @@
 {
-  "version": 15,
+  "version": 16,
   "skill_name": "code-inspector",
   "runtime": {
     "local_home": "${HOME}/.agent-review",
@@ -9,13 +9,17 @@
       "inspector": "codex-insp"
     }
   },
-  "agents": ["codex", "trae-cn", "claude"],
+  "agents": ["codex", "trae-cn", "claude", "dsh"],
   "bindings": {
-    "developer": [{"agent": "codex", "alias": "codex-dev"}],
+    "developer": [
+      {"agent": "codex", "alias": "codex-dev"},
+      {"agent": "dsh", "alias": "dsh-developer"}
+    ],
     "inspector": [
       {"agent": "codex", "alias": "codex-insp"},
       {"agent": "trae-cn", "alias": "trae-inspector"},
-      {"agent": "claude", "alias": "claude-inspector"}
+      {"agent": "claude", "alias": "claude-inspector"},
+      {"agent": "dsh", "alias": "dsh-inspector"}
     ]
   },
   "roles": {

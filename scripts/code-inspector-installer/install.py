@@ -316,7 +316,7 @@ def generated_skill_text(platform: str, identities: list[dict[str, Any]], target
         "只有配置 `thread_runtime.multi_thread.enabled=true` 且用户在当前 Session 明确要求开启，才可激活。"
         "Supervisor 只能 claim 当前 operator+role 的 Event，Child Thread 必须继承相同身份；跨 Role/Operator Dispatch "
         "必须以 `SESSION_SCOPE_VIOLATION` 失败。Watch 不授权 Multi-Thread，Multi-Thread 也不授权 Watch；"
-        "任何模式都禁止创建或恢复 Codex Goal。关闭 Multi-Thread 时保留已有 Mapping，但停止自动 Dispatch。\n\n"
+        "任何模式都禁止创建或恢复宿主 Goal。关闭 Multi-Thread 时保留已有 Mapping，但停止自动 Dispatch。\n\n"
         "## FastMode\n\n"
         "FastMode 启动格式：`$code-inspector fastmode RI-XXX [RI-YYY ...]`。FastMode 固定使用 Inspector 身份，"
         "启动后只能检查命令中指定并去重的 Issue，且按输入顺序串行处理。Developer Agent 不是前置条件，"

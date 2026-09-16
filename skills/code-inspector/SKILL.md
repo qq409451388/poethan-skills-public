@@ -13,7 +13,7 @@ description: 在用户明确开启代码检查模式后，按安装时分配的 
 
 Inspector 可以补充实现约束，但不得扩展用户目标。Developer 用 `--scope-changes` 声明范围扩大或新增持久化、迁移、外部行为等必须让用户知道的变化；Inspector 审批前用 `design-preview` 在当前 CLI 展示差异。未确认的变化只能删除、转 Candidate，或逐项确认，不能进入 Stage。
 
-Multi-Thread 默认关闭。只有 `config/runtime.json` 允许且用户在当前 Session 明确要求开启时，才可启动按当前 `session_operator_id + session_role` 限定的 Supervisor。它只能 claim、start、resume 当前身份的 Event/Thread；跨 Role 或跨 Operator 一律以 `SESSION_SCOPE_VIOLATION` 失败。Watch 与 Multi-Thread 分别授权，任何模式都禁止创建或恢复 Codex Goal。
+Multi-Thread 默认关闭。只有 `config/runtime.json` 允许且用户在当前 Session 明确要求开启时，才可启动按当前 `session_operator_id + session_role` 限定的 Supervisor。它只能 claim、start、resume 当前身份的 Event/Thread；跨 Role 或跨 Operator 一律以 `SESSION_SCOPE_VIOLATION` 失败。Watch 与 Multi-Thread 分别授权，任何模式都禁止创建或恢复宿主 Goal。
 
 激活后只读取：
 

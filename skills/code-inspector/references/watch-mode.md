@@ -47,9 +47,9 @@ python <skill>/scripts/watch.py \
 
 Watcher 默认每 120 秒通过固定角色工具的 `watch-probe` 查询一次。该探针只返回最小状态且不写读取审计，避免长期轮询造成审计表膨胀；Watcher 不得直接访问数据库。状态未命中时 stdout/stderr 均保持空；查询 JSON、Stage、Activity、Diff 和日志不得进入对话。查询错误写入系统临时目录；连续三次查询失败只发出 `WATCH_QUERY_FAILED` 最小事件，由 Agent 重新诊断。
 
-Watch Mode 禁止创建或维持 Codex Goal，纯等待阶段不得使用 Goal automatic continuation。启动后只向用户简短说明目标、唤醒条件和 120 秒静默轮询，然后由一个长生命周期 Shell command 在同一进程内部完成全部 sleep、查询和条件判断。未命中时该 command 不输出、不结束，也不创建新的 Goal turn。不要把 watcher 放入会周期性恢复模型的 Goal 或循环 Agent 调用中。
+Watch Mode 禁止创建或维持宿主 Goal，纯等待阶段不得使用 Goal automatic continuation。启动后只向用户简短说明目标、唤醒条件和 120 秒静默轮询，然后由一个长生命周期 Shell command 在同一进程内部完成全部 sleep、查询和条件判断。未命中时该 command 不输出、不结束，也不创建新的 Goal turn。不要把 watcher 放入会周期性恢复模型的 Goal 或循环 Agent 调用中。
 
-当前 Codex turn 只等待这个 execution session。若宿主 API 对一次 wait 调用设有技术上限，仍须附着同一个未退出的 Shell command，且不得借此查询、推理、汇报或创建 Goal；实现应尽量使用宿主允许的最长阻塞等待。Shell 内部的 120 秒检查绝不触发模型判断。等待开销受宿主能力限制，不能承诺跨任意宿主的绝对零 Token。
+当前 Agent turn 只等待这个 execution session。若宿主 API 对一次 wait 调用设有技术上限，仍须附着同一个未退出的 Shell command，且不得借此查询、推理、汇报或创建 Goal；实现应尽量使用宿主允许的最长阻塞等待。Shell 内部的 120 秒检查绝不触发模型判断。等待开销受宿主能力限制，不能承诺跨任意宿主的绝对零 Token。
 
 正常轮询期间禁止输出“还在等待”、完整对象或周期性状态。用户发出“停止观察 / 取消 watch / 不用继续盯了”时，立即向所保存的 execution session 发送中断并确认 watcher 已退出。
 
@@ -65,7 +65,7 @@ reason=PENDING_REVIEW
 stage=2
 ```
 
-命中条件时只输出一次事件并结束 Shell command，使同一个 Codex turn 恢复。收到事件后，不使用启动前缓存作决定。重新读取最新 Issue、当前 Stage、最新 Activity，以及本次动作真正需要的 Review Result、Evidence、Diff、Tests 和代码，再按当前角色流程处理。
+命中条件时只输出一次事件并结束 Shell command，使同一个 Agent turn 恢复。收到事件后，不使用启动前缓存作决定。重新读取最新 Issue、当前 Stage、最新 Activity，以及本次动作真正需要的 Review Result、Evidence、Diff、Tests 和代码，再按当前角色流程处理。
 
 一次 watcher 只观察本次明确目标，不扩大到所有 Issue，不把“Stage 2”扩大到后续 Stage。处理完本次事件后默认结束 Watch，不自动重启。只有用户最初明确要求“持续到整个任务结束”时，`continuation=until-target-terminal` 才允许在每次处理完成后，用同一目标和下一明确条件重新校验并启动一个新的一次性 watcher；用户再次明确要求也可重新启动。
 

@@ -6,7 +6,7 @@
 
 先读取 `config/runtime.json`。Multi-Thread 默认不激活，且使用双重授权：`thread_runtime.multi_thread.enabled=true` 只表示能力允许；用户还必须在当前 Session 明确要求开启。任一条件不满足时沿用既有单会话流程，不得 claim Event 或 start/resume Child Thread。配置关闭但用户要求开启时返回 `MULTI_THREAD_DISABLED_BY_CONFIG`；配置允许但当前 Session 未显式开启时保持 inactive。关闭只停止自动 Dispatch，保留 Mapping。
 
-Session 激活时由安装绑定固化 `session_operator_id`、`session_role`、`session_agent_platform`。Supervisor claim 必须同时过滤 operator 与 role；Child Thread 的 operator/role 必须与 Session 完全相同，否则返回 `SESSION_SCOPE_VIOLATION`。Inspector Session 不得调度 Developer，Developer Session 也不得调度 Inspector；领域事务可以为另一身份产生 Event，但当前 Session 到此停止。Watch、Multi-Thread、Managed Compact 是独立授权；它们以及“持续到结束”都不允许创建或恢复 Codex Goal。
+Session 激活时由安装绑定固化 `session_operator_id`、`session_role`、`session_agent_platform`。Supervisor claim 必须同时过滤 operator 与 role；Child Thread 的 operator/role 必须与 Session 完全相同，否则返回 `SESSION_SCOPE_VIOLATION`。Inspector Session 不得调度 Developer，Developer Session 也不得调度 Inspector；领域事务可以为另一身份产生 Event，但当前 Session 到此停止。Watch、Multi-Thread、Managed Compact 是独立授权；它们以及“持续到结束”都不允许创建或恢复宿主 Goal。
 
 成功开启时只报告当前 Session 的 role、operator，以及“本 Session 只会调度该 operator 的 Issue Thread”。不得把激活状态写成全局开关；不同窗口可以分别 active/inactive。
 
