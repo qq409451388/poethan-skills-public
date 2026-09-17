@@ -15,6 +15,18 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey,
 
 
 EXCLUDED = {"plugin.lock.json", "plugin.sig"}
+# 与 controller/app/plugins.py 的 is_ignored_artifact 保持一致：本地运行产生的
+# __pycache__/.pyc 和 macOS 的 .DS_Store 不属于插件内容，绝不能进 lock。
+IGNORED_ARTIFACT_DIRS = {"__pycache__"}
+IGNORED_ARTIFACT_NAMES = {".DS_Store"}
+
+
+def is_ignored_artifact(relative: str) -> bool:
+    parts = relative.split("/")
+    if any(part in IGNORED_ARTIFACT_DIRS for part in parts):
+        return True
+    name = parts[-1]
+    return name in IGNORED_ARTIFACT_NAMES or name.endswith(".pyc")
 
 
 def canonical(value: object) -> bytes:
@@ -43,7 +55,10 @@ def make_lock(root: Path) -> dict:
     manifest = load_manifest(root)
     files = []
     for path in sorted((item for item in root.rglob("*") if item.is_file() and item.name not in EXCLUDED), key=lambda item: item.relative_to(root).as_posix()):
-        files.append({"path": path.relative_to(root).as_posix(), "sha256": digest(path)})
+        relative = path.relative_to(root).as_posix()
+        if is_ignored_artifact(relative):
+            continue
+        files.append({"path": relative, "sha256": digest(path)})
     return {
         "formatVersion": 1,
         "plugin": {"id": manifest["id"], "version": manifest["version"]},

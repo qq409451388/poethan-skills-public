@@ -39,7 +39,17 @@
       "type": "object", "required": ["fields"],
       "properties": {"fields": {"type": "array", "items": {"$ref": "#/$defs/field"}}}
     },
-    "report": {"type": "object", "required": ["schema", "template"], "properties": {"schema": {"type": "string"}, "template": {"type": "string"}}}
+    "report": {"type": "object", "required": ["schema", "template"], "properties": {"schema": {"type": "string"}, "template": {"type": "string"}}},
+    "ai": {
+      "type": "object",
+      "description": "AI 分析输出选项。",
+      "properties": {
+        "problemAnalysis": {
+          "type": "boolean",
+          "description": "存在确定性异常时是否要求 AI 输出「问题分析」章节。默认 true；设为 false 则只输出结论和摘要。"
+        }
+      }
+    }
   },
   "$defs": {
     "field": {

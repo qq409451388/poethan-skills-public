@@ -13,6 +13,7 @@
     "summary": {"type": "string"},
     "findings": {"type": "array"},
     "rawOutput": {"type": "string"},
+    "reportTemplate": {"type": ["boolean", "null"], "description": "生成时是否使用了插件 HTML 报告模板；历史报告的呈现方式以此为准，null 表示改动前保存的老报告。"},
     "ai": {"type": ["object", "null"]},
     "audit": {"type": "object"}
   }

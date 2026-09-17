@@ -6,7 +6,7 @@ import time
 from datetime import datetime, timezone
 from typing import AsyncIterator
 
-from .ai import analyze_report
+from .ai import active_ai_profile, analyze_report
 from .models import ApplicationSettings, RunEvent, RunRequest, RunState, ServerProfile
 from .plugins import plugin_service
 from .reports import build_report, demo_output
@@ -105,8 +105,11 @@ class RunManager:
             await self.emit(state, "stage", "report_ready", f"本地报告已生成：{report.id}")
             if request.ai_enabled:
                 await self.emit(state, "stage", "ai", "AI 正在分析诊断结果")
+                profile = active_ai_profile(settings)
                 try:
-                    report.ai = await analyze_report(report, settings.ai)
+                    if profile is None:
+                        raise ValueError("尚未配置 AI，请到设置中新增并启用一份 AI 配置")
+                    report.ai = await analyze_report(report, profile, plugin)
                 except Exception as exc:
                     report.ai = {"status": "failed", "error": str(exc)}
                 store.save_report(report)

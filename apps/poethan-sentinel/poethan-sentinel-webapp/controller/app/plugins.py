@@ -24,6 +24,19 @@ VERSION_PATTERN = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$")
 FIELD_TYPES = {"text", "path", "integer", "url", "password", "boolean", "choice"}
 MAX_PACKAGE_BYTES = 100 * 1024 * 1024
 MANAGED_TOOL_MARKER = ".poethan-managed-tool.json"
+# 这些是本地运行/编辑器产生的临时产物，不属于插件内容：既不该进 lock，
+# 也不该因为存在就把一个签名有效的插件判成"有未记录文件"。
+# 注意：scripts/plugin_sign.py 用的是同一套规则，两边必须保持一致。
+IGNORED_ARTIFACT_DIRS = {"__pycache__"}
+IGNORED_ARTIFACT_NAMES = {".DS_Store"}
+
+
+def is_ignored_artifact(relative: str) -> bool:
+    parts = relative.split("/")
+    if any(part in IGNORED_ARTIFACT_DIRS for part in parts):
+        return True
+    name = parts[-1]
+    return name in IGNORED_ARTIFACT_NAMES or name.endswith(".pyc")
 
 
 def canonical_json(value: Any) -> bytes:
@@ -135,6 +148,7 @@ class PluginService:
             version=str(manifest["version"]), tool_type=tool_type, entrypoint=str(manifest["entrypoint"]), language=str(manifest.get("language", "bash")),
             output_limit=int(manifest.get("outputLimit", 1_000_000)), default_mode=str(manifest["defaultMode"]),
             modes=list(manifest.get("modes", [])), fields=list(fields), report=report,
+            ai=dict(manifest.get("ai") or {}),
             permissions=dict(manifest.get("permissions", {})), directory=str(directory), trust=trust,
         )
 
@@ -189,6 +203,8 @@ class PluginService:
                 if path.is_symlink():
                     raise ValueError(f"插件包不能包含符号链接：{path.relative_to(directory)}")
             for name in files:
+                if is_ignored_artifact(name):
+                    continue
                 total += (root_path / name).stat().st_size
                 if total > MAX_PACKAGE_BYTES:
                     raise ValueError("插件包超过 100 MB 限制")
@@ -238,6 +254,10 @@ class PluginService:
             return ["plugin.lock.json 未包含文件摘要"]
         for item in files:
             relative = str(item.get("path", ""))
+            # 早期用旧签名脚本生成的 lock 会把 __pycache__ 记进来，跳过即可，
+            # 否则删掉本地缓存后插件反而会变成"有文件缺失"。
+            if is_ignored_artifact(relative):
+                continue
             try:
                 file_path = safe_child(directory, relative)
             except ValueError as exc:
@@ -246,7 +266,11 @@ class PluginService:
             actual = sha256_file(file_path)
             if actual != item.get("sha256"):
                 errors.append(f"文件摘要不匹配：{relative}")
-        actual_paths = {path.relative_to(directory).as_posix() for path in directory.rglob("*") if path.is_file() and path.name not in {"plugin.lock.json", "plugin.sig"}}
+        actual_paths = {
+            path.relative_to(directory).as_posix() for path in directory.rglob("*")
+            if path.is_file() and path.name not in {"plugin.lock.json", "plugin.sig"}
+            and not is_ignored_artifact(path.relative_to(directory).as_posix())
+        }
         extra = sorted(actual_paths - expected_paths)
         missing = sorted(expected_paths - actual_paths)
         if extra:
@@ -269,6 +293,8 @@ class PluginService:
         digest = hashlib.sha256()
         for path in sorted((path for path in directory.rglob("*") if path.is_file()), key=lambda path: path.relative_to(directory).as_posix()):
             relative = path.relative_to(directory).as_posix()
+            if is_ignored_artifact(relative):
+                continue
             digest.update(relative.encode("utf-8")); digest.update(b"\0"); digest.update(bytes.fromhex(sha256_file(path)))
         return digest.hexdigest()
 

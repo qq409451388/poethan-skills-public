@@ -18,7 +18,7 @@ import paramiko
 
 from . import config
 from .models import ConnectionTestResult, PluginPackage, ServerProfile
-from .plugins import sha256_file
+from .plugins import is_ignored_artifact, sha256_file
 from .secrets import secrets, server_password_account
 
 
@@ -176,10 +176,17 @@ fi
 
     @staticmethod
     def _plugin_command(remote_plugin: str, entrypoint: str, config_file: str, mode: str, result_path: str) -> str:
+        directory = shlex.quote(remote_plugin)
         executable = shlex.quote(f"{remote_plugin}/{entrypoint}")
+        # 插件常常以 root 属主装在 /opt 下，而 SSH 用户不是 root。若脚本只有执行位没有读位，
+        # 内核能起 bash 但 bash 读不到脚本，只会报 "Permission denied"；入口依赖的 main.py
+        # 同理。所以整目录补读位（大写 X 只作用于目录和原本就可执行的文件），
+        # 失败时给出可读的错误而不是让 bash 抛出难以定位的报错。
         return f"""set -e
-if [ ! -x {executable} ]; then
-  chmod +x {executable} 2>/dev/null || sudo -n chmod +x {executable}
+chmod -R u+rwX,go+rX {directory} 2>/dev/null || sudo -n chmod -R u+rwX,go+rX {directory} 2>/dev/null || true
+if [ ! -r {executable} ] || [ ! -x {executable} ]; then
+  echo "插件入口不可读或不可执行（服务器上的属主/权限问题）：{remote_plugin}/{entrypoint}" >&2
+  exit 126
 fi
 POETHAN_CONFIG_FILE={shlex.quote(config_file)} {executable} {shlex.quote(mode)} > {shlex.quote(result_path)} 2>&1
 """
@@ -190,7 +197,22 @@ POETHAN_CONFIG_FILE={shlex.quote(config_file)} {executable} {shlex.quote(mode)} 
         path = Path(handle.name)
         with tarfile.open(path, "w:gz") as archive:
             for child in sorted(root.rglob("*"), key=lambda item: item.relative_to(root).as_posix()):
-                archive.add(child, arcname=child.relative_to(root).as_posix(), recursive=False)
+                relative = child.relative_to(root).as_posix()
+                # 本地编译缓存和 macOS 元数据不该上传到生产服务器。
+                if is_ignored_artifact(relative):
+                    continue
+                info = archive.gettarinfo(str(child), arcname=relative)
+                # 打包时统一权限：服务器上插件常常是 root 属主，若脚本只有执行位没有读位，
+                # 内核能起 bash 但 bash 读不到脚本，只会报 "Permission denied"。
+                if info.isdir():
+                    info.mode = 0o755
+                    archive.addfile(info)
+                elif info.isreg():
+                    info.mode = 0o755 if info.mode & 0o111 else 0o644
+                    with child.open("rb") as source:
+                        archive.addfile(info, source)
+                else:
+                    archive.addfile(info)
         return path, sha256_file(path)
 
     @staticmethod

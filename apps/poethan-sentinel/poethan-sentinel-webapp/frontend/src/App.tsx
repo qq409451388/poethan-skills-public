@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { api, bootstrap } from './api'
 import type {
+  AIProfile,
   ApplicationSettings,
   DiagnosticReport,
   DiagnosticStage,
@@ -119,7 +120,7 @@ function App() {
     setSelectedPluginId((current) => current || firstPlugin?.id || '')
     setReports(nextReports)
     setSettings(nextSettings)
-    setAiEnabled(nextSettings.ai.configured)
+    setAiEnabled(nextSettings.aiConfigured[nextSettings.activeAiId] === true)
     setCacheBytes(cache.bytes); setCacheRoot(cache.dataRoot)
   }
 
@@ -271,13 +272,18 @@ function App() {
     if (!settings) return
     setBusy('settings')
     try {
-      const saved = await api.saveSettings(settings)
+      const saved = await api.saveSettings({ pluginDirectory: settings.pluginDirectory, developerMode: settings.developerMode, demoMode: settings.demoMode })
       const [nextPlugins, nextServers] = await Promise.all([api.rescanPlugins(), api.servers()])
       setSettings(saved); setPlugins(nextPlugins); setServers(nextServers)
       setSelectedServerId((current) => nextServers.some((item) => item.id === current) ? current : nextServers[0]?.id || '')
-      showToast(saved.demoMode ? '设置已保存，演示服务器已显示' : '设置已保存，演示服务器已隐藏')
+      showToast(saved.demoMode ? '系统设置已保存，演示服务器已显示' : '系统设置已保存，演示服务器已隐藏')
     }
     catch (error) { showToast((error as Error).message) } finally { setBusy('') }
+  }
+
+  const saveAIProfiles = async (value: { profiles: AIProfile[]; activeAiId: string; apiKeys?: Record<string, string> }) => {
+    const saved = await api.saveAIProfiles(value)
+    setSettings((current) => current ? { ...current, aiProfiles: saved.profiles, activeAiId: saved.activeAiId, aiConfigured: saved.aiConfigured } : current)
   }
 
   if (fatal) return <div className="fatal"><h1>Poethan Sentinel 无法启动</h1><p>{fatal}</p><button className="button primary" onClick={() => location.reload()}>重新加载</button></div>
@@ -324,7 +330,7 @@ function App() {
             pluginSearch={pluginSearch} setPluginSearch={setPluginSearch} mode={mode} setMode={setMode}
             values={values} setValues={setValues} secrets={secretValues} setSecrets={setSecretValues}
             remember={remember} setRemember={setRemember} aiEnabled={aiEnabled} setAiEnabled={setAiEnabled}
-            aiConfigured={settings.ai.configured} startRun={startRun} busy={busy} run={run}
+            aiConfigured={Boolean(settings.aiProfiles.find((profile) => profile.id === settings.activeAiId) && settings.aiConfigured[settings.activeAiId])} startRun={startRun} busy={busy} run={run}
             events={runEvents} output={liveOutput} cancel={async () => run && api.cancelRun(run.id)}
             report={report} resultTab={resultTab} setResultTab={setResultTab}
             rawSearch={rawSearch} setRawSearch={setRawSearch} openReport={openReport}
@@ -342,12 +348,12 @@ function App() {
           />}
           {page === 'settings' && <SettingsPage
             settings={settings} setSettings={setSettings} scan={plugins}
-            cacheBytes={cacheBytes} cacheRoot={cacheRoot} save={saveApplicationSettings} busy={busy}
+            cacheBytes={cacheBytes} cacheRoot={cacheRoot} saveSystem={saveApplicationSettings} saveAI={saveAIProfiles} busy={busy}
             rescan={async () => setPlugins(await api.rescanPlugins())}
-            testAI={async (key) => {
+            testAI={async (input) => {
               setBusy('ai-test')
               try {
-                const result = await api.testAI(settings.ai.endpoint, settings.ai.model, key)
+                const result = await api.testAI(input)
                 showToast(result.message || 'AI 连接成功')
                 return result
               } catch (error) {
@@ -474,7 +480,7 @@ function ResultStage(props: DiagnosticProps & { report: DiagnosticReport }) {
   return <section className="stage active"><header className="result-heading"><span className={`result-symbol ${counts.critical ? 'critical' : counts.warning ? 'warning' : 'success'}`}>{counts.critical || counts.warning ? '!' : '✓'}</span><div><span className="eyebrow">诊断完成 · 用时 {report.durationSeconds.toFixed(1)} 秒</span><h2>{report.plugin.name}</h2><p>{report.server.name} · {report.plugin.mode} · {formatDate(report.createdAt)}</p></div></header><div className="result-summary"><div><span>严重</span><b className="danger-text">{counts.critical}</b></div><div><span>警告</span><b className="warning-text">{counts.warning}</b></div><div><span>正常</span><b className="success-text">{counts.success}</b></div><div><span>采集区段</span><b>{sections}</b></div></div><div className="tabs"><button className={props.resultTab === 'conclusion' ? 'active' : ''} onClick={() => props.setResultTab('conclusion')}>诊断结论</button><button className={props.resultTab === 'raw' ? 'active' : ''} onClick={() => props.setResultTab('raw')}>原始输出</button><button className={props.resultTab === 'ai' ? 'active' : ''} onClick={() => props.setResultTab('ai')}>AI 分析 {aiPending && <i>生成中</i>}</button></div>
     {props.resultTab === 'conclusion' && <div className="tab-panel active">{report.findings.map((item, index) => <article className={`finding ${item.severity}`} key={`${item.title}-${index}`}><span>{item.severity === 'success' ? '✓' : '!'}</span><div><header><h3>{item.title}</h3><i>{item.severity === 'critical' ? '严重' : item.severity === 'warning' ? '警告' : item.severity === 'success' ? '正常' : '信息'}</i></header><p>{item.evidence}</p>{item.recommendation && <aside><b>建议</b>{item.recommendation}</aside>}</div></article>)}</div>}
     {props.resultTab === 'raw' && <div className="tab-panel active"><div className="raw-toolbar"><label className="search"><span>⌕</span><input value={props.rawSearch} onChange={(e) => props.setRawSearch(e.target.value)} placeholder="筛选原始输出"/></label><button className="button quiet" onClick={() => copyText(report.rawOutput).then(() => props.showToast('原始输出已复制'))}>复制全部</button></div><pre className="raw-report">{filteredRaw}</pre></div>}
-    {props.resultTab === 'ai' && <div className="tab-panel active">{aiPending ? <div className="ai-loading"><div className="ai-scanner"><i/></div><h3>AI 正在关联诊断证据</h3><p>本地报告已经可用，AI 完成后此处会自动更新。</p></div> : report.ai?.status === 'failed' ? <Empty title="AI 分析失败" text={report.ai.error || '请检查接口配置，原始诊断报告不受影响。'}/> : report.ai ? <div className="ai-report"><header><span>AI</span><div><h3>增强分析结果</h3><p>这是基于诊断事实的推断，请结合业务窗口确认。</p></div></header><pre>{report.ai.content || JSON.stringify(report.ai.raw, null, 2)}</pre></div> : <Empty title="本次未启用 AI" text="确定性结论和原始输出仍是完整报告。"/>}</div>}
+    {props.resultTab === 'ai' && <div className="tab-panel active">{aiPending ? <div className="ai-loading"><div className="ai-scanner"><i/></div><h3>AI 正在关联诊断证据</h3><p>本地报告已经可用，AI 完成后此处会自动更新。</p></div> : report.ai?.status === 'failed' ? <Empty title="AI 分析失败" text={report.ai.error || '请检查接口配置，原始诊断报告不受影响。'}/> : report.ai ? <div className="ai-report"><header><span>AI</span><div><h3>增强分析结果</h3><p>{report.ai.format === 'json' ? '结构化结果已赋值给插件报告页。' : '这是基于诊断事实的推断，请结合业务窗口确认。'}</p></div></header>{report.ai.degraded && <p className="ai-note">模型未按 JSON 契约返回，已按 Markdown 展示。</p>}{/* html 由 Controller 渲染：先转义再套用 Markdown 白名单语法，因此可以安全注入。 */}{report.ai.html ? <div className="markdown" dangerouslySetInnerHTML={{ __html: report.ai.html }}/> : <pre>{report.ai.content || JSON.stringify(report.ai.raw || report.ai.rawResponse, null, 2)}</pre>}</div> : <Empty title="本次未启用 AI" text="确定性结论和原始输出仍是完整报告。"/>}</div>}
   </section>
 }
 
@@ -496,14 +502,186 @@ function ReportsPage({ reports, openReport }: { reports: DiagnosticReport[]; ope
   return <section className="page active"><div className="page-content"><header className="page-heading"><div><span className="eyebrow">诊断记录</span><h1>历史报告</h1><p>所有结果保存在本机，可查看结论、原始输出和 AI 分析。</p></div><label className="search"><span>⌕</span><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="搜索报告"/></label></header>{filtered.length ? <div className="report-list panel">{filtered.map((report) => { const count = report.findings.filter((item) => ['warning','critical'].includes(item.severity)).length; return <button key={report.id} className="report-row" onClick={() => openReport(report)}><span className={`result-symbol ${count ? 'warning' : 'success'} small`}>{count ? '!' : '✓'}</span><span><b>{report.plugin.name}</b><small>{report.server.name} · {formatDate(report.createdAt)}</small></span><strong>{count ? `${count} 项需关注` : '全部正常'}</strong><em>{report.durationSeconds.toFixed(1)} 秒</em><i>查看 →</i></button> })}</div> : <Empty title="暂无匹配报告" text="运行一次诊断后，报告会自动出现在这里。"/>}</div></section>
 }
 
-function SettingsPage({ settings, setSettings, scan, cacheBytes, cacheRoot, save, busy, rescan, testAI, clearCache, showToast }: { settings: ApplicationSettings; setSettings: (value: ApplicationSettings) => void; scan: PluginScanResponse; cacheBytes: number; cacheRoot: string; save: () => void; busy: string; rescan: () => Promise<void>; testAI: (key: string) => Promise<{ ok: boolean; message: string; rawResponse?: string }>; clearCache: () => Promise<void>; showToast: (message: string) => void }) {
-  const [key, setKey] = useState('')
-  const [aiTestResult, setAiTestResult] = useState('')
-  return <section className="page active"><div className="page-content settings-page"><header className="page-heading"><div><span className="eyebrow">应用设置</span><h1>设置</h1><p>管理插件来源、AI 接口和可重新生成的本机缓存。</p></div><button className="button primary" disabled={busy === 'settings'} onClick={save}>{busy === 'settings' ? '保存中…' : '保存设置'}</button></header>
-    <section className="panel setting-card"><header><span>⬡</span><div><h3>诊断工具目录</h3><p>本机脚本、服务器脚本配置和手动放入的插件统一从这里读取。</p></div></header><label className="path-input"><b>目录</b><input value={settings.pluginDirectory} onChange={(e) => setSettings({ ...settings, pluginDirectory: e.target.value })}/><button onClick={() => copyText(settings.pluginDirectory).then(() => showToast('工具目录已复制'))}>复制</button></label><div className="setting-switches"><label className="switch-row"><span><b>开发者模式</b><small>允许本机调试未签名插件；公开使用时建议关闭</small></span><input type="checkbox" checked={settings.developerMode} onChange={(e) => setSettings({ ...settings, developerMode: e.target.checked })}/><i/></label><label className="switch-row"><span><b>演示模式</b><small>仅使用内置模拟结果体验流程；关闭后隐藏演示服务器</small></span><input type="checkbox" checked={settings.demoMode} onChange={(e) => setSettings({ ...settings, demoMode: e.target.checked })}/><i/></label></div><footer><button className="button quiet" onClick={() => api.openPluginDirectory().then(() => showToast('已打开诊断工具目录')).catch((error: Error) => showToast(error.message))}>打开工具目录</button><button className="button quiet" onClick={async () => { await rescan(); showToast('诊断工具库扫描完成') }}>重新扫描工具库</button><span className={scan.invalidCount ? 'inline-warning' : 'inline-success'}>{scan.validCount} 个有效，{scan.invalidCount} 个失败</span></footer></section>
-    <section className="panel setting-card"><header><span>AI</span><div><h3>AI 增强分析</h3><p>兼容 OpenAI Chat Completions / Responses 接口，DeepSeek 可直接使用。</p></div></header><div className="settings-form"><label><span>接口地址</span><input value={settings.ai.endpoint} onChange={(e) => setSettings({ ...settings, ai: { ...settings.ai, endpoint: e.target.value } })}/></label><label><span>模型</span><input value={settings.ai.model} onChange={(e) => setSettings({ ...settings, ai: { ...settings.ai, model: e.target.value } })}/></label><label><span>API Key</span><input type="password" value={key} onChange={(e) => { setKey(e.target.value); setSettings({ ...settings, aiApiKey: e.target.value }) }} placeholder={settings.ai.configured ? '已安全保存；留空不修改' : 'sk-…'}/></label></div>{aiTestResult && <details className="ai-raw-response" open><summary>AI 原始响应</summary><pre>{aiTestResult}</pre></details>}<footer><button className="button quiet" disabled={busy === 'ai-test'} onClick={() => { setAiTestResult('等待模型回复…'); testAI(key).then((result) => setAiTestResult(result.rawResponse || JSON.stringify(result, null, 2))).catch((error: Error) => setAiTestResult(error.message)) }}>{busy === 'ai-test' ? '测试中…' : '保存前测试连接'}</button><span className={settings.ai.configured ? 'inline-success' : 'inline-warning'}>{settings.ai.configured ? '已配置' : '尚未配置'}</span></footer></section>
-    <section className="panel setting-card"><header><span>↺</span><div><h3>本机缓存</h3><p>诊断结果、AI JSON 和生成的 HTML 报告；服务器与插件配置不会清除。</p></div></header><div className="cache-row"><span><small>当前占用</small><b>{formatBytes(cacheBytes)}</b><em>{cacheRoot}</em></span><button className="button danger" onClick={clearCache}>清空缓存</button></div></section>
+// AI 服务商预设：选中即自动填好接口地址和默认模型，用户只需要粘贴 API Key。
+// 模型名取各家当前主流型号（2026-09 核对），接口全部兼容 OpenAI Chat Completions；
+// 模型输入框保留 datalist 建议且可自由修改，服务商更新模型名后直接改这里即可。
+interface AIProviderPreset { id: string; name: string; endpoint: string; models: string[]; note?: string; keyUrl?: string }
+
+const AI_PROVIDER_PRESETS: AIProviderPreset[] = [
+  { id: 'deepseek', name: 'DeepSeek', endpoint: 'https://api.deepseek.com', models: ['deepseek-flash', 'deepseek-v4-pro'], keyUrl: 'https://platform.deepseek.com/api_keys' },
+  { id: 'kimi', name: 'Kimi（月之暗面）', endpoint: 'https://api.moonshot.cn/v1', models: ['kimi-k3', 'kimi-k2.6', 'kimi-k2.7-code'], keyUrl: 'https://platform.kimi.com' },
+  { id: 'qwen', name: '通义千问（阿里云百炼）', endpoint: 'https://dashscope.aliyuncs.com/compatible-mode/v1', models: ['qwen-plus', 'qwen-max', 'qwen-turbo'], keyUrl: 'https://bailian.console.aliyun.com' },
+  { id: 'glm', name: '智谱 GLM', endpoint: 'https://open.bigmodel.cn/api/paas/v4', models: ['glm-5.2', 'glm-4.5-air', 'glm-4-flash'], keyUrl: 'https://bigmodel.cn/usercenter/proj-mgmt/apikeys' },
+  { id: 'doubao', name: '豆包（火山方舟）', endpoint: 'https://ark.cn-beijing.volces.com/api/v3', models: ['doubao-seed-1-6-250615', 'doubao-seed-1-6-flash-250715'], note: '也支持 ep- 开头的接入点 ID', keyUrl: 'https://console.volcengine.com/ark' },
+  { id: 'siliconflow', name: '硅基流动 SiliconFlow', endpoint: 'https://api.siliconflow.cn/v1', models: ['deepseek-ai/DeepSeek-V4-Flash', 'deepseek-ai/DeepSeek-V3.2', 'Pro/moonshotai/Kimi-K2.6', 'zai-org/GLM-5.2'], keyUrl: 'https://cloud.siliconflow.cn/account/ak' },
+  { id: 'ernie', name: '文心一言（百度千帆）', endpoint: 'https://qianfan.baidubce.com/v2', models: ['ernie-4.5-turbo-128k', 'ernie-x1-turbo-32k'], keyUrl: 'https://console.bce.baidu.com/qianfan' },
+  { id: 'hunyuan', name: '腾讯混元', endpoint: 'https://api.hunyuan.cloud.tencent.com/v1', models: ['hunyuan-turbos-latest', 'hunyuan-t1-latest'], keyUrl: 'https://console.cloud.tencent.com/hunyuan/api-key' },
+  { id: 'minimax', name: 'MiniMax', endpoint: 'https://api.minimax.chat/v1', models: ['MiniMax-M2.5', 'MiniMax-M2'] },
+  { id: 'openai', name: 'OpenAI', endpoint: 'https://api.openai.com/v1', models: ['gpt-5.6', 'gpt-6-astra', 'gpt-5.4-mini', 'gpt-4o'], keyUrl: 'https://platform.openai.com/api-keys' },
+]
+
+const detectAIProvider = (endpoint: string): string => {
+  const normalized = endpoint.trim().replace(/\/+$/, '').toLowerCase()
+  if (!normalized) return 'custom'
+  return AI_PROVIDER_PRESETS.find((preset) => preset.endpoint === normalized)?.id ?? 'custom'
+}
+
+// 已保存 Key 的回显掩码；只用于显示，永远不会被提交（提交只取用户真实输入的 keyDirty 值）。
+const MASKED_API_KEY = '••••••••••••'
+
+export function SettingsPage({ settings, setSettings, scan, cacheBytes, cacheRoot, saveSystem, saveAI, busy, rescan, testAI, clearCache, showToast }: {
+  settings: ApplicationSettings
+  setSettings: (value: ApplicationSettings) => void
+  scan: PluginScanResponse
+  cacheBytes: number
+  cacheRoot: string
+  saveSystem: () => Promise<void>
+  saveAI: (value: { profiles: AIProfile[]; activeAiId: string; apiKeys?: Record<string, string> }) => Promise<void>
+  busy: string
+  rescan: () => Promise<void>
+  testAI: (value: { endpoint: string; model: string; apiKey?: string; profileId?: string }) => Promise<{ ok: boolean; message: string; rawResponse?: string }>
+  clearCache: () => Promise<void>
+  showToast: (message: string) => void
+}) {
+  const [tab, setTab] = useState<'system' | 'ai' | 'cache'>('system')
+  return <section className="page active"><div className="page-content settings-page"><header className="page-heading"><div><span className="eyebrow">应用设置</span><h1>设置</h1><p>系统、AI 配置和本机缓存分开管理，各自独立保存。</p></div></header>
+    <div className="settings-layout">
+      <nav className="settings-tabs" aria-label="设置分区">
+        {([['system', '系统'], ['ai', 'AI 配置'], ['cache', '缓存']] as const).map(([value, label]) => (
+          <button key={value} type="button" className={tab === value ? 'active' : ''} aria-current={tab === value ? 'page' : undefined} onClick={() => setTab(value)}>{label}</button>
+        ))}
+      </nav>
+      <div className="settings-tab-body">
+        {tab === 'system' && <section className="panel setting-card"><header><span>⬡</span><div><h3>诊断工具目录</h3><p>本机脚本、服务器脚本配置和手动放入的插件统一从这里读取。</p></div></header><label className="path-input"><b>目录</b><input value={settings.pluginDirectory} onChange={(e) => setSettings({ ...settings, pluginDirectory: e.target.value })}/><button onClick={() => copyText(settings.pluginDirectory).then(() => showToast('工具目录已复制'))}>复制</button></label><div className="setting-switches"><label className="switch-row"><span><b>开发者模式</b><small>允许本机调试未签名插件；公开使用时建议关闭</small></span><input type="checkbox" checked={settings.developerMode} onChange={(e) => setSettings({ ...settings, developerMode: e.target.checked })}/><i/></label><label className="switch-row"><span><b>演示模式</b><small>仅使用内置模拟结果体验流程；关闭后隐藏演示服务器</small></span><input type="checkbox" checked={settings.demoMode} onChange={(e) => setSettings({ ...settings, demoMode: e.target.checked })}/><i/></label></div><footer><button className="button quiet" onClick={() => api.openPluginDirectory().then(() => showToast('已打开诊断工具目录')).catch((error: Error) => showToast(error.message))}>打开工具目录</button><button className="button quiet" onClick={async () => { await rescan(); showToast('诊断工具库扫描完成') }}>重新扫描工具库</button><span className={scan.invalidCount ? 'inline-warning' : 'inline-success'}>{scan.validCount} 个有效，{scan.invalidCount} 个失败</span><button className="button primary" disabled={busy === 'settings'} onClick={() => void saveSystem()}>{busy === 'settings' ? '保存中…' : '保存系统设置'}</button></footer></section>}
+        {tab === 'ai' && <AISettingsTab settings={settings} saveAI={saveAI} testAI={testAI} busy={busy} showToast={showToast}/>}
+        {tab === 'cache' && <section className="panel setting-card"><header><span>↺</span><div><h3>本机缓存</h3><p>诊断结果、AI JSON 和生成的 HTML 报告；服务器与插件配置不会清除。</p></div></header><div className="cache-row"><span><small>当前占用</small><b>{formatBytes(cacheBytes)}</b><em>{cacheRoot}</em></span><button className="button danger" onClick={clearCache}>清空缓存</button></div></section>}
+      </div>
+    </div>
   </div></section>
+}
+
+function AISettingsTab({ settings, saveAI, testAI, busy, showToast }: {
+  settings: ApplicationSettings
+  saveAI: (value: { profiles: AIProfile[]; activeAiId: string; apiKeys?: Record<string, string> }) => Promise<void>
+  testAI: (value: { endpoint: string; model: string; apiKey?: string; profileId?: string }) => Promise<{ ok: boolean; message: string; rawResponse?: string }>
+  busy: string
+  showToast: (message: string) => void
+}) {
+  const [editorId, setEditorId] = useState('')
+  const [creating, setCreating] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [apiKey, setApiKey] = useState('')
+  // 已保存 Key 的配置用掩码圆点回显，让用户一眼看出填没填；聚焦即清空，输入真实值。
+  const [keyDirty, setKeyDirty] = useState(false)
+  const [aiTestResult, setAiTestResult] = useState('')
+  const [form, setForm] = useState<AIProfile>({ id: '', name: '', endpoint: 'https://api.deepseek.com', model: 'deepseek-flash' })
+  const selected = settings.aiProfiles.find((profile) => profile.id === editorId)
+    ?? settings.aiProfiles.find((profile) => profile.id === settings.activeAiId)
+    ?? settings.aiProfiles[0]
+  const selectedId = creating ? '' : selected?.id ?? ''
+  const hasSavedKey = Boolean(selectedId && settings.aiConfigured[selectedId])
+
+  useEffect(() => {
+    // 只在切换配置或新增草稿时刷新表单，避免覆盖正在编辑的内容。
+    if (creating || !selected) return
+    setForm({ ...selected })
+    setApiKey('')
+    setKeyDirty(false)
+  }, [creating, selected?.id])
+
+  const aiProviderId = detectAIProvider(form.endpoint)
+  const aiProvider = AI_PROVIDER_PRESETS.find((preset) => preset.id === aiProviderId)
+  const applyAIProvider = (id: string) => {
+    const preset = AI_PROVIDER_PRESETS.find((item) => item.id === id)
+    if (preset) setForm((current) => ({ ...current, endpoint: preset.endpoint, model: preset.models[0] }))
+  }
+  const openProfile = (profile: AIProfile) => { setCreating(false); setEditorId(profile.id); setApiKey(''); setKeyDirty(false); setAiTestResult('') }
+  const startCreating = () => {
+    setCreating(true); setEditorId(''); setApiKey(''); setKeyDirty(false); setAiTestResult('')
+    setForm({ id: '', name: '', endpoint: 'https://api.deepseek.com', model: 'deepseek-flash' })
+  }
+
+  const saveProfile = async () => {
+    if (!form.name.trim()) { showToast('请先填写配置名称'); return }
+    if (!form.endpoint.trim() || !form.model.trim()) { showToast('请填写接口地址和模型'); return }
+    const id = creating ? uuid() : selectedId
+    const profile: AIProfile = { id, name: form.name.trim(), endpoint: form.endpoint.trim(), model: form.model.trim() }
+    const profiles = creating ? [...settings.aiProfiles, profile] : settings.aiProfiles.map((item) => item.id === id ? profile : item)
+    const activeAiId = settings.aiProfiles.some((item) => item.id === settings.activeAiId) ? settings.activeAiId : id
+    const nextKey = keyDirty ? apiKey.trim() : ''
+    setSaving(true)
+    try {
+      await saveAI({ profiles, activeAiId, apiKeys: nextKey ? { [id]: nextKey } : {} })
+      setCreating(false); setEditorId(id); setApiKey(''); setKeyDirty(false)
+      showToast(nextKey ? `已保存配置「${profile.name}」，API Key 已更新` : `已保存配置「${profile.name}」`)
+    } catch (error) { showToast((error as Error).message) } finally { setSaving(false) }
+  }
+
+  const activateProfile = async (id: string) => {
+    setSaving(true)
+    try { await saveAI({ profiles: settings.aiProfiles, activeAiId: id }); showToast('已切换启用的 AI 配置') }
+    catch (error) { showToast((error as Error).message) } finally { setSaving(false) }
+  }
+
+  const removeProfile = async () => {
+    if (creating || !selected) return
+    if (!confirm(`删除 AI 配置「${selected.name}」？保存的 Key 会一并清除。`)) return
+    const profiles = settings.aiProfiles.filter((item) => item.id !== selected.id)
+    const activeAiId = settings.activeAiId === selected.id ? (profiles[0]?.id ?? '') : settings.activeAiId
+    setSaving(true)
+    try {
+      await saveAI({ profiles, activeAiId })
+      setEditorId(activeAiId); setCreating(profiles.length === 0); setApiKey(''); setKeyDirty(false); setAiTestResult('')
+      if (profiles.length === 0) setForm({ id: '', name: '', endpoint: 'https://api.deepseek.com', model: 'deepseek-flash' })
+      showToast('AI 配置已删除')
+    } catch (error) { showToast((error as Error).message) } finally { setSaving(false) }
+  }
+
+  const runTest = () => {
+    setAiTestResult('等待模型回复…')
+    testAI({
+      endpoint: form.endpoint,
+      model: form.model,
+      apiKey: keyDirty ? apiKey.trim() || undefined : undefined,
+      profileId: creating ? undefined : selectedId || undefined,
+    })
+      .then((result) => setAiTestResult(result.ok ? (result.rawResponse || result.message) : result.message))
+      .catch((error: Error) => setAiTestResult(error.message))
+  }
+
+  return <section className="panel setting-card"><header><span>AI</span><div><h3>AI 增强分析</h3><p>可保存多份配置，诊断时使用标记为「启用」的那一份；兼容 OpenAI Chat Completions / Responses 接口。</p></div></header>
+    <div className="ai-manager">
+      <aside className="ai-profile-list" aria-label="AI 配置列表">
+        {settings.aiProfiles.map((profile) => (
+          <div key={profile.id} className={`ai-profile-item ${selectedId === profile.id ? 'editing' : ''}`}>
+            <input type="radio" name="active-ai-profile" aria-label={`启用 ${profile.name}`} checked={settings.activeAiId === profile.id} disabled={saving} onChange={() => void activateProfile(profile.id)}/>
+            <button type="button" className="ai-profile-open" onClick={() => openProfile(profile)}><b>{profile.name}</b><small>{profile.model} · {settings.aiConfigured[profile.id] ? 'Key 已保存' : '未存 Key'}</small></button>
+          </div>
+        ))}
+        {settings.aiProfiles.length === 0 && <p className="field-help">还没有配置，点击下方新增。</p>}
+        <button type="button" className="button quiet" onClick={startCreating}>＋ 新增配置</button>
+      </aside>
+      <div className="ai-editor">
+        <div className="ai-form">
+          <label><span>配置名称</span><input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="例如：DeepSeek 生产"/></label>
+          <label><span>服务商</span><select value={aiProviderId} onChange={(e) => applyAIProvider(e.target.value)}>{AI_PROVIDER_PRESETS.map((preset) => <option key={preset.id} value={preset.id}>{preset.name}</option>)}<option value="custom">自定义 / 其他</option></select></label>
+          <label><span>接口地址</span><input value={form.endpoint} onChange={(e) => setForm({ ...form, endpoint: e.target.value })}/></label>
+          <label><span>模型</span><input value={form.model} list="ai-model-options" onChange={(e) => setForm({ ...form, model: e.target.value })}/></label>
+          <label className="span-2"><span>API Key</span><input type="password" autoComplete="off" value={keyDirty ? apiKey : hasSavedKey ? MASKED_API_KEY : ''} onFocus={() => { if (!keyDirty && hasSavedKey) { setKeyDirty(true); setApiKey('') } }} onBlur={() => { if (keyDirty && !apiKey) setKeyDirty(false) }} onChange={(e) => { setKeyDirty(true); setApiKey(e.target.value) }} placeholder={hasSavedKey ? '留空则保留已保存的 Key' : 'sk-…'}/></label>
+          {hasSavedKey && !keyDirty && <p className="field-help">圆点表示该配置已保存 Key；点击输入框可重新填写</p>}
+          <datalist id="ai-model-options">{(aiProvider?.models ?? []).map((model) => <option key={model} value={model}/>)}</datalist>
+          <p className="field-help">{aiProvider ? <>{aiProvider.note || '已自动填好接口与默认模型，粘贴 API Key 后先测试再保存'}{aiProvider.keyUrl && <>；<a href={aiProvider.keyUrl} target="_blank" rel="noreferrer">获取 API Key</a></>}</> : '填写任意兼容 OpenAI Chat Completions 的接口地址与模型；地址以 /responses 结尾时走 Responses 协议。'}</p>
+        </div>
+        {aiTestResult && <details className="ai-raw-response" open><summary>AI 原始响应</summary><pre>{aiTestResult}</pre></details>}
+        <footer>
+          <button type="button" className="button quiet" disabled={busy === 'ai-test'} onClick={runTest}>{busy === 'ai-test' ? '测试中…' : '测试连接'}</button>
+          <button type="button" className="button primary" disabled={saving} onClick={() => void saveProfile()}>{saving ? '保存中…' : creating ? '保存新配置' : '保存配置'}</button>
+          {!creating && selected && <button type="button" className="button danger" disabled={saving} onClick={() => void removeProfile()}>删除配置</button>}
+          <span className={selectedId && settings.aiConfigured[selectedId] ? 'inline-success' : 'inline-warning'}>{creating ? '新配置尚未保存' : selectedId && settings.aiConfigured[selectedId] ? 'Key 已保存' : '该配置未保存 Key'}</span>
+        </footer>
+      </div>
+    </div>
+  </section>
 }
 
 export function ServerModal({ draft, setDraft, saving, connectionResult, close, save, test }: { draft: ServerProfile; setDraft: (value: ServerProfile) => void; saving: boolean; connectionResult: string; close: () => void; save: () => void; test: () => void }) {

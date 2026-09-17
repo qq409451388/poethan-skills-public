@@ -14,18 +14,26 @@ export interface ServerProfile {
   updatedAt?: string
 }
 
-export interface AISettings {
+export interface AIProfile {
+  id: string
+  name: string
   endpoint: string
   model: string
-  configured: boolean
+}
+
+export interface AIProfilesPayload {
+  profiles: AIProfile[]
+  activeAiId: string
+  aiConfigured: Record<string, boolean>
 }
 
 export interface ApplicationSettings {
   pluginDirectory: string
   developerMode: boolean
   demoMode: boolean
-  ai: AISettings
-  aiApiKey?: string
+  aiProfiles: AIProfile[]
+  activeAiId: string
+  aiConfigured: Record<string, boolean>
 }
 
 export interface PluginTrust {
@@ -62,6 +70,8 @@ export interface PluginPackage {
   modes: Array<{ id: string; label: string; help?: string }>
   fields: PluginField[]
   report?: { schema: string; template: string }
+  // 插件对 AI 分析的声明；problemAnalysis 默认 true。
+  ai?: { problemAnalysis?: boolean }
   permissions: Record<string, boolean>
   directory: string
   trust: PluginTrust
@@ -133,7 +143,21 @@ export interface DiagnosticReport {
   summary: string
   findings: Finding[]
   rawOutput: string
-  ai?: { status?: string; content?: string; raw?: unknown; error?: string }
+  // 生成时是否用了插件 HTML 模板；缺省（老报告）表示按当前插件推断。
+  reportTemplate?: boolean
+  // 插件没有 HTML 报告模板时 format 为 markdown，有模板时为 json（data 供模板页面赋值）。
+  ai?: {
+    status?: string
+    format?: 'json' | 'markdown'
+    content?: string
+    html?: string
+    data?: unknown
+    degraded?: boolean
+    degradeReason?: string
+    raw?: unknown
+    rawResponse?: string
+    error?: string
+  }
   audit: Record<string, unknown>
 }
 

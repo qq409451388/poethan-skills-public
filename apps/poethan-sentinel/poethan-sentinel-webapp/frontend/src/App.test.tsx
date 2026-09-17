@@ -1,7 +1,34 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import App, { DiagnosticPage, ServerModal, ServerNavigationItem, ToolLibrary } from './App'
-import type { PluginPackage, ServerProfile } from './types'
+import App, { DiagnosticPage, ServerModal, ServerNavigationItem, SettingsPage, ToolLibrary } from './App'
+import type { AIProfile, ApplicationSettings, PluginPackage, ServerProfile } from './types'
+
+const deepseekProfile: AIProfile = { id: 'deepseek', name: 'DeepSeek 生产', endpoint: 'https://api.deepseek.com', model: 'deepseek-flash' }
+
+const baseSettings = (profiles: AIProfile[], activeAiId: string): ApplicationSettings => ({
+  pluginDirectory: '/tmp/plugins',
+  developerMode: false,
+  demoMode: true,
+  aiProfiles: profiles,
+  activeAiId,
+  aiConfigured: Object.fromEntries(profiles.map((profile) => [profile.id, false])),
+})
+
+const settingsPageProps = (settings: ApplicationSettings, overrides: Record<string, unknown> = {}) => ({
+  settings,
+  setSettings: vi.fn(),
+  scan: { items: [], validCount: 0, invalidCount: 0 },
+  cacheBytes: 0,
+  cacheRoot: '/tmp',
+  saveSystem: vi.fn(async () => undefined),
+  saveAI: vi.fn(async () => undefined),
+  busy: '',
+  rescan: vi.fn(async () => undefined),
+  testAI: vi.fn(async () => ({ ok: true, message: '' })),
+  clearCache: vi.fn(async () => undefined),
+  showToast: vi.fn(),
+  ...overrides,
+})
 
 describe('App', () => {
   beforeEach(() => {
@@ -96,5 +123,96 @@ describe('App', () => {
     expect(container.querySelector('.tool-type')?.textContent).toBe('本机脚本')
     fireEvent.click(screen.getByRole('button', { name: /^⌘\s+本机脚本/ }))
     expect(addLocal).toHaveBeenCalledOnce()
+  })
+
+  it('keeps settings split into system, AI and cache tabs', () => {
+    render(<SettingsPage {...settingsPageProps(baseSettings([deepseekProfile], 'deepseek'))}/>)
+
+    expect(screen.getByText('诊断工具目录')).toBeTruthy()
+    expect(screen.queryByLabelText('服务商')).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'AI 配置' }))
+    expect(screen.queryByText('诊断工具目录')).toBeNull()
+    expect(screen.getByLabelText('服务商')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: '缓存' }))
+    expect(screen.getByText('本机缓存')).toBeTruthy()
+  })
+
+  it('fills endpoint and model when an AI provider preset is selected', () => {
+    render(<SettingsPage {...settingsPageProps(baseSettings([deepseekProfile], 'deepseek'))}/>)
+    fireEvent.click(screen.getByRole('button', { name: 'AI 配置' }))
+
+    expect((screen.getByLabelText('服务商') as HTMLSelectElement).value).toBe('deepseek')
+    fireEvent.change(screen.getByLabelText('服务商'), { target: { value: 'kimi' } })
+    expect((screen.getByLabelText('接口地址') as HTMLInputElement).value).toBe('https://api.moonshot.cn/v1')
+    expect((screen.getByLabelText('模型') as HTMLInputElement).value).toBe('kimi-k3')
+  })
+
+  it('falls back to custom provider when the endpoint does not match any preset', () => {
+    const custom: AIProfile = { id: 'custom', name: '内网网关', endpoint: 'https://ai.internal.corp/v1/', model: 'custom-model' }
+    render(<SettingsPage {...settingsPageProps(baseSettings([custom], 'custom'))}/>)
+    fireEvent.click(screen.getByRole('button', { name: 'AI 配置' }))
+
+    expect((screen.getByLabelText('服务商') as HTMLSelectElement).value).toBe('custom')
+  })
+
+  it('shows masked dots for a saved key and never submits the mask', async () => {
+    const saveAI = vi.fn(async (_value: { profiles: AIProfile[]; activeAiId: string; apiKeys?: Record<string, string> }) => undefined)
+    const settings: ApplicationSettings = { ...baseSettings([deepseekProfile], 'deepseek'), aiConfigured: { deepseek: true } }
+    render(<SettingsPage {...settingsPageProps(settings, { saveAI })}/>)
+    fireEvent.click(screen.getByRole('button', { name: 'AI 配置' }))
+
+    const input = screen.getByLabelText('API Key') as HTMLInputElement
+    expect(input.value).not.toBe('')
+    expect(input.value.startsWith('sk-')).toBe(false)
+
+    fireEvent.click(screen.getByRole('button', { name: '保存配置' }))
+    await waitFor(() => expect(saveAI).toHaveBeenCalledTimes(1))
+    expect(saveAI.mock.calls[0][0].apiKeys ?? {}).toEqual({})
+
+    fireEvent.focus(input)
+    expect(input.value).toBe('')
+  })
+
+  it('saves a newly typed key for the edited profile', async () => {
+    const saveAI = vi.fn(async (_value: { profiles: AIProfile[]; activeAiId: string; apiKeys?: Record<string, string> }) => undefined)
+    const settings: ApplicationSettings = { ...baseSettings([deepseekProfile], 'deepseek'), aiConfigured: { deepseek: true } }
+    render(<SettingsPage {...settingsPageProps(settings, { saveAI })}/>)
+    fireEvent.click(screen.getByRole('button', { name: 'AI 配置' }))
+
+    fireEvent.change(screen.getByLabelText('API Key'), { target: { value: 'sk-new-key' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存配置' }))
+
+    await waitFor(() => expect(saveAI).toHaveBeenCalledTimes(1))
+    expect(saveAI.mock.calls[0][0].apiKeys).toEqual({ deepseek: 'sk-new-key' })
+  })
+
+  it('saves a new AI profile through its own save button', async () => {
+    const saveAI = vi.fn(async (_value: { profiles: AIProfile[]; activeAiId: string; apiKeys?: Record<string, string> }) => undefined)
+    render(<SettingsPage {...settingsPageProps(baseSettings([deepseekProfile], 'deepseek'), { saveAI })}/>)
+    fireEvent.click(screen.getByRole('button', { name: 'AI 配置' }))
+
+    fireEvent.click(screen.getByRole('button', { name: '＋ 新增配置' }))
+    fireEvent.change(screen.getByLabelText('配置名称'), { target: { value: 'Kimi 备用' } })
+    fireEvent.change(screen.getByLabelText('服务商'), { target: { value: 'kimi' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存新配置' }))
+
+    await waitFor(() => expect(saveAI).toHaveBeenCalledTimes(1))
+    const payload = saveAI.mock.calls[0][0]
+    expect(payload.profiles).toHaveLength(2)
+    expect(payload.profiles[1]).toMatchObject({ name: 'Kimi 备用', endpoint: 'https://api.moonshot.cn/v1', model: 'kimi-k3' })
+    expect(payload.activeAiId).toBe('deepseek')
+  })
+
+  it('switches the active AI profile from the list', async () => {
+    const kimi: AIProfile = { id: 'kimi', name: 'Kimi 备用', endpoint: 'https://api.moonshot.cn/v1', model: 'kimi-k3' }
+    const saveAI = vi.fn(async () => undefined)
+    render(<SettingsPage {...settingsPageProps(baseSettings([deepseekProfile, kimi], 'deepseek'), { saveAI })}/>)
+    fireEvent.click(screen.getByRole('button', { name: 'AI 配置' }))
+
+    fireEvent.click(screen.getByLabelText('启用 Kimi 备用'))
+
+    await waitFor(() => expect(saveAI).toHaveBeenCalledWith(expect.objectContaining({ activeAiId: 'kimi' })))
   })
 })

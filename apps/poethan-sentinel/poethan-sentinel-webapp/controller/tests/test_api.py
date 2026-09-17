@@ -2,6 +2,7 @@ import time
 
 from fastapi.testclient import TestClient
 
+from app import config
 from app.main import app
 
 
@@ -27,7 +28,9 @@ def test_bootstrap_settings_servers_and_plugins() -> None:
         servers = web.get("/api/v1/servers").json()
         assert servers[0]["authentication"] == "demo"
         plugins = web.get("/api/v1/plugins").json()
-        assert plugins["validCount"] == 3
+        # 测试数据目录是空的，启动时会从插件仓库把全部官方插件复制进来。
+        expected = len([path for path in config.PROJECT_PLUGIN_ROOT.iterdir() if (path / "plugin.yaml").is_file()])
+        assert plugins["validCount"] == expected
 
 
 def test_mutations_require_local_request_marker() -> None:

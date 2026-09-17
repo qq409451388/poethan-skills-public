@@ -56,31 +56,41 @@ class ConnectionTestResult(APIModel):
     fingerprint: str | None = None
 
 
-class AISettings(APIModel):
+class AIProfile(APIModel):
+    id: str = Field(default_factory=lambda: str(uuid4()))
+    name: str = "默认配置"
     endpoint: str = "https://api.deepseek.com"
-    model: str = "deepseek-chat"
-    configured: bool = False
+    model: str = "deepseek-flash"
 
 
 class ApplicationSettings(APIModel):
     plugin_directory: str
     developer_mode: bool = False
     demo_mode: bool = True
-    ai: AISettings = Field(default_factory=AISettings)
+    ai_profiles: list[AIProfile] = Field(default_factory=lambda: [AIProfile(id="default", name="DeepSeek 默认")])
+    active_ai_id: str = "default"
+    # 由后端按钥匙串实际状态回填，前端只读；持久化值仅是快照。
+    ai_configured: dict[str, bool] = Field(default_factory=dict)
 
 
 class SettingsInput(APIModel):
     plugin_directory: str
     developer_mode: bool = False
     demo_mode: bool = True
-    ai: AISettings = Field(default_factory=AISettings)
-    ai_api_key: str | None = None
+
+
+class AIProfilesInput(APIModel):
+    profiles: list[AIProfile]
+    active_ai_id: str = ""
+    # 仅包含需要写入或更新的条目；不在 profiles 里的旧配置对应的 Key 会被清理。
+    api_keys: dict[str, str] = Field(default_factory=dict)
 
 
 class AIConnectionInput(APIModel):
     endpoint: str
     model: str
     api_key: str | None = None
+    profile_id: str | None = None
 
 
 class PluginTrust(APIModel):
@@ -105,6 +115,8 @@ class PluginPackage(APIModel):
     modes: list[dict[str, Any]]
     fields: list[dict[str, Any]]
     report: dict[str, Any] | None = None
+    # 插件对 AI 分析的声明，例如 {"problemAnalysis": false} 表示只要结论和摘要。
+    ai: dict[str, Any] = Field(default_factory=dict)
     permissions: dict[str, bool] = Field(default_factory=dict)
     directory: str
     trust: PluginTrust
@@ -183,5 +195,8 @@ class DiagnosticReport(APIModel):
     summary: str
     findings: list[Finding]
     raw_output: str
+    # 生成时是否使用了插件 HTML 报告模板。报告是历史记录，插件配置随时可能改，
+    # 因此呈现方式以这里记录的为准；None 表示改动前保存的老报告，只能按当前插件尽力推断。
+    report_template: bool | None = None
     ai: dict[str, Any] | None = None
     audit: dict[str, Any] = Field(default_factory=dict)

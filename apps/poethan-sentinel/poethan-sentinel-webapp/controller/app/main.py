@@ -16,9 +16,9 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Streamin
 from fastapi.staticfiles import StaticFiles
 
 from . import config
-from .ai import AI_KEY_ACCOUNT, test_ai
+from .ai import ai_configured_map, ai_key_account, saved_key, test_ai
 from .models import (
-    AIConnectionInput, AISettings, ApplicationSettings, ConnectionTestInput, RunRequest,
+    AIConnectionInput, AIProfile, AIProfilesInput, ApplicationSettings, ConnectionTestInput, RunRequest,
     ServerInput, ServerProfile, ServerScriptToolInput, SettingsInput,
 )
 from .plugins import plugin_service
@@ -83,7 +83,7 @@ def bootstrap(response: Response) -> dict[str, Any]:
 @app.get("/api/v1/settings", dependencies=[Depends(require_session)], response_model=ApplicationSettings)
 def get_settings() -> ApplicationSettings:
     settings = store.settings()
-    settings.ai.configured = secrets.get(AI_KEY_ACCOUNT) is not None
+    settings.ai_configured = ai_configured_map(settings)
     return settings
 
 
@@ -91,19 +91,54 @@ def get_settings() -> ApplicationSettings:
 def save_settings(payload: SettingsInput) -> ApplicationSettings:
     plugin_directory = str(Path(payload.plugin_directory).expanduser().resolve())
     Path(plugin_directory).mkdir(parents=True, exist_ok=True)
-    settings = ApplicationSettings(plugin_directory=plugin_directory, developer_mode=payload.developer_mode, demo_mode=payload.demo_mode, ai=payload.ai)
-    if payload.ai_api_key:
-        secrets.set(AI_KEY_ACCOUNT, payload.ai_api_key)
-    settings.ai.configured = secrets.get(AI_KEY_ACCOUNT) is not None
+    settings = store.settings()
+    settings.plugin_directory = plugin_directory
+    settings.developer_mode = payload.developer_mode
+    settings.demo_mode = payload.demo_mode
+    settings.ai_configured = ai_configured_map(settings)
     store.save_settings(settings)
     return settings
 
 
+def ai_profiles_payload(settings: ApplicationSettings) -> dict[str, Any]:
+    return {
+        "profiles": [profile.model_dump(by_alias=True) for profile in settings.ai_profiles],
+        "activeAiId": settings.active_ai_id,
+        "aiConfigured": ai_configured_map(settings),
+    }
+
+
+@app.get("/api/v1/ai/profiles", dependencies=[Depends(require_session)])
+def get_ai_profiles() -> dict[str, Any]:
+    return ai_profiles_payload(store.settings())
+
+
+@app.put("/api/v1/ai/profiles", dependencies=[Depends(require_mutation)])
+def save_ai_profiles(payload: AIProfilesInput) -> dict[str, Any]:
+    settings = store.settings()
+    kept_ids = {profile.id for profile in payload.profiles}
+    for removed in settings.ai_profiles:
+        if removed.id not in kept_ids:
+            secrets.delete(ai_key_account(removed.id))
+    for profile_id, key in payload.api_keys.items():
+        if key and profile_id in kept_ids:
+            secrets.set(ai_key_account(profile_id), key)
+    settings.ai_profiles = payload.profiles
+    settings.active_ai_id = payload.active_ai_id if payload.active_ai_id in kept_ids else (payload.profiles[0].id if payload.profiles else "")
+    settings.ai_configured = ai_configured_map(settings)
+    store.save_settings(settings)
+    return ai_profiles_payload(settings)
+
+
 @app.post("/api/v1/ai/test", dependencies=[Depends(require_mutation)])
 async def test_ai_connection(payload: AIConnectionInput) -> dict[str, Any]:
-    if payload.api_key:
-        secrets.set(AI_KEY_ACCOUNT, payload.api_key)
-    return await test_ai(AISettings(endpoint=payload.endpoint, model=payload.model, configured=True))
+    key = payload.api_key or (saved_key(payload.profile_id) if payload.profile_id else None)
+    if not key:
+        return {"ok": False, "message": "尚未填写 API Key，且该配置没有已保存的 Key"}
+    try:
+        return await test_ai(AIProfile(endpoint=payload.endpoint, model=payload.model), key)
+    except ValueError as exc:
+        return {"ok": False, "message": str(exc)}
 
 
 @app.get("/api/v1/servers", dependencies=[Depends(require_session)], response_model=list[ServerProfile])

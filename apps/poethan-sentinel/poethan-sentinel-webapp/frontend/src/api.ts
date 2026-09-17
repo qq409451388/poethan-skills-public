@@ -1,4 +1,6 @@
 import type {
+  AIProfile,
+  AIProfilesPayload,
   ApplicationSettings,
   DiagnosticReport,
   PluginPackage,
@@ -40,8 +42,10 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
 
 export const api = {
   settings: () => request<ApplicationSettings>('/api/v1/settings'),
-  saveSettings: (value: ApplicationSettings) => request<ApplicationSettings>('/api/v1/settings', { method: 'PUT', body: JSON.stringify(value) }),
-  testAI: (endpoint: string, model: string, apiKey: string) => request<{ ok: boolean; message: string; rawResponse?: string }>('/api/v1/ai/test', { method: 'POST', body: JSON.stringify({ endpoint, model, apiKey }) }),
+  saveSettings: (value: Pick<ApplicationSettings, 'pluginDirectory' | 'developerMode' | 'demoMode'>) => request<ApplicationSettings>('/api/v1/settings', { method: 'PUT', body: JSON.stringify(value) }),
+  aiProfiles: () => request<AIProfilesPayload>('/api/v1/ai/profiles'),
+  saveAIProfiles: (value: { profiles: AIProfile[]; activeAiId: string; apiKeys?: Record<string, string> }) => request<AIProfilesPayload>('/api/v1/ai/profiles', { method: 'PUT', body: JSON.stringify(value) }),
+  testAI: (value: { endpoint: string; model: string; apiKey?: string; profileId?: string }) => request<{ ok: boolean; message: string; rawResponse?: string }>('/api/v1/ai/test', { method: 'POST', body: JSON.stringify(value) }),
   servers: () => request<ServerProfile[]>('/api/v1/servers'),
   createServer: (value: ServerProfile) => request<ServerProfile>('/api/v1/servers', { method: 'POST', body: JSON.stringify(value) }),
   updateServer: (value: ServerProfile) => request<ServerProfile>(`/api/v1/servers/${value.id}`, { method: 'PUT', body: JSON.stringify(value) }),

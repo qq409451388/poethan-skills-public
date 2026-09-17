@@ -8,6 +8,15 @@
       "publicKey": "k/bn41B/chUkDYMT0BYARzkyzbzv8ObbPUs2ZmfTBSU=",
       "fingerprint": "SHA256:1e823f16fa8b9e797a3e734e91b7f6e5b61b7d15f2f82526e8e93e43859d8776",
       "pluginScopes": ["doris-diagnostic", "host-performance", "network-diagnostic"]
+    },
+    {
+      "id": "poethan-local",
+      "name": "Poethan Local Developer",
+      "keyId": "disk-usage-2026",
+      "algorithm": "Ed25519",
+      "publicKey": "SvKlb6rHWo5fOzGO84YRWonVJDmniW7dr9q6hD2mKmQ=",
+      "fingerprint": "SHA256:d4c086a2c4efd61b33b4d1f67a7e23f16820c18382c7ad8ee99718df0f9134d5",
+      "pluginScopes": ["disk-usage-diagnostic"]
     }
   ]
 }

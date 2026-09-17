@@ -12,16 +12,24 @@ import yaml
 
 from . import config
 from .models import ApplicationSettings, AuthenticationKind, DiagnosticReport, ServerProfile
+from .reports import hydrate_ai_html
 
 
 T = TypeVar("T")
 
 
 class JSONStore:
+    # 本机运行插件会留下编译缓存和 macOS 元数据，它们不属于插件内容。
+    PACKAGE_IGNORE = shutil.ignore_patterns("__pycache__", "*.pyc", ".DS_Store")
+
     def __init__(self) -> None:
         config.ensure_directories()
         self._lock = RLock()
         self._install_official_plugins()
+
+    @classmethod
+    def _copy_package(cls, source: Path, destination: Path) -> None:
+        shutil.copytree(source, destination, ignore=cls.PACKAGE_IGNORE)
 
     def _install_official_plugins(self) -> None:
         """Seed signed project plugins into the user-managed plugin directory by version."""
@@ -38,7 +46,7 @@ class JSONStore:
                 continue
             if not destination.exists():
                 destination.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copytree(source, destination)
+                self._copy_package(source, destination)
 
     def read(self, path: Path, default: T) -> T:
         with self._lock:
@@ -63,7 +71,24 @@ class JSONStore:
     def settings(self) -> ApplicationSettings:
         default_plugins = str(config.DATA_ROOT / "plugins")
         raw = self.read(config.SETTINGS_FILE, {})
-        return ApplicationSettings.model_validate({"pluginDirectory": default_plugins, **raw})
+        return ApplicationSettings.model_validate({"pluginDirectory": default_plugins, **self._migrate_ai_profiles(raw)})
+
+    @staticmethod
+    def _migrate_ai_profiles(raw: dict[str, Any]) -> dict[str, Any]:
+        """旧版只有单一 ai 配置，读取时迁移成 aiProfiles 列表。"""
+        legacy = raw.pop("ai", None)
+        if not isinstance(legacy, dict) or "aiProfiles" in raw:
+            return raw
+        return {
+            **raw,
+            "aiProfiles": [{
+                "id": "default",
+                "name": "默认配置",
+                "endpoint": legacy.get("endpoint") or "https://api.deepseek.com",
+                "model": legacy.get("model") or "deepseek-flash",
+            }],
+            "activeAiId": "default",
+        }
 
     def save_settings(self, settings: ApplicationSettings) -> None:
         self.write(config.SETTINGS_FILE, settings)
@@ -114,7 +139,7 @@ class JSONStore:
         reports: list[DiagnosticReport] = []
         for path in config.REPORTS_ROOT.glob("*.json"):
             try:
-                reports.append(DiagnosticReport.model_validate_json(path.read_text(encoding="utf-8")))
+                reports.append(hydrate_ai_html(DiagnosticReport.model_validate_json(path.read_text(encoding="utf-8"))))
             except Exception:
                 continue
         return sorted(reports, key=lambda item: item.created_at, reverse=True)
@@ -124,7 +149,7 @@ class JSONStore:
         if not path.exists():
             return None
         try:
-            return DiagnosticReport.model_validate_json(path.read_text(encoding="utf-8"))
+            return hydrate_ai_html(DiagnosticReport.model_validate_json(path.read_text(encoding="utf-8")))
         except Exception:
             return None
 
