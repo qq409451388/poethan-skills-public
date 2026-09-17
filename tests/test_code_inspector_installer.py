@@ -605,6 +605,45 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             )
             self.assertEqual(wrapper_result, [])
 
+            inspector_wrapper = codex_skill / "tools" / "review-db-codex-insp.py"
+            inspector_help = subprocess.run(
+                [sys.executable, str(inspector_wrapper), "--help"],
+                cwd=workspace, env=self.home_env(home), text=True, capture_output=True,
+            )
+            self.assertEqual(inspector_help.returncode, 0, inspector_help.stderr)
+            self.assertIn("issue-create", inspector_help.stdout)
+            self.assertNotIn("candidate-submit", inspector_help.stdout)
+
+            blocked_inspector_help = subprocess.run(
+                [sys.executable, str(inspector_wrapper), "candidate-submit", "--help"],
+                cwd=workspace, env=self.home_env(home), text=True, capture_output=True,
+            )
+            self.assertEqual(blocked_inspector_help.returncode, 2)
+            self.assertIn("inspector 身份不允许执行命令: candidate-submit", blocked_inspector_help.stderr)
+            self.assertNotIn("usage:", blocked_inspector_help.stdout)
+
+            allowed_inspector_help = subprocess.run(
+                [sys.executable, str(inspector_wrapper), "issue-create", "--help"],
+                cwd=workspace, env=self.home_env(home), text=True, capture_output=True,
+            )
+            self.assertEqual(allowed_inspector_help.returncode, 0, allowed_inspector_help.stderr)
+            self.assertIn("--trigger-conditions", allowed_inspector_help.stdout)
+
+            developer_wrapper = codex_skill / "tools" / "review-db-codex-dev.py"
+            blocked_developer_help = subprocess.run(
+                [sys.executable, str(developer_wrapper), "issue-create", "--help"],
+                cwd=workspace, env=self.home_env(home), text=True, capture_output=True,
+            )
+            self.assertEqual(blocked_developer_help.returncode, 2)
+            self.assertIn("developer 身份不允许执行命令: issue-create", blocked_developer_help.stderr)
+
+            allowed_developer_help = subprocess.run(
+                [sys.executable, str(developer_wrapper), "candidate-submit", "--help"],
+                cwd=workspace, env=self.home_env(home), text=True, capture_output=True,
+            )
+            self.assertEqual(allowed_developer_help.returncode, 0, allowed_developer_help.stderr)
+            self.assertIn("--candidate-key", allowed_developer_help.stdout)
+
             forged = subprocess.run(
                 [sys.executable, str(db_tool), "--agent", "inspector", "--operator-id", "codex-dev", "task-list"],
                 cwd=workspace, env=self.home_env(home), text=True, capture_output=True,

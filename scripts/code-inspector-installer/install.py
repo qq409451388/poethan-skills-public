@@ -169,13 +169,31 @@ def link_runtime(home: Path, skill_config: dict[str, Any], force: bool, skill_so
         for assignment in assignments:
             alias = assignment["alias"]
             runtime_role = "inspector" if role == "inspector" else role
+            allowed_commands = tuple(skill_config["roles"][role]["commands"])
             wrapper = home / "bin" / f"review-db-{alias}.py"
             atomic_write_text(
                 wrapper,
                 "#!/usr/bin/env python3\n"
-                "import os, sys\n"
+                "import json, os, sys\n"
                 "from pathlib import Path\n"
                 f"tool = Path({str(dst)!r})\n"
+                f"role = {runtime_role!r}\n"
+                f"allowed_commands = {allowed_commands!r}\n"
+                "arguments = sys.argv[1:]\n"
+                "if not arguments or arguments[0] in {'-h', '--help'}:\n"
+                "    print(f'usage: {Path(sys.argv[0]).name} <command> [options]')\n"
+                "    print(f'\\n{role} 可执行命令：')\n"
+                "    print('  ' + '\\n  '.join(allowed_commands))\n"
+                "    raise SystemExit(0)\n"
+                "command = arguments[0]\n"
+                "requests_help = any(argument in {'-h', '--help'} for argument in arguments[1:])\n"
+                "if command not in allowed_commands and requests_help:\n"
+                "    print(json.dumps({\n"
+                "        'error': f'{role} 身份不允许执行命令: {command}',\n"
+                "        'role': role,\n"
+                "        'allowed_commands': list(allowed_commands),\n"
+                "    }, ensure_ascii=False), file=sys.stderr)\n"
+                "    raise SystemExit(2)\n"
                 f"os.execv(sys.executable, [sys.executable, str(tool), '--agent', {runtime_role!r}, '--operator-id', {alias!r}, *sys.argv[1:]])\n",
                 executable=os.name != "nt",
             )
