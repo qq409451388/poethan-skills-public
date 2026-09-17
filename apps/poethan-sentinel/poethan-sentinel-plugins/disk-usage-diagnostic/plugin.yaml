@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "id": "disk-usage-diagnostic",
+  "name": "磁盘占用",
+  "description": "分析文件系统使用率与 inode、大目录、大文件，以及被删除但仍占用空间的文件。",
+  "version": "1.0.1",
+  "entrypoint": "run.sh",
+  "language": "python",
+  "outputLimit": 400000,
+  "publisher": {"id": "poethan-local", "keyId": "disk-usage-2026"},
+  "permissions": {"sudo": false, "perf": false, "network": false, "readLogs": false, "databaseReadOnly": false},
+  "defaultMode": "standard",
+  "report": {
+    "schema": "report/report-schema.json",
+    "template": "report/report-template.html"
+  },
+  "modes": [
+    {"id": "quick", "label": "快速 · Quick", "help": "只看文件系统使用率和一级大目录。"},
+    {"id": "standard", "label": "标准 · Standard（推荐）", "help": "增加大文件、被删除仍占用的空间和磁盘设备布局。"},
+    {"id": "deep", "label": "深度 · Deep", "help": "扩大到二级大目录和双倍采样条数，耗时更长。"}
+  ],
+  "configuration": {
+    "fields": [
+      {"key": "POETHAN_PLUGIN_HOME", "label": "服务器插件目录", "type": "path", "section": "插件运行", "default": "/opt/poethan-sentinel/plugins", "required": true, "help": "插件按 ID 和版本长期保存；版本未变化时不会重复上传。"},
+      {"key": "DISK_MOUNT_FILTER", "label": "只分析这些挂载点", "type": "text", "section": "扫描范围", "placeholder": "留空则分析全部本地文件系统", "help": "逗号分隔，例如 /,/data。默认按已用空间从大到小取前 8 个。"},
+      {"key": "DISK_MAX_MOUNTS", "label": "最多分析挂载点数", "type": "integer", "section": "扫描范围", "default": "8", "required": true},
+      {"key": "DISK_EXCLUDE_PATHS", "label": "大目录统计排除路径", "type": "text", "section": "扫描范围", "default": "/proc,/sys,/dev,/run,/snap", "help": "逗号分隔；只影响 du 的目录统计。"},
+      {"key": "DISK_USAGE_WARNING_PERCENT", "label": "使用率告警阈值", "type": "integer", "section": "检查阈值", "default": "85", "required": true},
+      {"key": "DISK_USAGE_CRITICAL_PERCENT", "label": "使用率严重阈值", "type": "integer", "section": "检查阈值", "default": "95", "required": true},
+      {"key": "DISK_INODE_WARNING_PERCENT", "label": "inode 告警阈值", "type": "integer", "section": "检查阈值", "default": "85", "required": true},
+      {"key": "DISK_LARGE_FILE_MB", "label": "大文件下限 (MB)", "type": "integer", "section": "采样", "default": "200", "required": true, "help": "小于该值的文件不进入大文件清单。"},
+      {"key": "DISK_LARGE_FILE_WARNING_MB", "label": "超大文件告警 (MB)", "type": "integer", "section": "采样", "default": "10240", "required": true, "help": "达到该值的文件会产生一条确定性发现。"},
+      {"key": "DISK_TOP_N", "label": "大目录/大文件条数", "type": "integer", "section": "采样", "default": "15", "required": true},
+      {"key": "DISK_SCAN_TIMEOUT_SECONDS", "label": "单项扫描超时 (秒)", "type": "integer", "section": "采样", "default": "120", "required": true, "help": "单个 du/find 命令的最长运行时间，避免拖慢生产机。"}
+    ]
+  }
+}

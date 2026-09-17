@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Disk Usage Report",
+  "description": "磁盘分析报告的最小数据结构。字节数由插件算好，百分比、可用空间与状态由页面自行推导。",
+  "type": "object",
+  "required": ["h", "ts", "d", "dirs", "files"],
+  "properties": {
+    "h": {"type": "string", "description": "主机名"},
+    "ts": {"type": "string", "description": "采集时间，形如 2026-09-17 13:10"},
+    "d": {
+      "type": "array",
+      "description": "[挂载点, 总字节, 已用字节, 文件系统]",
+      "items": {
+        "type": "array",
+        "minItems": 4,
+        "maxItems": 4,
+        "prefixItems": [
+          {"type": "string"},
+          {"type": "number", "minimum": 0},
+          {"type": "number", "minimum": 0},
+          {"type": "string"}
+        ]
+      }
+    },
+    "dirs": {
+      "type": "array",
+      "description": "[目录, 字节]",
+      "items": {
+        "type": "array",
+        "minItems": 2,
+        "maxItems": 2,
+        "prefixItems": [{"type": "string"}, {"type": "number", "minimum": 0}]
+      }
+    },
+    "files": {
+      "type": "array",
+      "description": "[文件, 字节]",
+      "items": {
+        "type": "array",
+        "minItems": 2,
+        "maxItems": 2,
+        "prefixItems": [{"type": "string"}, {"type": "number", "minimum": 0}]
+      }
+    }
+  }
+}

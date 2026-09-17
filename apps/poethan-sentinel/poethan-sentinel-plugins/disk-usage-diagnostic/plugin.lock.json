@@ -1,0 +1,33 @@
+{
+  "formatVersion": 1,
+  "plugin": {
+    "id": "disk-usage-diagnostic",
+    "version": "1.0.1"
+  },
+  "publisher": {
+    "id": "poethan-local",
+    "keyId": "disk-usage-2026"
+  },
+  "files": [
+    {
+      "path": "main.py",
+      "sha256": "9e3ef79c492d42c6e77e2580852b06b044f299bc6b49ecc0833e3d3cd21b95e9"
+    },
+    {
+      "path": "plugin.yaml",
+      "sha256": "86d3a9bad610bec9bcc85bdcc66b4890a0dfab5bffc09df50d80573f2789bd52"
+    },
+    {
+      "path": "report/report-schema.json",
+      "sha256": "7e585ddce8ca1b8753511d8f763c1097f9ba28d35ac8c0b39a1dddebb163e144"
+    },
+    {
+      "path": "report/report-template.html",
+      "sha256": "265f48a736fa5a23874735f7ab93b995f97c872e4992c134d6f72b1ec38a8383"
+    },
+    {
+      "path": "run.sh",
+      "sha256": "3b9e8744323940589a503b5596f0874390c1452f95f9935e66a2292f2367683d"
+    }
+  ]
+}

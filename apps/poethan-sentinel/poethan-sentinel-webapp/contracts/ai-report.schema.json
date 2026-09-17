@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://poethan.dev/sentinel/ai-report.schema.json",
+  "title": "Poethan Sentinel AI Enhancement",
+  "description": "插件配置了 HTML 报告模板时，AI 分析必须返回该对象；Controller 校验后通过 __REPORT_AI__ 占位符赋值给模板页面。插件没有模板时 AI 返回 Markdown，由应用内置报告页解析。",
+  "type": "object",
+  "required": ["summary", "findings"],
+  "additionalProperties": false,
+  "properties": {
+    "summary": {"type": "string", "minLength": 1},
+    "rootCause": {"type": "string"},
+    "confidence": {"enum": ["high", "medium", "low"]},
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["severity", "title", "evidence", "recommendation"],
+        "additionalProperties": false,
+        "properties": {
+          "severity": {"enum": ["critical", "warning", "info", "success"]},
+          "title": {"type": "string"},
+          "evidence": {"type": "string"},
+          "recommendation": {"type": "string"}
+        }
+      }
+    },
+    "actions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["priority", "action"],
+        "additionalProperties": false,
+        "properties": {
+          "priority": {"type": "integer", "minimum": 1},
+          "action": {"type": "string"},
+          "risk": {"enum": ["low", "medium", "high"]}
+        }
+      }
+    }
+  }
+}
