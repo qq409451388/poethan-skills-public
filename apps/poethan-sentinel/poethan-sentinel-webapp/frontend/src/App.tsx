@@ -14,8 +14,35 @@ import type {
   ServerProfile,
 } from './types'
 
+// crypto.randomUUID 只在安全上下文可用（如 http://127.0.0.1）；
+// 通过 http://*.local 域名访问时不是安全上下文，需要 getRandomValues 兜底，否则首屏渲染直接抛错白屏。
+const uuid = (): string => {
+  if (typeof crypto.randomUUID === 'function') return crypto.randomUUID()
+  const bytes = crypto.getRandomValues(new Uint8Array(16))
+  bytes[6] = (bytes[6] & 0x0f) | 0x40
+  bytes[8] = (bytes[8] & 0x3f) | 0x80
+  const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
+}
+
+// navigator.clipboard 同样只在安全上下文可用，降级用 execCommand 保证 http 域名下复制按钮可用。
+const copyText = async (value: string): Promise<void> => {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value)
+    return
+  }
+  const area = document.createElement('textarea')
+  area.value = value
+  area.setAttribute('readonly', '')
+  area.style.position = 'fixed'
+  area.style.opacity = '0'
+  document.body.appendChild(area)
+  area.select()
+  try { document.execCommand('copy') } finally { document.body.removeChild(area) }
+}
+
 const emptyServer = (): ServerProfile => ({
-  id: crypto.randomUUID(), name: '', authentication: 'alias', alias: '', host: '', user: '', port: 22, identityFile: '', password: '',
+  id: uuid(), name: '', authentication: 'alias', alias: '', host: '', user: '', port: 22, identityFile: '', password: '',
 })
 
 const formatDate = (value?: string) => value ? new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value)) : '—'
@@ -446,7 +473,7 @@ function ResultStage(props: DiagnosticProps & { report: DiagnosticReport }) {
   const aiPending = props.aiEnabled && !report.ai
   return <section className="stage active"><header className="result-heading"><span className={`result-symbol ${counts.critical ? 'critical' : counts.warning ? 'warning' : 'success'}`}>{counts.critical || counts.warning ? '!' : '✓'}</span><div><span className="eyebrow">诊断完成 · 用时 {report.durationSeconds.toFixed(1)} 秒</span><h2>{report.plugin.name}</h2><p>{report.server.name} · {report.plugin.mode} · {formatDate(report.createdAt)}</p></div></header><div className="result-summary"><div><span>严重</span><b className="danger-text">{counts.critical}</b></div><div><span>警告</span><b className="warning-text">{counts.warning}</b></div><div><span>正常</span><b className="success-text">{counts.success}</b></div><div><span>采集区段</span><b>{sections}</b></div></div><div className="tabs"><button className={props.resultTab === 'conclusion' ? 'active' : ''} onClick={() => props.setResultTab('conclusion')}>诊断结论</button><button className={props.resultTab === 'raw' ? 'active' : ''} onClick={() => props.setResultTab('raw')}>原始输出</button><button className={props.resultTab === 'ai' ? 'active' : ''} onClick={() => props.setResultTab('ai')}>AI 分析 {aiPending && <i>生成中</i>}</button></div>
     {props.resultTab === 'conclusion' && <div className="tab-panel active">{report.findings.map((item, index) => <article className={`finding ${item.severity}`} key={`${item.title}-${index}`}><span>{item.severity === 'success' ? '✓' : '!'}</span><div><header><h3>{item.title}</h3><i>{item.severity === 'critical' ? '严重' : item.severity === 'warning' ? '警告' : item.severity === 'success' ? '正常' : '信息'}</i></header><p>{item.evidence}</p>{item.recommendation && <aside><b>建议</b>{item.recommendation}</aside>}</div></article>)}</div>}
-    {props.resultTab === 'raw' && <div className="tab-panel active"><div className="raw-toolbar"><label className="search"><span>⌕</span><input value={props.rawSearch} onChange={(e) => props.setRawSearch(e.target.value)} placeholder="筛选原始输出"/></label><button className="button quiet" onClick={() => navigator.clipboard.writeText(report.rawOutput).then(() => props.showToast('原始输出已复制'))}>复制全部</button></div><pre className="raw-report">{filteredRaw}</pre></div>}
+    {props.resultTab === 'raw' && <div className="tab-panel active"><div className="raw-toolbar"><label className="search"><span>⌕</span><input value={props.rawSearch} onChange={(e) => props.setRawSearch(e.target.value)} placeholder="筛选原始输出"/></label><button className="button quiet" onClick={() => copyText(report.rawOutput).then(() => props.showToast('原始输出已复制'))}>复制全部</button></div><pre className="raw-report">{filteredRaw}</pre></div>}
     {props.resultTab === 'ai' && <div className="tab-panel active">{aiPending ? <div className="ai-loading"><div className="ai-scanner"><i/></div><h3>AI 正在关联诊断证据</h3><p>本地报告已经可用，AI 完成后此处会自动更新。</p></div> : report.ai?.status === 'failed' ? <Empty title="AI 分析失败" text={report.ai.error || '请检查接口配置，原始诊断报告不受影响。'}/> : report.ai ? <div className="ai-report"><header><span>AI</span><div><h3>增强分析结果</h3><p>这是基于诊断事实的推断，请结合业务窗口确认。</p></div></header><pre>{report.ai.content || JSON.stringify(report.ai.raw, null, 2)}</pre></div> : <Empty title="本次未启用 AI" text="确定性结论和原始输出仍是完整报告。"/>}</div>}
   </section>
 }
@@ -473,7 +500,7 @@ function SettingsPage({ settings, setSettings, scan, cacheBytes, cacheRoot, save
   const [key, setKey] = useState('')
   const [aiTestResult, setAiTestResult] = useState('')
   return <section className="page active"><div className="page-content settings-page"><header className="page-heading"><div><span className="eyebrow">应用设置</span><h1>设置</h1><p>管理插件来源、AI 接口和可重新生成的本机缓存。</p></div><button className="button primary" disabled={busy === 'settings'} onClick={save}>{busy === 'settings' ? '保存中…' : '保存设置'}</button></header>
-    <section className="panel setting-card"><header><span>⬡</span><div><h3>诊断工具目录</h3><p>本机脚本、服务器脚本配置和手动放入的插件统一从这里读取。</p></div></header><label className="path-input"><b>目录</b><input value={settings.pluginDirectory} onChange={(e) => setSettings({ ...settings, pluginDirectory: e.target.value })}/><button onClick={() => navigator.clipboard.writeText(settings.pluginDirectory).then(() => showToast('工具目录已复制'))}>复制</button></label><div className="setting-switches"><label className="switch-row"><span><b>开发者模式</b><small>允许本机调试未签名插件；公开使用时建议关闭</small></span><input type="checkbox" checked={settings.developerMode} onChange={(e) => setSettings({ ...settings, developerMode: e.target.checked })}/><i/></label><label className="switch-row"><span><b>演示模式</b><small>仅使用内置模拟结果体验流程；关闭后隐藏演示服务器</small></span><input type="checkbox" checked={settings.demoMode} onChange={(e) => setSettings({ ...settings, demoMode: e.target.checked })}/><i/></label></div><footer><button className="button quiet" onClick={() => api.openPluginDirectory().then(() => showToast('已打开诊断工具目录')).catch((error: Error) => showToast(error.message))}>打开工具目录</button><button className="button quiet" onClick={async () => { await rescan(); showToast('诊断工具库扫描完成') }}>重新扫描工具库</button><span className={scan.invalidCount ? 'inline-warning' : 'inline-success'}>{scan.validCount} 个有效，{scan.invalidCount} 个失败</span></footer></section>
+    <section className="panel setting-card"><header><span>⬡</span><div><h3>诊断工具目录</h3><p>本机脚本、服务器脚本配置和手动放入的插件统一从这里读取。</p></div></header><label className="path-input"><b>目录</b><input value={settings.pluginDirectory} onChange={(e) => setSettings({ ...settings, pluginDirectory: e.target.value })}/><button onClick={() => copyText(settings.pluginDirectory).then(() => showToast('工具目录已复制'))}>复制</button></label><div className="setting-switches"><label className="switch-row"><span><b>开发者模式</b><small>允许本机调试未签名插件；公开使用时建议关闭</small></span><input type="checkbox" checked={settings.developerMode} onChange={(e) => setSettings({ ...settings, developerMode: e.target.checked })}/><i/></label><label className="switch-row"><span><b>演示模式</b><small>仅使用内置模拟结果体验流程；关闭后隐藏演示服务器</small></span><input type="checkbox" checked={settings.demoMode} onChange={(e) => setSettings({ ...settings, demoMode: e.target.checked })}/><i/></label></div><footer><button className="button quiet" onClick={() => api.openPluginDirectory().then(() => showToast('已打开诊断工具目录')).catch((error: Error) => showToast(error.message))}>打开工具目录</button><button className="button quiet" onClick={async () => { await rescan(); showToast('诊断工具库扫描完成') }}>重新扫描工具库</button><span className={scan.invalidCount ? 'inline-warning' : 'inline-success'}>{scan.validCount} 个有效，{scan.invalidCount} 个失败</span></footer></section>
     <section className="panel setting-card"><header><span>AI</span><div><h3>AI 增强分析</h3><p>兼容 OpenAI Chat Completions / Responses 接口，DeepSeek 可直接使用。</p></div></header><div className="settings-form"><label><span>接口地址</span><input value={settings.ai.endpoint} onChange={(e) => setSettings({ ...settings, ai: { ...settings.ai, endpoint: e.target.value } })}/></label><label><span>模型</span><input value={settings.ai.model} onChange={(e) => setSettings({ ...settings, ai: { ...settings.ai, model: e.target.value } })}/></label><label><span>API Key</span><input type="password" value={key} onChange={(e) => { setKey(e.target.value); setSettings({ ...settings, aiApiKey: e.target.value }) }} placeholder={settings.ai.configured ? '已安全保存；留空不修改' : 'sk-…'}/></label></div>{aiTestResult && <details className="ai-raw-response" open><summary>AI 原始响应</summary><pre>{aiTestResult}</pre></details>}<footer><button className="button quiet" disabled={busy === 'ai-test'} onClick={() => { setAiTestResult('等待模型回复…'); testAI(key).then((result) => setAiTestResult(result.rawResponse || JSON.stringify(result, null, 2))).catch((error: Error) => setAiTestResult(error.message)) }}>{busy === 'ai-test' ? '测试中…' : '保存前测试连接'}</button><span className={settings.ai.configured ? 'inline-success' : 'inline-warning'}>{settings.ai.configured ? '已配置' : '尚未配置'}</span></footer></section>
     <section className="panel setting-card"><header><span>↺</span><div><h3>本机缓存</h3><p>诊断结果、AI JSON 和生成的 HTML 报告；服务器与插件配置不会清除。</p></div></header><div className="cache-row"><span><small>当前占用</small><b>{formatBytes(cacheBytes)}</b><em>{cacheRoot}</em></span><button className="button danger" onClick={clearCache}>清空缓存</button></div></section>
   </div></section>
