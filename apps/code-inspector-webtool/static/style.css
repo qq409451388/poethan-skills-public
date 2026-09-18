@@ -500,3 +500,8 @@ tbody tr:last-child td { border-bottom: 0; }
   .routing-status { grid-template-columns: 1fr; }
   .routing-status-facts { grid-template-columns: 1fr 1fr; }
 }
+
+/* 本机 Agent 发现与初始化 */
+.routing-discovery-empty { border-left: 4px solid var(--amber); }
+.routing-seed-preview { border-left: 4px solid var(--amber); background: linear-gradient(180deg, #fffdf7 0, #fff 40%); }
+.routing-seed-preview .routing-actions form { display: inline-flex; }

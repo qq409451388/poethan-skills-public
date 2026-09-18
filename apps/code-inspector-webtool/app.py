@@ -1560,9 +1560,62 @@ def routing_config():
         )
     except Exception:  # noqa: BLE001 - 未安装 PyYAML 时退回示例文本
         yaml_text = example
+    discovered, discovery_error = [], None
+    try:
+        discovered = routing.discover_candidates()
+    except Exception as exc:  # noqa: BLE001 - 发现不可用时页面仍要能打开
+        discovery_error = str(exc)
     return render_template(
         "routing.html", status=status, example=example, yaml_text=yaml_text,
+        discovered=discovered, discovery_error=discovery_error,
         roles=["DEVELOPER", "INSPECTOR"], reasonings=["minimal", "low", "medium", "high", "xhigh"],
+    )
+
+
+@app.post("/routing/seed")
+def routing_seed():
+    """从本机已安装 Agent 生成初始配置。
+
+    默认只回填到页面供人工确认；`apply=1` 时按同样的校验与原子写入流程保存。
+    """
+    try:
+        document = routing.seed_document()
+    except Exception as exc:  # noqa: BLE001
+        return redirect_back("routing_config", err=f"无法从本机 Agent 初始化：{exc}")
+    if not document["agents"]:
+        return redirect_back(
+            "routing_config",
+            err="没有发现可用候选：本机没有绑定 Developer 身份，或对应 Agent 的模型配置无法读取。",
+        )
+    if request.form.get("apply") != "1":
+        try:
+            preview = routing.dump_yaml(document)
+        except Exception as exc:  # noqa: BLE001
+            return redirect_back("routing_config", err=f"无法生成 YAML 预览：{exc}")
+        return render_template(
+            "routing.html",
+            status=routing.status_view(),
+            example=routing.example_text(),
+            yaml_text=preview,
+            discovered=routing.discover_candidates(),
+            discovery_error=None,
+            seed_preview=document,
+            roles=["DEVELOPER", "INSPECTOR"],
+            reasonings=["minimal", "low", "medium", "high", "xhigh"],
+        )
+    try:
+        result = routing.save_document(document)
+    except Exception as exc:  # noqa: BLE001
+        return redirect_back("routing_config", err=f"初始化配置未保存：{exc}")
+    snapshot = result["snapshot"]
+    if snapshot["status"] != "ENABLED":
+        return redirect_back(
+            "routing_config",
+            err=f"初始化配置已写入但未启用：{snapshot.get('error') or snapshot['status']}",
+        )
+    return redirect_back(
+        "routing_config",
+        msg=f"已从本机 Agent 初始化 {len(snapshot['agents'])} 条执行配置并立即生效。",
     )
 
 

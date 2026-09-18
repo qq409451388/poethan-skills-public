@@ -195,6 +195,7 @@ def link_runtime(home: Path, skill_config: dict[str, Any], force: bool, skill_so
     atomic_copy_path(src, dst, force)
     # Agent Model Routing 是本机级旁路能力，和 review-db 一起放到 bin 目录。
     atomic_copy_path(SCRIPT_DIR / "runtime" / "agent_routing.py", home / "bin" / "agent_routing.py", force)
+    atomic_copy_path(SCRIPT_DIR / "runtime" / "agent_discovery.py", home / "bin" / "agent_discovery.py", force)
     if skill_source:
         for name in (
             "code-inspector-supervisor.py", "supervisor.py", "issue_thread.py",
@@ -670,6 +671,7 @@ def main() -> int:
                 "migrations_current": migration_ok,
                 "runtime_review_db": (home / "bin" / "review-db.py").exists(),
                 "runtime_agent_routing": (home / "bin" / "agent_routing.py").exists(),
+                "runtime_agent_discovery": (home / "bin" / "agent_discovery.py").exists(),
                 "runtime_supervisor": (home / "bin" / "code-inspector-supervisor.py").exists(),
                 "runtime_issue_thread": (home / "bin" / "issue_thread.py").exists(),
                 "runtime_config": runtime_config_ok,

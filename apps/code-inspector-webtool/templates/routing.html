@@ -28,6 +28,55 @@
   {% if status.error %}<div class="routing-validation-error"><strong>校验错误</strong><pre class="raw-json">{{ status.error }}</pre></div>{% endif %}
 </section>
 
+{% if seed_preview %}
+<section class="panel routing-seed-preview" data-live-region="routing-seed-preview">
+  <div class="section-head">
+    <div><h2>初始化预览</h2><p class="section-sub">以下内容来自本机 Agent 配置。确认无误后写入，或取消后手工调整。</p></div>
+    <span class="badge badge-amber">尚未保存</span>
+  </div>
+  <div class="issue-executors">
+    {% for entry in seed_preview.agents %}
+    <div class="issue-executor">
+      <span><strong>{{ entry.agent }}</strong> · {{ entry.model }} · reasoning {{ entry.reasoning }}<br><small class="mono">{{ entry.id }}</small></span>
+      <span class="badge">level {{ entry.level }}</span>
+    </div>
+    {% endfor %}
+  </div>
+  <p class="form-note">level 默认按 3 生成，请按本机实际情况调整：等级语义是 <span class="mono">level &gt;= difficulty</span>。</p>
+  <div class="routing-actions">
+    <form method="post" action="{{ url_for('routing_seed') }}"><input type="hidden" name="apply" value="1"><button class="btn btn-primary">确认写入并启用</button></form>
+    <a class="btn" href="{{ url_for('routing_config') }}">取消</a>
+  </div>
+</section>
+{% endif %}
+
+<section class="panel routing-discovery{% if not discovered %} routing-discovery-empty{% endif %}" data-live-region="routing-discovery">
+  <div class="section-head">
+    <div>
+      <h2>从本机 Agent 初始化</h2>
+      <p class="section-sub">只读取各 Agent 自己的配置来确认模型名，不猜测、不联网；只有已绑定为 Developer 的身份会出现在这里。</p>
+    </div>
+    <span class="badge badge-neutral">{{ discovered|length }} 个候选</span>
+  </div>
+  {% if discovery_error %}
+  <div class="routing-validation-error"><strong>无法读取本机 Agent 配置</strong><pre class="raw-json">{{ discovery_error }}</pre></div>
+  {% elif discovered %}
+  <div class="issue-executors">
+    {% for entry in discovered %}
+    <div class="issue-executor">
+      <span><strong>{{ entry.agent }}</strong> · {{ entry.model }} · reasoning {{ entry.reasoning }}<br><small class="muted">绑定身份 <span class="mono">{{ entry.alias }}</span></small></span>
+      <span class="badge">level {{ entry.level }}</span>
+    </div>
+    {% endfor %}
+  </div>
+  <form method="post" action="{{ url_for('routing_seed') }}">
+    <div class="routing-actions"><button class="btn btn-soft">生成初始配置（先预览）</button></div>
+  </form>
+  {% else %}
+  <p class="panel-note">没有发现候选：本机没有绑定 Developer 身份，或对应 Agent 的模型配置无法从 <span class="mono">~/.codex/config.toml</span>、<span class="mono">~/.claude/settings.json</span>、<span class="mono">~/.dsh/settings.yaml</span> 读取。仍可在下方手工新增。</p>
+  {% endif %}
+</section>
+
 <section class="panel" data-live-region="routing-table">
   <div class="section-head">
     <div><h2>执行配置列表</h2><p class="section-sub">同一 Agent 可以承担多个角色；Developer 推荐只取 <span class="mono">enabled = true</span> 且 <span class="mono">role = DEVELOPER</span> 的条目。</p></div>

@@ -279,7 +279,92 @@ def save_routing_document(document: Any, path: Path | None = None) -> tuple[dict
     return normalized, reload_snapshot(resolved)
 
 
+def seed_document(discovered: list[dict[str, Any]]) -> dict[str, Any]:
+    """把「本机 Agent 发现结果」转换为候选配置文档。
+
+    发现结果只提供 model/reasoning 等事实；id 去重与 level 兜底在这里补齐，
+    之后仍然要经过 parse_routing_document 的完整校验。
+    """
+    agents: list[dict[str, Any]] = []
+    used: set[str] = set()
+    for entry in discovered:
+        if not isinstance(entry, dict):
+            continue
+        agent = str(entry.get("agent") or "").strip()
+        model = str(entry.get("model") or "").strip()
+        if not agent or not model:
+            continue  # 无法确认模型的平台不写入，避免编造
+        base = str(entry.get("id") or f"{agent}-developer").strip() or f"{agent}-developer"
+        candidate_id, suffix = base, 2
+        while candidate_id in used:
+            candidate_id = f"{base}-{suffix}"
+            suffix += 1
+        used.add(candidate_id)
+        reasoning = str(entry.get("reasoning") or "high").strip().lower()
+        if reasoning not in ALLOWED_REASONING:
+            reasoning = "high"
+        level = entry.get("level")
+        if isinstance(level, bool) or not isinstance(level, int) or not 1 <= level <= MAX_LEVEL:
+            level = 3
+        agents.append({
+            "id": candidate_id,
+            "agent": agent,
+            "role": "DEVELOPER",
+            "model": model,
+            "reasoning": reasoning,
+            "level": level,
+            "enabled": bool(entry.get("enabled", True)),
+        })
+    return parse_routing_document({"version": 1, "agents": agents})
+
+
 def _review_home() -> Path:
     return Path(os.path.expandvars(os.path.expanduser(
         os.environ.get("AGENT_REVIEW_HOME", "~/.agent-review")
     ))).resolve()
+
+
+def main(argv: list[str] | None = None) -> int:
+    """命令行入口：status / seed / validate。
+
+    只做本机配置文件读写，不触碰 Review DB，也没有角色权限概念。
+    """
+    import argparse
+    import json
+    import sys
+
+    parser = argparse.ArgumentParser(description="Agent Model Routing 配置工具")
+    sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser("status", help="输出当前运行时快照")
+    seed = sub.add_parser("seed", help="从本机已安装 Agent 生成候选配置")
+    seed.add_argument("--write", action="store_true", help="直接写入 agent-routing.yml；省略时只打印")
+    seed.add_argument("--force", action="store_true", help="已存在配置时也覆盖（默认拒绝覆盖）")
+    args = parser.parse_args(argv)
+
+    if args.command == "status":
+        print(json.dumps(get_snapshot().as_dict(), ensure_ascii=False, indent=2))
+        return 0
+
+    from agent_discovery import discover_agents
+
+    document = seed_document(discover_agents())
+    path = routing_config_path(_review_home())
+    if not args.write:
+        print(json.dumps(document, ensure_ascii=False, indent=2))
+        return 0
+    if path.exists() and not args.force:
+        print(json.dumps({
+            "error": f"配置已存在，未覆盖: {path}；确认要替换时使用 --force",
+        }, ensure_ascii=False), file=sys.stderr)
+        return 1
+    normalized, snapshot = save_routing_document(document, path)
+    print(json.dumps({
+        "saved": str(path),
+        "agents": len(normalized["agents"]),
+        "status": snapshot.status,
+    }, ensure_ascii=False, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

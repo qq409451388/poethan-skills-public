@@ -42,6 +42,35 @@ def load_routing_module():
     return module
 
 
+def load_discovery_module():
+    """加载安装后的 agent_discovery 模块，用于从本机 Agent 初始化配置。"""
+    cached = sys.modules.get("code_inspector_agent_discovery")
+    if cached is not None:
+        return cached
+    module_path = review_home() / "bin" / "agent_discovery.py"
+    if not module_path.exists():
+        raise RuntimeError(
+            f"未找到本机 Agent 发现模块：{module_path}。请重新安装 Code Inspector。"
+        )
+    spec = importlib.util.spec_from_file_location("code_inspector_agent_discovery", module_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"无法加载本机 Agent 发现模块：{module_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["code_inspector_agent_discovery"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def discover_candidates() -> list[dict[str, Any]]:
+    """返回本机已绑定为 Developer、且能从其自身配置确认模型的候选条目。"""
+    return load_discovery_module().discover_agents()
+
+
+def seed_document() -> dict[str, Any]:
+    """把发现结果转换为候选配置文档（仍需通过完整校验才能保存）。"""
+    return load_routing_module().seed_document(discover_candidates())
+
+
 def status_view() -> dict[str, Any]:
     """页面读取入口：始终返回结构，不抛异常，非法配置用 INVALID 表达。"""
     module = load_routing_module()
