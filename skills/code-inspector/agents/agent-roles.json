@@ -24,6 +24,10 @@
       {
         "agent": "dsh",
         "alias": "dsh-developer"
+      },
+      {
+        "agent": "claude",
+        "alias": "claude-developer"
       }
     ],
     "inspector": [
