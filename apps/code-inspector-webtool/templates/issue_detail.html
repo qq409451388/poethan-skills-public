@@ -61,19 +61,43 @@
         <span class="badge badge-blue">difficulty = {{ issue.difficulty }}</span>
       </div>
       {% if issue.difficulty_reason %}<ul class="value-list">{% for reason in issue.difficulty_reason %}<li>{{ reason }}</li>{% endfor %}</ul>{% endif %}
-      <h3 class="executor-heading">可执行的 Developer 配置</h3>
+
+      {% if issue.assignment %}
+      <h3 class="executor-heading">已选定的执行者</h3>
+      <div class="issue-executors">
+        <div class="issue-executor issue-executor-assigned">
+          <span><strong>{{ issue.assignment.agent }}</strong> · {{ issue.assignment.model }} · reasoning {{ issue.assignment.reasoning }}<br><small class="mono">{{ issue.assignment.profileId }}</small></span>
+          <span class="badge badge-green">level {{ issue.assignment.level }}</span>
+        </div>
+      </div>
+      {% endif %}
+
+      <h3 class="executor-heading">候选执行配置</h3>
       {% if issue.recommended_executors %}
-      <p class="section-sub">按 <span class="mono">level &gt;= difficulty</span> 从本机「模型路由配置」筛选，只是候选，不代表强制调度结果。</p>
+      <p class="section-sub">按 <span class="mono">level &gt;= difficulty</span> 从本机「模型路由配置」<strong>实时</strong>计算，只是候选，不代表强制调度结果。</p>
       <div class="issue-executors">
         {% for executor in issue.recommended_executors %}
         <div class="issue-executor">
-          <span><strong>{{ executor.agent }}</strong> · {{ executor.model }} · reasoning {{ executor.reasoning }}</span>
+          <span><strong>{{ executor.agent }}</strong> · {{ executor.model }} · reasoning {{ executor.reasoning }}<br><small class="mono">{{ executor.profileId }}</small></span>
           <span class="badge">level {{ executor.level }}</span>
         </div>
         {% endfor %}
       </div>
       {% else %}
-      <p class="panel-note">没有推荐执行配置：Model Router 未启用，或本机没有 level &gt;= {{ issue.difficulty }} 的 Developer 配置。可前往 <a href="{{ url_for('routing_config') }}">模型路由配置</a>。</p>
+      <p class="panel-note">没有候选执行配置：Model Router 未启用，或本机没有 level &gt;= {{ issue.difficulty }} 的 Dev 配置。可前往 <a href="{{ url_for('routing_config') }}">模型路由配置</a>。</p>
+      {% endif %}
+
+      {% if assignment_profiles %}
+      <form method="post" action="{{ url_for('issue_set_assignment', issue_key=issue.issue_key) }}" class="executor-assign-form">
+        <label for="assignment-profile">指定执行者（写入 assignment，不影响候选推荐）</label>
+        <select name="profile_id" id="assignment-profile">
+          <option value="">— 清除分配 —</option>
+          {% for profile in assignment_profiles %}
+          <option value="{{ profile.id }}" {% if issue.assignment and issue.assignment.profileId == profile.id %}selected{% endif %}>{{ profile.agent }} · {{ profile.model }} · {{ profile.reasoning }} · Lv{{ profile.level }}</option>
+          {% endfor %}
+        </select>
+        <button class="btn btn-small">保存分配</button>
+      </form>
       {% endif %}
     </section>
     {% endif %}

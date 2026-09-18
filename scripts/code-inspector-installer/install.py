@@ -189,6 +189,17 @@ def migrate(db_path: Path, backup_dir: Path | None = None) -> dict[str, Any]:
             applied.append(path.name)
     return {"applied": applied, "backup": str(backup_path) if backup_path else None}
 
+def install_routing_metadata(source: Path, home: Path, force: bool) -> None:
+    """把 Skill 内置的 Agent/Model 能力表与示例配置复制到本机 config 目录。
+
+    能力表是 Model/Reasoning 可选项的唯一来源，Runtime 与 WebApp 都读这一份。
+    """
+    for name in ("agent-capabilities.yml", "agent-routing.example.yml"):
+        origin = source / "config" / name
+        if origin.exists():
+            atomic_copy_path(origin, home / "config" / name, force)
+
+
 def link_runtime(home: Path, skill_config: dict[str, Any], force: bool, skill_source: Path | None = None) -> None:
     src = SCRIPT_DIR / "runtime" / "review_db.py"
     dst = home / "bin" / "review-db.py"
@@ -607,6 +618,7 @@ def main() -> int:
             )
             migration_result = migrate(db, home / "backups")
             link_runtime(home, skill_config, args.force, source)
+            install_routing_metadata(source, home, args.force)
             install_role_skills(config, skill_config, source, home, args.force)
             print_result({
                 "command": "install", "status": "ok", "home": str(home), "database": str(db),
@@ -672,6 +684,7 @@ def main() -> int:
                 "runtime_review_db": (home / "bin" / "review-db.py").exists(),
                 "runtime_agent_routing": (home / "bin" / "agent_routing.py").exists(),
                 "runtime_agent_discovery": (home / "bin" / "agent_discovery.py").exists(),
+                "routing_capabilities": (home / "config" / "agent-capabilities.yml").exists(),
                 "runtime_supervisor": (home / "bin" / "code-inspector-supervisor.py").exists(),
                 "runtime_issue_thread": (home / "bin" / "issue_thread.py").exists(),
                 "runtime_config": runtime_config_ok,

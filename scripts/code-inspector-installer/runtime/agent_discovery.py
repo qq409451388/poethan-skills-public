@@ -1,12 +1,16 @@
-"""从本机已安装的 Agent 发现可用于路由的模型与推理档位。
+"""从本机已安装的 Agent 发现可用模型与默认配置。
 
 只读本机已有配置，不猜测、不联网：
 - Codex      → `~/.codex/config.toml` 的 `model` / `model_reasoning_effort`
 - Claude     → `~/.claude/settings.json` 的 `model` 别名与 `ANTHROPIC_DEFAULT_*_MODEL`
 - DeepSeek   → `~/.dsh/settings.yaml` 的 `agent-default-model`
-- Trae-CN    → 无稳定可读的模型配置，返回空结果
 
-发现结果只用于「初始化」时填充候选值，最终 level 由人类在页面上确认。
+discovery 的职责只有两件事：
+1. 发现本机安装了哪些 Agent（按绑定关系）；
+2. 读取其当前默认模型/推理档位，作为初始化时的推荐值。
+
+它不负责判断某个模型支持哪些 reasoning —— 那属于 Skill 内置 capability 元数据。
+同一个 Agent 可以返回多个 Model，不会再把 Agent 压成单模型。
 """
 from __future__ import annotations
 
@@ -16,10 +20,9 @@ import re
 from pathlib import Path
 from typing import Any
 
-DEFAULT_REASONING = "high"
 DEFAULT_LEVEL = 3
 
-# 平台 → 人类可读名称，用于初始化时的 id 前缀与展示。
+# 平台 → 人类可读名称，用于初始化时的 profile id 前缀。
 PLATFORM_LABELS = {
     "codex": "codex",
     "claude": "claude",
@@ -50,13 +53,14 @@ def discover_codex(home: Path) -> dict[str, Any]:
     if not text:
         return {}
     model = _toml_string(text, "model")
+    if not model:
+        return {}
     reasoning = _toml_string(text, "model_reasoning_effort")
-    found: dict[str, Any] = {}
-    if model:
-        found["model"] = model
-    if reasoning:
-        found["reasoning"] = reasoning
-    return found
+    return {
+        "model": model,
+        "reasoning": reasoning,
+        "models": [{"model": model, "reasoning": reasoning}],
+    }
 
 
 def discover_claude(home: Path) -> dict[str, Any]:
@@ -71,16 +75,33 @@ def discover_claude(home: Path) -> dict[str, Any]:
         return {}
     env = settings.get("env") if isinstance(settings.get("env"), dict) else {}
     alias = str(settings.get("model") or "").strip()
-    if not alias and not env:
-        return {}
-    # 别名（opus/sonnet/haiku）优先映射到 env 中的完整模型名。
-    model = None
+
+    # 别名（opus/sonnet/haiku/…）优先映射到 env 中的完整模型名。
+    models: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def add(model: str | None) -> None:
+        name = str(model or "").strip()
+        if name and name not in seen:
+            seen.add(name)
+            models.append({"model": name, "reasoning": None})
+
+    default_model: str | None = None
     if alias:
-        suffix = alias.upper().replace("-", "_")
-        model = str(env.get(f"ANTHROPIC_DEFAULT_{suffix}_MODEL") or "").strip() or alias
-    if not model:
-        model = str(env.get("ANTHROPIC_DEFAULT_OPUS_MODEL") or "").strip() or None
-    return {"model": model} if model else {}
+        # Claude 允许 `opus[1m]` 这类带上下文后缀的别名，映射时先取基础别名。
+        base_alias = alias.split("[", 1)[0].strip()
+        suffix = (base_alias or alias).upper().replace("-", "_")
+        default_model = str(env.get(f"ANTHROPIC_DEFAULT_{suffix}_MODEL") or "").strip() or alias
+        add(default_model)
+    # settings.json 里声明的其它默认模型同样是本机可用模型。
+    for key in sorted(env):
+        if key.startswith("ANTHROPIC_DEFAULT_") and key.endswith("_MODEL"):
+            add(env.get(key))
+    if not models:
+        return {}
+    if not default_model:
+        default_model = models[0]["model"]
+    return {"model": default_model, "reasoning": None, "models": models}
 
 
 def discover_dsh(home: Path) -> dict[str, Any]:
@@ -98,7 +119,9 @@ def discover_dsh(home: Path) -> dict[str, Any]:
     if not model:
         return {}
     value = model.group(1).strip().strip("'\"")
-    return {"model": value} if value else {}
+    if not value:
+        return {}
+    return {"model": value, "reasoning": None, "models": [{"model": value, "reasoning": None}]}
 
 
 DISCOVERERS = {
@@ -109,6 +132,7 @@ DISCOVERERS = {
 
 
 def discover_platform(platform: str, home: Path | None = None) -> dict[str, Any]:
+    """返回 {model, reasoning, models[]}；无法确认时返回空对象。"""
     discoverer = DISCOVERERS.get(platform)
     if discoverer is None:
         return {}
@@ -137,34 +161,61 @@ def load_bindings(home: Path | None = None) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
-def discover_agents(home: Path | None = None) -> list[dict[str, Any]]:
-    """把本机已绑定的 Developer 执行身份转成候选路由条目。
+def _binding_platform(binding: Any) -> str:
+    if not isinstance(binding, dict):
+        return ""
+    return str(binding.get("agent_platform") or binding.get("agent") or "").strip()
 
-    只在能被本机配置确认模型时给出条目；无法确认的平台（如 Trae-CN）跳过，
-    避免写入编造的模型名。
+
+def discover_installed_agents(home: Path | None = None) -> list[str]:
+    """本机绑定过的 Agent 名称（不区分角色）。"""
+    return sorted({
+        platform
+        for binding in load_bindings(home).values()
+        if (platform := _binding_platform(binding))
+    })
+
+
+def discover_agents(home: Path | None = None, role: str = "developer") -> list[dict[str, Any]]:
+    """把本机 Developer 执行身份展开成候选条目。
+
+    每个 (agent, model) 一条，同一个 Agent 的多个 Model 都会保留；
+    只在该模型能从本机配置确认时才给出，避免写入编造的模型名。
     """
     bindings = load_bindings(home)
     discovered: list[dict[str, Any]] = []
-    seen_platform: set[str] = set()
+    seen: set[tuple[str, str]] = set()
     for alias, binding in sorted(bindings.items()):
-        if not isinstance(binding, dict) or binding.get("role") != "developer":
+        if not isinstance(binding, dict) or binding.get("role") != role:
             continue
-        platform = str(binding.get("agent_platform") or binding.get("agent") or "").strip()
-        if not platform or platform in seen_platform:
+        platform = _binding_platform(binding)
+        if not platform:
             continue
         found = discover_platform(platform, home)
-        model = found.get("model")
-        if not model:
-            continue
-        seen_platform.add(platform)
-        discovered.append({
-            "id": f"{PLATFORM_LABELS.get(platform, platform)}-developer",
-            "agent": platform,
-            "role": "DEVELOPER",
-            "model": str(model),
-            "reasoning": str(found.get("reasoning") or DEFAULT_REASONING),
-            "level": DEFAULT_LEVEL,
-            "enabled": True,
-            "alias": alias,
-        })
+        models = found.get("models") or (
+            [{"model": found["model"], "reasoning": found.get("reasoning")}]
+            if found.get("model") else []
+        )
+        label = PLATFORM_LABELS.get(platform, platform)
+        for item in models:
+            model = str(item.get("model") or "").strip()
+            if not model or (platform, model) in seen:
+                continue
+            seen.add((platform, model))
+            # 模型名已带平台前缀时不再重复（claude-opus-5[1M] 不写成 claude-claude-…）。
+            base = model if model.lower().startswith(label.lower()) else f"{label}-{model}"
+            discovered.append({
+                "id": base,
+                "agent": platform,
+                "model": model,
+                # 只有「当前默认模型」才是确定的推荐档位，其余留空交由 capability 决定。
+                "reasoning": (
+                    found.get("reasoning")
+                    if model == found.get("model") else None
+                ),
+                "level": DEFAULT_LEVEL,
+                "enabled": True,
+                "alias": alias,
+                "isDefaultModel": model == found.get("model"),
+            })
     return discovered

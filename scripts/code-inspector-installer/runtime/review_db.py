@@ -34,10 +34,10 @@ except ModuleNotFoundError:  # 仓库内直接执行时，模块尚未复制到�
     )
 
 try:
-    from agent_routing import parse_difficulty, recommend_executors
+    from agent_routing import get_snapshot, parse_difficulty, recommend_executors, routing_revision
 except ModuleNotFoundError:  # 仓库内直接执行时，同目录模块尚未复制到安装目录。
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from agent_routing import parse_difficulty, recommend_executors
+    from agent_routing import get_snapshot, parse_difficulty, recommend_executors, routing_revision
 
 SEVERITY_WEIGHT = {"critical": 4, "high": 3, "medium": 2, "low": 1}
 BENEFIT_WEIGHT = {"high": 3, "medium": 2, "low": 1}
@@ -886,7 +886,7 @@ def issue_create(args: argparse.Namespace) -> None:
             raise RuntimeError("请先创建任务版本")
 
         issue_key = args.issue_key or f"RI-{uuid.uuid4().hex[:8].upper()}"
-        recommended = recommend_executors(payload["difficulty"])
+        recommended, revision = compute_recommendations(payload["difficulty"])
         conn.execute(
             """INSERT INTO review_issue(
                 issue_key, task_id, introduced_version, parent_issue_id, title, dimension,
@@ -894,8 +894,8 @@ def issue_create(args: argparse.Namespace) -> None:
                 status, description, facts, trigger_conditions_json, potential_impact_json,
                 impact_scope_json, rationale, evidence_json, estimated_change_json, dedupe_key,
                 summary, expected_outcome, technical_note, local_terms_json,
-                difficulty, difficulty_reason_json, recommended_executors_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PROPOSED', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                difficulty, difficulty_reason_json, recommended_executors_json, routing_revision
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PROPOSED', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 issue_key, task["id"], task["current_version"], args.parent_issue_id,
                 payload["title"], payload["dimension"], payload["severity"], payload["remediation_benefit"],
@@ -906,7 +906,7 @@ def issue_create(args: argparse.Namespace) -> None:
                 payload.get("dedupe_key") or issue_dedupe_key(payload),
                 payload["summary"], payload["expected_outcome"], payload["technical_note"],
                 dumps(payload["local_terms"]),
-                payload["difficulty"], dumps(payload["difficulty_reason"]), dumps(recommended),
+                payload["difficulty"], dumps(payload["difficulty_reason"]), dumps(recommended), revision,
             ),
         )
         issue_id = conn.execute("SELECT id FROM review_issue WHERE issue_key = ?", (issue_key,)).fetchone()["id"]
@@ -982,7 +982,7 @@ def issue_create_batch(args: argparse.Namespace) -> None:
         created: list[str] = []
         for payload, dedupe_key in new_payloads:
             issue_key = payload.get("issue_key") or f"RI-{uuid.uuid4().hex[:8].upper()}"
-            recommended = recommend_executors(payload["difficulty"])
+            recommended, revision = compute_recommendations(payload["difficulty"])
             conn.execute(
                 """INSERT INTO review_issue(
                     issue_key, task_id, introduced_version, parent_issue_id, title, dimension,
@@ -990,8 +990,8 @@ def issue_create_batch(args: argparse.Namespace) -> None:
                     status, description, facts, trigger_conditions_json, potential_impact_json,
                     impact_scope_json, rationale, evidence_json, estimated_change_json, dedupe_key,
                     summary, expected_outcome, technical_note, local_terms_json,
-                    difficulty, difficulty_reason_json, recommended_executors_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PROPOSED', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    difficulty, difficulty_reason_json, recommended_executors_json, routing_revision
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PROPOSED', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     issue_key, task["id"], version, payload.get("parent_issue_id"), payload["title"], payload["dimension"],
                     payload["severity"], payload["remediation_benefit"], payload["remediation_cost"],
@@ -1001,7 +1001,7 @@ def issue_create_batch(args: argparse.Namespace) -> None:
                     dumps(payload.get("estimated_change", {})), dedupe_key,
                     payload["summary"], payload["expected_outcome"], payload["technical_note"],
                     dumps(payload["local_terms"]),
-                    payload["difficulty"], dumps(payload["difficulty_reason"]), dumps(recommended),
+                    payload["difficulty"], dumps(payload["difficulty_reason"]), dumps(recommended), revision,
                 ),
             )
             issue_id = conn.execute("SELECT id FROM review_issue WHERE issue_key = ?", (issue_key,)).fetchone()["id"]
@@ -1024,6 +1024,7 @@ ISSUE_OUTPUT_FIELDS = {
     "created_at", "updated_at", "dedupe_key", "task_key", "project_name",
     "summary", "expected_outcome", "technical_note", "local_terms_json",
     "difficulty", "difficulty_reason_json", "recommended_executors_json",
+    "routing_revision", "assignment_json",
     "last_activity_at", "last_comment_at", "last_discussion_at",
 }
 
@@ -1036,6 +1037,9 @@ ISSUE_GET_COMPACT_FIELDS = [
     "issue_key", "task_key", "project_name", "title", "summary", "expected_outcome",
     "technical_note", "local_terms_json", "dimension", "severity", "status",
     "evidence_json", "current_attempt_no", "updated_at", "last_activity_at", "last_discussion_at",
+    # difficulty 与 assignment 是判断「谁来做」的关键信息，compact 视图必须带上。
+    "difficulty", "difficulty_reason_json", "recommended_executors_json",
+    "routing_revision", "assignment_json",
 ]
 
 def selected_issue_fields(value: str | None) -> list[str] | None:
@@ -1105,7 +1109,7 @@ def issue_query(conn: sqlite3.Connection, args: argparse.Namespace) -> list[dict
         for key in (
             "trigger_conditions_json", "potential_impact_json", "impact_scope_json",
             "evidence_json", "estimated_change_json", "local_terms_json",
-            "difficulty_reason_json", "recommended_executors_json"
+            "difficulty_reason_json", "recommended_executors_json", "assignment_json"
         ):
             item[key] = loads(
                 item[key],
@@ -1149,12 +1153,17 @@ def issue_get(args: argparse.Namespace) -> None:
         for key in (
             "trigger_conditions_json", "potential_impact_json", "impact_scope_json",
             "evidence_json", "estimated_change_json", "local_terms_json",
-            "difficulty_reason_json", "recommended_executors_json"
+            "difficulty_reason_json", "recommended_executors_json", "assignment_json"
         ):
             item[key] = loads(
                 item[key],
                 {} if key in {"estimated_change_json", "local_terms_json"} else [],
             )
+        # 推荐是当前 Routing 配置的函数：revision 变化时重算，避免返回过期快照。
+        item["recommended_executors_json"] = refresh_recommendations(
+            conn, args.issue_key, item.get("difficulty"), item.get("routing_revision"),
+        )
+        item["routing_revision"] = routing_revision()
         if args.view == "compact":
             item = {field: item[field] for field in ISSUE_GET_COMPACT_FIELDS}
         audit(conn, actor_id(args), "issue.get", "review_issue", args.issue_key, True)
@@ -1196,6 +1205,61 @@ def apply_assessment_update(
     return changed
 
 
+def compute_recommendations(difficulty: int | None) -> tuple[list[dict[str, Any]], str | None]:
+    """按当前 Routing 配置计算推荐，并返回配置 revision 作为缓存标记。"""
+    try:
+        return recommend_executors(difficulty), routing_revision()
+    except (RuntimeError, ValueError):
+        # Router 异常不能让问题创建/读取失败；退化为「无推荐」。
+        return [], None
+
+
+def current_recommendations(
+    difficulty: int | None, stored_revision: str | None, stored: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """读取时按当前配置动态计算；revision 未变则复用已存缓存。
+
+    与 refresh_recommendations 的区别：本函数只计算不落库，用于在只读快照内构造返回值。
+    """
+    try:
+        current = routing_revision()
+    except (RuntimeError, ValueError):
+        return []
+    if stored_revision == current:
+        return stored
+    try:
+        return recommend_executors(difficulty)
+    except (RuntimeError, ValueError):
+        return []
+
+
+def refresh_recommendations(
+    conn: sqlite3.Connection, issue_key: str, difficulty: int | None, stored_revision: str | None,
+) -> list[dict[str, Any]]:
+    """推荐是当前配置的函数，不是历史快照。
+
+    持久化字段只作为缓存：revision 与当前配置不一致时重新计算并回写，
+    避免 Routing 修改后旧 Issue 继续沿用过期结果。
+    """
+    try:
+        current = routing_revision()
+    except (RuntimeError, ValueError):
+        return []
+    if stored_revision == current:
+        row = conn.execute(
+            "SELECT recommended_executors_json FROM review_issue WHERE issue_key = ?", (issue_key,)
+        ).fetchone()
+        if row is not None:
+            return loads(row[0], [])
+    recommended = current_recommendations(difficulty, None, [])
+    conn.execute(
+        "UPDATE review_issue SET recommended_executors_json = ?, routing_revision = ?, "
+        "updated_at = CURRENT_TIMESTAMP WHERE issue_key = ?",
+        (dumps(recommended), current, issue_key),
+    )
+    return recommended
+
+
 def apply_difficulty_update(
     conn: sqlite3.Connection, args: argparse.Namespace, issue_key: str,
     difficulty: int | None, reason: list[Any] | None,
@@ -1209,8 +1273,12 @@ def apply_difficulty_update(
         raise KeyError(f"问题不存在: {issue_key}")
     if reason is not None and not isinstance(reason, list):
         raise ValueError("difficulty-reason 必须是 JSON 数组")
-    assignments = ["difficulty = ?", "recommended_executors_json = ?", "updated_at = CURRENT_TIMESTAMP"]
-    values: list[Any] = [difficulty, dumps(recommend_executors(difficulty))]
+    recommended, revision = compute_recommendations(difficulty)
+    assignments = [
+        "difficulty = ?", "recommended_executors_json = ?", "routing_revision = ?",
+        "updated_at = CURRENT_TIMESTAMP",
+    ]
+    values: list[Any] = [difficulty, dumps(recommended), revision]
     if reason is not None:
         assignments.insert(1, "difficulty_reason_json = ?")
         values.insert(1, dumps(reason))
@@ -1238,6 +1306,61 @@ def issue_set_difficulty(args: argparse.Namespace) -> None:
     with connect() as conn:
         result = apply_difficulty_update(conn, args, args.issue_key, difficulty, reason)
     print_json({"issue_key": args.issue_key, **result})
+
+def apply_assignment_update(
+    conn: sqlite3.Connection, args: argparse.Namespace, issue_key: str,
+    profile_id: str | None,
+) -> dict[str, Any]:
+    """记录真正选定的执行配置（assignment），与候选推荐区分开。
+
+    只接受当前 Routing 配置中存在且启用的 profile；推荐本身是候选，不是调度结果。
+    """
+    row = conn.execute("SELECT id FROM review_issue WHERE issue_key = ?", (issue_key,)).fetchone()
+    if not row:
+        raise KeyError(f"问题不存在: {issue_key}")
+    if not profile_id:
+        assignment: dict[str, Any] = {}
+    else:
+        try:
+            snapshot = get_snapshot()
+        except (RuntimeError, ValueError):
+            snapshot = None
+        if snapshot is None or not snapshot.enabled:
+            raise RuntimeError("Model Router 未启用，无法记录执行者分配")
+        match = next(
+            (entry for entry in snapshot.profiles if entry["id"] == profile_id and entry["enabled"]),
+            None,
+        )
+        if match is None:
+            raise ValueError(f"执行配置不存在或未启用: {profile_id}")
+        assignment = {
+            "profileId": match["id"],
+            "agent": match["agent"],
+            "model": match["model"],
+            "reasoning": match["reasoning"],
+            "level": match["level"],
+            "routingRevision": snapshot.revision,
+        }
+    conn.execute(
+        "UPDATE review_issue SET assignment_json = ?, updated_at = CURRENT_TIMESTAMP "
+        "WHERE issue_key = ?",
+        (dumps(assignment), issue_key),
+    )
+    audit(conn, actor_id(args), "issue.set-assignment", "review_issue", issue_key, True,
+          f"profile={profile_id or 'cleared'}")
+    return assignment
+
+
+def issue_set_assignment(args: argparse.Namespace) -> None:
+    require_agent(args.agent)
+    if args.agent not in {"inspector", "human"}:
+        raise PermissionError("只有 inspector 或 human 可以指定执行配置")
+    with connect() as conn:
+        assignment = apply_assignment_update(
+            conn, args, args.issue_key, (args.profile_id or "").strip() or None,
+        )
+    print_json({"issue_key": args.issue_key, "assignment": assignment})
+
 
 def issue_update_assessment(args: argparse.Namespace) -> None:
     if args.agent not in {"inspector", "human"}:
@@ -2230,7 +2353,8 @@ def issue_context_get(args: argparse.Namespace) -> None:
             """SELECT i.issue_key, i.title, i.summary, i.expected_outcome, i.technical_note,
                       i.status, i.dimension, i.severity, i.current_attempt_no,
                       i.evidence_json, i.local_terms_json,
-                      i.difficulty, i.recommended_executors_json,
+                      i.difficulty, i.recommended_executors_json, i.routing_revision,
+                      i.assignment_json,
                       t.task_key, t.project_name, t.review_level, t.review_scope, t.baseline_ref
                FROM review_issue i JOIN review_task t ON t.id=i.task_id
                WHERE i.issue_key=?""",
@@ -2296,7 +2420,12 @@ def issue_context_get(args: argparse.Namespace) -> None:
     issue_json = dict(issue)
     evidence = loads(issue_json.pop("evidence_json"), [])
     local_terms = loads(issue_json.pop("local_terms_json"), {})
-    issue_json["recommendedExecutors"] = loads(issue_json.pop("recommended_executors_json"), [])
+    issue_json["recommendedExecutors"] = current_recommendations(
+        issue_json.get("difficulty"),
+        issue_json.pop("routing_revision", None),
+        loads(issue_json.pop("recommended_executors_json"), []),
+    )
+    issue_json["assignment"] = loads(issue_json.pop("assignment_json"), {})
     issue_json["evidence"], issue_json["evidence_truncated"] = bounded_context_evidence(evidence)
     issue_json["evidence_count"] = len(evidence)
     issue_json["local_terms"], issue_json["local_terms_truncated"] = bounded_context_local_terms(local_terms)
@@ -3825,6 +3954,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--difficulty", required=True, help="抽象困难程度，正整数；omit 语义不支持")
     p.add_argument("--difficulty-reason", help='JSON 数组；省略则保留原解释')
     p.set_defaults(func=issue_set_difficulty)
+
+    p = sub.add_parser("issue-set-assignment")
+    p.add_argument("--issue-key", required=True)
+    p.add_argument("--profile-id", help="Dev 执行配置 id；省略或传空表示清除分配")
+    p.set_defaults(func=issue_set_assignment)
 
     p = sub.add_parser("discussion-append")
     p.add_argument("--issue-key", required=True)

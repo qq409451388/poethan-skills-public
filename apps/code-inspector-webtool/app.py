@@ -364,7 +364,7 @@ def issue_with_json(row: dict) -> dict:
     for field, default in (
         ("trigger_conditions", []), ("potential_impact", []), ("impact_scope", []),
         ("evidence", []), ("estimated_change", {}), ("local_terms", {}),
-        ("difficulty_reason", []), ("recommended_executors", []),
+        ("difficulty_reason", []), ("recommended_executors", []), ("assignment", {}),
     ):
         row[field] = parse_json_field(row.get(f"{field}_json"), default)
     return row
@@ -991,6 +991,8 @@ def issue_detail(issue_key: str):
            FROM code_inspector_event WHERE issue_key=? ORDER BY id DESC LIMIT 20""", (issue_key,)
     )
     ai_summary = issue_ai_summary(issue_key, runtime_threads, runtime_events)
+    # 推荐按当前 Routing 配置动态计算，避免展示持久化下来的过期快照。
+    issue["recommended_executors"] = routing.recommended_for(issue.get("difficulty"))
     stage, status_explanation = STATUS_PRESENTATION.get(issue["status"], (1, issue["status"]))
     return render_template(
         "issue_detail.html", issue=issue, activities=history_activities, activity_groups=grouped,
@@ -1008,6 +1010,7 @@ def issue_detail(issue_key: str):
         task_statuses=TASK_STATUSES,
         runtime_threads=runtime_threads, runtime_events=runtime_events,
         ai_summary=ai_summary,
+        assignment_profiles=routing.enabled_profiles(),
     )
 
 
@@ -1286,6 +1289,20 @@ def runtime_pause_thread(issue_key: str, operator_id: str):
         return redirect_back("runtime_overview", err=str(exc))
 
 
+@app.route("/issues/<issue_key>/assignment", methods=["POST"])
+def issue_set_assignment(issue_key: str):
+    """记录真正选定的执行配置；推荐只是候选，assignment 才是调度结果。"""
+    args = ["--issue-key", issue_key]
+    profile_id = request.form.get("profile_id", "").strip()
+    if profile_id:
+        args.extend(["--profile-id", profile_id])
+    try:
+        run_human_command("issue-set-assignment", *args)
+        return redirect_back("issue_detail", issue_key=issue_key, msg="执行者分配已保存")
+    except Exception as exc:  # noqa: BLE001
+        return redirect_back("issue_detail", issue_key=issue_key, err=str(exc))
+
+
 @app.route("/issues/<issue_key>/assessment", methods=["POST"])
 def issue_update_assessment(issue_key: str):
     args = ["--issue-key", issue_key]
@@ -1545,18 +1562,27 @@ def routing_config():
         status = routing.status_view()
     except Exception as exc:  # noqa: BLE001 - 配置页本身不能因配置问题打不开
         status = {
-            "status": "UNAVAILABLE", "enabled": False, "agents": [], "version": None,
-            "path": str(routing.routing_config_path()), "configPath": str(routing.routing_config_path()),
-            "pathOverride": None, "error": str(exc),
-            "enabledCount": 0, "message": "Agent Routing 模块不可用。",
+            "status": "UNAVAILABLE", "enabled": False, "version": None,
+            "profiles": [], "capabilities": {}, "revision": None,
+            "configPath": "<不可用>", "capabilityPath": "<不可用>",
+            "pathOverride": None, "moduleSource": routing.module_source(),
+            "error": str(exc), "enabledCount": 0,
+            "message": "Agent Routing 模块不可用。",
+            "agentOptions": [], "modelOptions": {}, "levelScale": [1, 2, 3, 4, 5],
         }
+    context = _routing_page_context(status)
+    return render_template("routing.html", **context)
+
+
+def _routing_page_context(status: dict, seed_preview: dict | None = None, **extra):
+    """页面渲染上下文；各处渲染路径共用，避免字段漏传。"""
     try:
         example = routing.example_text()
     except Exception:  # noqa: BLE001
         example = ""
     try:
         yaml_text = routing.dump_yaml(
-            {"version": status.get("version") or 1, "agents": list(status.get("agents") or [])}
+            {"version": status.get("version") or 2, "profiles": list(status.get("profiles") or [])}
         )
     except Exception:  # noqa: BLE001 - 序列化异常时退回示例文本，页面仍可打开
         yaml_text = example
@@ -1565,57 +1591,71 @@ def routing_config():
         discovered = routing.discover_candidates()
     except Exception as exc:  # noqa: BLE001 - 发现不可用时页面仍要能打开
         discovery_error = str(exc)
-    return render_template(
-        "routing.html", status=status, example=example, yaml_text=yaml_text,
-        discovered=discovered, discovery_error=discovery_error,
-        roles=["DEVELOPER", "INSPECTOR"], reasonings=["minimal", "low", "medium", "high", "xhigh"],
-    )
+    try:
+        capabilities_payload = routing.capabilities_json()
+    except Exception:  # noqa: BLE001
+        capabilities_payload = '{"capabilities": {}, "fallbackReasonings": []}'
+    config_path = routing.routing_config_path()
+    try:
+        groups = routing.profile_groups(status)
+    except Exception:  # noqa: BLE001 - 分组失败时页面仍要能打开
+        groups = []
+    return {
+        "status": status,
+        "example": example,
+        "yaml_text": yaml_text,
+        "discovered": discovered,
+        "discovery_error": discovery_error,
+        "seed_preview": seed_preview,
+        "capabilities_payload": capabilities_payload,
+        "config_exists": config_path.exists(),
+        "profile_groups": groups,
+        **extra,
+    }
 
 
 @app.post("/routing/seed")
 def routing_seed():
-    """从本机已安装 Agent 生成初始配置。
+    """从本机已安装 Agent 初始化执行配置。
 
-    默认只回填到页面供人工确认；`apply=1` 时按同样的校验与原子写入流程保存。
+    默认只预览；`apply=1` 时按同样的校验与原子写入流程保存。
+    已有配置时默认合并（保护人工配置），只有显式 `replace=1` 才整体替换。
     """
+    replace = request.form.get("replace") == "1"
     try:
-        document = routing.seed_document()
+        result = routing.seed_result(replace=replace)
     except Exception as exc:  # noqa: BLE001
         return redirect_back("routing_config", err=f"无法从本机 Agent 初始化：{exc}")
-    if not document["agents"]:
+    if not result["document"]["profiles"]:
         return redirect_back(
             "routing_config",
             err="没有发现可用候选：本机没有绑定 Developer 身份，或对应 Agent 的模型配置无法读取。",
         )
+    if result["mode"] == "merge" and not result["added"]:
+        return redirect_back(
+            "routing_config",
+            msg=f"现有配置已覆盖全部本机 Agent，无需新增；保留原有 {result['kept']} 条执行配置。",
+        )
     if request.form.get("apply") != "1":
-        try:
-            preview = routing.dump_yaml(document)
-        except Exception as exc:  # noqa: BLE001
-            return redirect_back("routing_config", err=f"无法生成 YAML 预览：{exc}")
+        status = routing.status_view()
         return render_template(
             "routing.html",
-            status=routing.status_view(),
-            example=routing.example_text(),
-            yaml_text=preview,
-            discovered=routing.discover_candidates(),
-            discovery_error=None,
-            seed_preview=document,
-            roles=["DEVELOPER", "INSPECTOR"],
-            reasonings=["minimal", "low", "medium", "high", "xhigh"],
+            **_routing_page_context(status, seed_preview=result),
         )
     try:
-        result = routing.save_document(document)
+        saved = routing.save_document(result["document"])
     except Exception as exc:  # noqa: BLE001
         return redirect_back("routing_config", err=f"初始化配置未保存：{exc}")
-    snapshot = result["snapshot"]
+    snapshot = saved["snapshot"]
     if snapshot["status"] != "ENABLED":
         return redirect_back(
             "routing_config",
             err=f"初始化配置已写入但未启用：{snapshot.get('error') or snapshot['status']}",
         )
+    action = {"merge": "合并", "replace": "替换", "create": "创建"}.get(result["mode"], "写入")
     return redirect_back(
         "routing_config",
-        msg=f"已从本机 Agent 初始化 {len(snapshot['agents'])} 条执行配置并立即生效。",
+        msg=f"已{action} {len(snapshot['profiles'])} 条执行配置并立即生效。",
     )
 
 
@@ -1628,8 +1668,8 @@ def routing_save():
             result = routing.save_yaml_text(request.form.get("yaml_text", ""))
         else:
             result = routing.save_document({
-                "version": _routing_version(request.form.get("version")),
-                "agents": routing.agents_from_form(request.form),
+                "version": 2,
+                "profiles": routing.profiles_from_form(request.form),
             })
     except Exception as exc:  # noqa: BLE001
         return redirect_back("routing_config", err=f"配置未保存：{exc}")
@@ -1640,7 +1680,7 @@ def routing_save():
         )
     return redirect_back(
         "routing_config",
-        msg=f"配置已保存并立即生效，共 {len(snapshot['agents'])} 条执行配置。",
+        msg=f"配置已保存并立即生效，共 {len(snapshot['profiles'])} 条 Dev 执行配置。",
     )
 
 
@@ -1650,25 +1690,22 @@ def routing_validate():
     mode = request.form.get("mode", "rows")
     try:
         if mode == "yaml":
-            document = routing.load_routing_module().parse_routing_text(request.form.get("yaml_text", ""))
+            module = routing.load_routing_module()
+            document = module.parse_routing_text(
+                request.form.get("yaml_text", ""), routing.load_capabilities(),
+            )
         else:
             document = {
-                "version": _routing_version(request.form.get("version")),
-                "agents": routing.agents_from_form(request.form),
+                "version": 2,
+                "profiles": routing.profiles_from_form(request.form),
             }
         ok, error = routing.validate_document(document)
     except Exception as exc:  # noqa: BLE001
         return redirect_back("routing_config", err=f"配置校验失败：{exc}")
     if not ok:
         return redirect_back("routing_config", err=f"配置校验失败：{error}")
-    return redirect_back("routing_config", msg=f"配置校验通过，共 {len(document['agents'])} 条执行配置。")
-
-
-def _routing_version(value: str | None) -> int:
-    text = (value or "").strip() or "1"
-    if not text.lstrip("-").isdigit():
-        raise ValueError("version 必须是整数")
-    return int(text)
+    count = len(document.get("profiles") or [])
+    return redirect_back("routing_config", msg=f"配置校验通过，共 {count} 条 Dev 执行配置。")
 
 
 @app.context_processor

@@ -59,6 +59,11 @@ commands:
     optional: [--difficulty-reason]
     json_arguments: [--difficulty-reason]
     note: 修正已创建 Issue 的困难程度并立即重算推荐执行配置；不改变 Issue 状态机。省略 --difficulty-reason 时保留原解释。
+  issue-set-assignment:
+    roles: [inspector, human]
+    required: [--issue-key]
+    optional: [--profile-id]
+    note: 记录真正选定的 Dev 执行配置；省略 --profile-id 表示清除分配。推荐只是候选，assignment 才是调度结果，两者分开持久化。
   issue-create-batch:
     roles: [inspector, human]
     required: [--task-key, --reason, --issues]

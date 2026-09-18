@@ -21,32 +21,55 @@
 
 ## Developer 执行模型推荐（可选）
 
-Inspector 只输出抽象的 `difficulty`（1 起正整数，越高要求越高），不感知任何具体模型名称。是否把它换算成“哪些 Developer 执行配置可以完成这个任务”，由本机级配置文件决定：
+Inspector 只输出抽象的 `difficulty`（1 起正整数，越高要求越高），不感知任何具体模型名称。是否把它换算成“哪些 Dev 执行配置可以完成这个任务”，由本机级配置文件决定：
 
 ```text
-~/.agent-review/config/agent-routing.yml
+~/.agent-review/config/agent-routing.yml      # 你的执行配置
+~/.agent-review/config/agent-capabilities.yml # Skill 内置的 Agent/Model 能力表
 ```
 
 该文件不存在时功能完全不启用，Issue 照常创建、状态机照常流转，只是没有推荐列表。配置结构见 [config/agent-routing.example.yml](config/agent-routing.example.yml)：
 
 ```yaml
-version: 1
-
-agents:
-  - id: codex-sol-high
-    agent: codex
-    role: DEVELOPER
-    model: gpt-5.6-sol
-    reasoning: high
-    level: 3
-    enabled: true
+version: 2
+profiles:
+- id: codex-gpt-5.6-sol-high
+  agent: codex
+  model: gpt-5.6-sol
+  reasoning: high
+  level: 3
+  enabled: true
 ```
 
-筛选语义是 `enabled = true` 且 `role = DEVELOPER` 且 `level >= difficulty`。`level` 不要求连续；结果只是“可执行候选”，不改变 Issue 状态机，也不代表强制调度结果。
+每条记录都是一个 **Dev 执行配置**：Agent、Model、Reasoning、等级。`role` 不是可配置维度——执行配置只代表 Developer 能力，旧配置里的 `INSPECTOR` 条目在读入时会被丢弃。筛选语义是 `enabled = true` 且 `level >= difficulty`，`level` 取离散值 `1..5`，与 `difficulty` 同一尺度；结果只是候选，不改变 Issue 状态机，也不代表强制调度结果。
 
-配置文件的查看与修改统一在 WebApp 的「模型路由配置」页面完成（`/routing`）：新增、删除、修改、校验、保存和 YAML 原始编辑。保存流程是「完整校验 → 写临时文件 → 原子替换 → reload 运行时快照」，校验失败不修改现有文件，reload 失败继续沿用上一份有效配置，都不需要重启 WebApp。
+### Model 与 Reasoning 的能力来源
 
-配置文件由人类维护，Agent 只读取筛选结果，不修改它。
+可选的 Model 与 Reasoning 档位来自 Skill 内置的 [config/agent-capabilities.yml](config/agent-capabilities.yml)，结构为 `agent -> models[] -> supportedReasonings[]`：
+
+```yaml
+agents:
+- agent: codex
+  models:
+  - model: gpt-5.6-sol
+    supportedReasonings: [minimal, low, medium, high]
+  - model: gpt-5.1-codex-mini
+    supportedReasonings: [low, medium, high]
+```
+
+同一个 Agent 可以维护多个 Model，每个 Model 有**自己**的 Reasoning 范围；不假设都支持 `high`/`xhigh`。WebApp 的下拉与后端校验读同一份数据，因此不会出现“后端允许但页面无法表达”的档位。未收录的模型不会被拒绝，而是退回通用档位集合。
+
+本机 discovery 只做两件事：发现安装了哪些 Agent、读取其当前默认模型与推理档位作为初始推荐；它不判断模型能力，也不会把同一个 Agent 压成单模型。
+
+### 推荐与分配
+
+- `difficulty` 是 Inspector 输出的抽象能力要求。
+- 推荐（`recommendedExecutors`）由 Router 按**当前**配置动态计算，并带 `routing_revision` 作为缓存失效标记；配置一改，历史 Issue 的推荐立即按新配置重算，不会永久沿用旧快照。
+- 真正选定的执行者是独立的 `assignment` 字段，用 `issue-set-assignment` 写入，与候选推荐分开持久化。
+
+### 页面与保存流程
+
+配置的查看与修改统一在 WebApp 的「模型路由配置」页面完成（`/routing`）：按 Agent 分组、一个 Agent 下配置多个 Model、Model 从 capability 选择、Reasoning 随 Model 联动、等级用离散滑杆。保存流程是「完整校验 → 写临时文件 → 原子替换 → reload 运行时快照」，校验失败不修改现有文件，reload 失败继续沿用上一份有效配置，都不需要重启 WebApp。从本机 Agent 初始化时，已有配置默认**合并**（只追加新组合，保留人工调整过的等级与启用状态），整体替换必须显式选择。
 
 ## 安装
 

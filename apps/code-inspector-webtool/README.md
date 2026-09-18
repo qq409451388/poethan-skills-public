@@ -59,7 +59,7 @@ python3 apps/code-inspector-webtool/app.py
 - Issue 详情：展示设计、实现与审核阶段、结构化证据、当前轮实现和协作记录；协作记录默认按最新优先汇总全部内容，同时保留讨论与处理历史筛选，设计、Stage、实现等正式协作提交会同时投影到讨论和历史但只落库一次。Human 可处理最终边界/安全确认，用专用 `human-confirmation-resolve` 恢复设计或实现流程，但不能借此直接 `CONFIRMED`。所有写操作仍走 human 领域命令。
 - AI 运行情况：`/runtime` 默认展示今日 Token、处理 Issue、模型唤醒、过期事件拦截、需要关注项和 Issue 消耗排行；异常文案使用 Human 可理解的中文。Thread、Event、Lease、Revision、Turn Metrics 及 Retry/Reconcile/Pause 完整保留在默认折叠的“高级诊断”中，管理操作只经过 Runtime CLI 并写审计。Issue 详情同步展示该 Issue 的 AI 消耗、工具读取和折叠的最近 Turn。
 - 候选问题：默认显示 `SUBMITTED` / `UNDER_REVIEW`，支持任务和状态筛选；接受与拒绝都要求填写审核结论，且接受不会自动创建正式 Issue。
-- 模型路由配置：查看本机 `~/.agent-review/config/agent-routing.yml` 的状态（未配置 / 配置错误 / 已启用）、校验错误和 Agent 执行配置列表；支持新增、删除、修改、保存、校验以及 YAML 原始编辑。这是本功能唯一绕过 `review-db.py` 的写操作，因为它修改的是本机配置文件而不是 Review DB：后端完整校验后写临时文件、原子替换正式文件，再 reload 运行时内存快照，保存成功即时生效，无需重启。校验失败直接返回且不修改现有文件；reload 失败时继续沿用上一份有效运行时配置。页面不维护第二套校验规则，直接复用 `~/.agent-review/bin/agent_routing.py`。
+- 模型路由配置：查看本机 `~/.agent-review/config/agent-routing.yml` 的状态（未配置 / 配置错误 / 已启用）、校验错误和 Dev 执行配置列表。按 Agent 分组，一个 Agent 可配置多个 Model；Model 与 Reasoning 选项来自 Skill 内置的 `agent-capabilities.yml`，Reasoning 随所选 Model 联动；等级用离散滑杆（1..5）。支持新增、删除、保存、校验和 YAML 原始编辑。这是本功能唯一绕过 `review-db.py` 的写操作，因为它修改的是本机配置文件而不是 Review DB：后端完整校验后写临时文件、原子替换正式文件，再 reload 运行时内存快照，保存成功即时生效，无需重启。校验失败直接返回且不修改现有文件；reload 失败时继续沿用上一份有效运行时配置。从本机 Agent 初始化默认与现有配置合并（保护人工调整），整体替换需显式选择。页面与 Runtime 共用同一份路径解析与校验实现，并且模块优先取安装目录、缺失时回退源码 checkout。
 
 弹窗支持遮罩、关闭按钮和 ESC 关闭，Tab 切换时不会丢失当前页面上下文。活动内容继续支持换行、列表、行内代码和 fenced Markdown 代码块。
 

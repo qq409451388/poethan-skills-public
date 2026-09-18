@@ -74,6 +74,7 @@ ACTION_ROLES = {
     "stage-review": {"inspector", "human"},
     "implementation-submit": {"developer", "human"},
     "issue-set-difficulty": {"inspector", "human"},
+    "issue-set-assignment": {"inspector", "human"},
     "issue-update-status": {"inspector", "developer", "human"},
     "human-escalate": {"inspector"},
 }

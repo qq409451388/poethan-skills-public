@@ -505,3 +505,45 @@ tbody tr:last-child td { border-bottom: 0; }
 .routing-discovery-empty { border-left: 4px solid var(--amber); }
 .routing-seed-preview { border-left: 4px solid var(--amber); background: linear-gradient(180deg, #fffdf7 0, #fff 40%); }
 .routing-seed-preview .routing-actions form { display: inline-flex; }
+
+/* 模型路由：Agent 分组与等级滑杆 */
+.routing-agent { margin-bottom: 14px; overflow: hidden; border: 1px solid var(--border); border-radius: 10px; }
+.routing-agent-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 13px; border-bottom: 1px solid var(--border); background: #f8fafc; }
+.routing-agent-head strong { font-size: 14px; }
+.routing-agent-head small { display: block; margin-top: 2px; color: var(--muted); font-size: 11px; }
+.routing-agent .routing-table { min-width: 720px; }
+.routing-agent .routing-table th, .routing-agent .routing-table td { padding: 8px 10px; }
+.routing-agent .routing-table select { min-width: 150px; }
+#routing-agents:empty { display: none; }
+
+/* 等级滑杆：离散 1..5，填充比例由 --routing-level-percent 控制 */
+.routing-level-cell { min-width: 168px; }
+.routing-level-cell input[type="range"] {
+  width: 132px; height: 22px; margin: 0; padding: 0; vertical-align: middle;
+  background: transparent; cursor: pointer; -webkit-appearance: none; appearance: none;
+}
+.routing-level-cell input[type="range"]::-webkit-slider-runnable-track {
+  height: 6px; border-radius: 999px;
+  background: linear-gradient(90deg, var(--blue) var(--routing-level-percent, 50%), #dbe2ec var(--routing-level-percent, 50%));
+}
+.routing-level-cell input[type="range"]::-moz-range-track { height: 6px; border-radius: 999px; background: #dbe2ec; }
+.routing-level-cell input[type="range"]::-moz-range-progress { height: 6px; border-radius: 999px; background: var(--blue); }
+.routing-level-cell input[type="range"]::-webkit-slider-thumb {
+  width: 16px; height: 16px; margin-top: -5px; border: 0; border-radius: 50%;
+  background: #fff; box-shadow: 0 0 0 2px var(--blue), 0 1px 4px rgba(15, 23, 42, .25);
+  -webkit-appearance: none; appearance: none;
+}
+.routing-level-cell input[type="range"]::-moz-range-thumb {
+  width: 14px; height: 14px; border: 0; border-radius: 50%;
+  background: #fff; box-shadow: 0 0 0 2px var(--blue);
+}
+.routing-level-cell output { display: inline-block; min-width: 46px; margin-left: 9px; color: var(--blue); font-weight: 750; font-size: 12px; vertical-align: middle; }
+.routing-level-cell output::before { content: "Lv "; color: var(--muted); font-weight: 600; }
+#routing-new-agent { width: auto; min-width: 130px; }
+.routing-page .routing-actions form { display: inline-flex; }
+
+/* Issue 执行者分配 */
+.issue-executor-assigned { border-color: #acd8ba; background: var(--green-soft); }
+.executor-assign-form { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; margin-top: 13px; padding-top: 12px; border-top: 1px solid var(--border); }
+.executor-assign-form label { width: 100%; color: var(--muted); font-size: 11px; }
+.executor-assign-form select { width: auto; min-width: 280px; }

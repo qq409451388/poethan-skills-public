@@ -2,11 +2,13 @@
 {% block title %}模型路由配置 · 代码检查工作台{% endblock %}
 {% block page_class %}routing-page{% endblock %}
 {% block content %}
+<div id="routing-capabilities" data-payload="{{ capabilities_payload }}" hidden></div>
+
 <header class="page-head">
   <div class="page-title">
     <span class="eyebrow">Agent Model Routing</span>
     <h1>模型路由配置</h1>
-    <p>Inspector 只输出抽象困难程度（difficulty），本页定义本机哪些 Developer 执行配置有能力完成它。等级语义：<span class="mono">level &gt;= difficulty</span> 即进入推荐列表。</p>
+    <p>这里的每一条都是 <strong>Dev 执行配置</strong>：指定哪个 Agent 用哪个 Model、什么 Reasoning、达到什么等级。Inspector 只输出抽象 difficulty，本页定义哪些 Dev 配置有能力完成它（<span class="mono">level &gt;= difficulty</span>）。</p>
   </div>
   <span class="badge {% if status.enabled %}badge-green{% elif status.status == 'INVALID' %}badge-red{% else %}badge-neutral{% endif %}">
     {% if status.enabled %}已启用{% elif status.status == 'INVALID' %}配置错误{% elif status.status == 'UNAVAILABLE' %}不可用{% else %}未配置{% endif %}
@@ -17,12 +19,15 @@
   <div class="routing-status-main">
     <strong>{{ status.message }}</strong>
     <p class="section-sub">配置文件：<span class="mono break-all">{{ status.configPath }}</span></p>
+    <p class="section-sub">能力元数据：<span class="mono break-all">{{ status.capabilityPath }}</span></p>
     {% if status.pathOverride %}<p class="form-note">环境变量 <span class="mono">AGENT_ROUTING_CONFIG</span> 覆盖了默认路径：<span class="mono">{{ status.pathOverride }}</span></p>{% endif %}
+    {% if status.moduleSource == 'source' %}<p class="form-note">当前使用源码 checkout 中的 Agent Routing 模块（尚未安装到 <span class="mono">~/.agent-review/bin</span>），行为一致。</p>{% endif %}
   </div>
   <dl class="routing-status-facts">
     <div><dt>状态</dt><dd class="mono">{{ status.status }}</dd></div>
     <div><dt>version</dt><dd class="mono">{{ status.version if status.version is not none else '—' }}</dd></div>
-    <div><dt>执行配置</dt><dd><strong>{{ status.agents|length }}</strong> 条，其中启用 <strong>{{ status.enabledCount }}</strong> 条</dd></div>
+    <div><dt>执行配置</dt><dd><strong>{{ status.profiles|length }}</strong> 条，其中启用 <strong>{{ status.enabledCount }}</strong> 条</dd></div>
+    <div><dt>revision</dt><dd class="mono">{{ status.revision or '—' }}</dd></div>
   </dl>
   {% if status.error %}<div class="routing-validation-error"><strong>校验错误</strong><pre class="raw-json">{{ status.error }}</pre></div>{% endif %}
 </section>
@@ -30,20 +35,35 @@
 {% if seed_preview %}
 <section class="panel routing-seed-preview" data-live-region="routing-seed-preview">
   <div class="section-head">
-    <div><h2>初始化预览</h2><p class="section-sub">以下内容来自本机 Agent 配置。确认无误后写入，或取消后手工调整。</p></div>
+    <div>
+      <h2>初始化预览（{{ {'merge': '合并', 'replace': '替换', 'create': '创建'}.get(seed_preview.mode, '写入') }}）</h2>
+      {% if seed_preview.mode == 'merge' %}
+      <p class="section-sub">将保留现有 <strong>{{ seed_preview.kept }}</strong> 条人工配置，只追加下面 <strong>{{ seed_preview.added|length }}</strong> 条本机 Agent 配置。</p>
+      {% else %}
+      <p class="section-sub">将写入下面 {{ seed_preview.added|length }} 条本机 Agent 配置。</p>
+      {% endif %}
+    </div>
     <span class="badge badge-amber">尚未保存</span>
   </div>
+  {% if seed_preview.added %}
   <div class="issue-executors">
-    {% for entry in seed_preview.agents %}
+    {% for entry in seed_preview.added %}
     <div class="issue-executor">
       <span><strong>{{ entry.agent }}</strong> · {{ entry.model }} · reasoning {{ entry.reasoning }}<br><small class="mono">{{ entry.id }}</small></span>
       <span class="badge">level {{ entry.level }}</span>
     </div>
     {% endfor %}
   </div>
-  <p class="form-note">level 默认按 3 生成，请按本机实际情况调整：等级语义是 <span class="mono">level &gt;= difficulty</span>。</p>
+  {% else %}<p class="panel-note">没有需要新增的条目，现有配置已覆盖本机全部 Agent。</p>{% endif %}
+  <p class="form-note">level 默认按 {{ (status.levelScale or [1,2,3,4,5])[2] }} 生成，保存后可用滑杆调整。</p>
   <div class="routing-actions">
     <form method="post" action="{{ url_for('routing_seed') }}"><input type="hidden" name="apply" value="1"><button class="btn btn-primary">确认写入并启用</button></form>
+    {% if config_exists %}
+    <form method="post" action="{{ url_for('routing_seed') }}" onsubmit="return confirm('整体替换会丢弃现有全部执行配置，确认继续？')">
+      <input type="hidden" name="apply" value="1"><input type="hidden" name="replace" value="1">
+      <button class="btn btn-danger-outline">整体替换现有配置</button>
+    </form>
+    {% endif %}
     <a class="btn" href="{{ url_for('routing_config') }}">取消</a>
   </div>
 </section>
@@ -53,7 +73,7 @@
   <div class="section-head">
     <div>
       <h2>从本机 Agent 初始化</h2>
-      <p class="section-sub">只读取各 Agent 自己的配置来确认模型名，不猜测、不联网；只有已绑定为 Developer 的身份会出现在这里。</p>
+      <p class="section-sub">只读取各 Agent 自己的配置来确认 Model，不猜测、不联网。已有配置时默认<strong>合并</strong>，不会覆盖你手工调整过的等级。</p>
     </div>
     <span class="badge badge-neutral">{{ discovered|length }} 个候选</span>
   </div>
@@ -63,7 +83,7 @@
   <div class="issue-executors">
     {% for entry in discovered %}
     <div class="issue-executor">
-      <span><strong>{{ entry.agent }}</strong> · {{ entry.model }} · reasoning {{ entry.reasoning }}<br><small class="muted">绑定身份 <span class="mono">{{ entry.alias }}</span></small></span>
+      <span><strong>{{ entry.agent }}</strong> · {{ entry.model }}{% if entry.reasoning %} · reasoning {{ entry.reasoning }}{% endif %}<br><small class="muted">绑定身份 <span class="mono">{{ entry.alias }}</span>{% if entry.isDefaultModel %} · 当前默认模型{% endif %}</small></span>
       <span class="badge">level {{ entry.level }}</span>
     </div>
     {% endfor %}
@@ -78,35 +98,55 @@
 
 <section class="panel" data-live-region="routing-table">
   <div class="section-head">
-    <div><h2>执行配置列表</h2><p class="section-sub">同一 Agent 可以承担多个角色；Developer 推荐只取 <span class="mono">enabled = true</span> 且 <span class="mono">role = DEVELOPER</span> 的条目。</p></div>
+    <div><h2>Dev 执行配置</h2><p class="section-sub">按 Agent 分组，每个 Agent 可以配置多个 Model；Reasoning 只能选择该 Model 支持的档位。</p></div>
   </div>
   <form method="post" action="{{ url_for('routing_save') }}" id="routing-rows-form">
     <input type="hidden" name="mode" value="rows">
-    <div class="toolbar routing-toolbar">
-      <label>version</label><input type="text" name="version" value="{{ status.version or 1 }}" size="4" inputmode="numeric">
+    <div id="routing-agents">
+      {% for group in profile_groups %}
+      <section class="routing-agent" data-agent="{{ group.agent }}">
+        <header class="routing-agent-head">
+          <div><strong>{{ group.agent }}</strong><small>{{ group.rows|length }} 个 Model</small></div>
+          <button type="button" class="btn btn-small" data-add-model>＋ Model</button>
+        </header>
+        <div class="table-wrap">
+          <table class="routing-table">
+            <thead><tr><th>Model</th><th>Reasoning</th><th>等级</th><th>启用</th><th>操作</th></tr></thead>
+            <tbody data-agent-body>
+              {% for row in group.rows %}
+              <tr data-profile-row>
+                <td>
+                  <input type="hidden" name="p{{ row.index }}_id" value="{{ row.profile.id }}">
+                  <input type="hidden" name="p{{ row.index }}_agent" value="{{ row.profile.agent }}">
+                  <select name="p{{ row.index }}_model" data-model-select aria-label="model">
+                    {% for option in row.modelOptions %}<option value="{{ option }}" {% if option == row.profile.model %}selected{% endif %}>{{ option }}</option>{% endfor %}
+                  </select>
+                </td>
+                <td>
+                  <select name="p{{ row.index }}_reasoning" data-reasoning-select aria-label="reasoning">
+                    {% for option in row.reasoningOptions %}<option value="{{ option }}" {% if option == row.profile.reasoning %}selected{% endif %}>{{ option }}</option>{% endfor %}
+                  </select>
+                </td>
+                <td class="routing-level-cell">
+                  <input type="range" name="p{{ row.index }}_level" value="{{ row.profile.level }}" min="{{ (status.levelScale or [1,2,3,4,5])[0] }}" max="{{ (status.levelScale or [1,2,3,4,5])[-1] }}" step="1" data-level-range aria-label="level">
+                  <output data-level-output>{{ row.profile.level }}</output>
+                </td>
+                <td class="routing-enabled-cell"><input type="checkbox" name="p{{ row.index }}_enabled" value="1" {% if row.profile.enabled %}checked{% endif %} aria-label="enabled"></td>
+                <td><button type="button" class="btn btn-small btn-danger-outline" data-remove-row>删除</button></td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </section>
+      {% endfor %}
     </div>
-    <div class="table-wrap">
-      <table class="routing-table">
-        <thead><tr><th>id</th><th>agent</th><th>role</th><th>model</th><th>reasoning</th><th>level</th><th>enabled</th><th>操作</th></tr></thead>
-        <tbody id="routing-agents-body">
-          {% for entry in status.agents %}
-          <tr>
-            <td><input type="text" name="agent_id" value="{{ entry.id }}" aria-label="id"></td>
-            <td><input type="text" name="agent_agent" value="{{ entry.agent }}" aria-label="agent"></td>
-            <td><select name="agent_role" aria-label="role">{% for role in roles %}<option value="{{ role }}" {% if entry.role == role %}selected{% endif %}>{{ role }}</option>{% endfor %}</select></td>
-            <td><input type="text" name="agent_model" value="{{ entry.model }}" aria-label="model"></td>
-            <td><select name="agent_reasoning" aria-label="reasoning">{% for value in reasonings %}<option value="{{ value }}" {% if entry.reasoning == value %}selected{% endif %}>{{ value }}</option>{% endfor %}</select></td>
-            <td><input type="text" name="agent_level" value="{{ entry.level }}" size="4" inputmode="numeric" aria-label="level"></td>
-            <td class="routing-enabled-cell"><input type="checkbox" name="agent_enabled_row" value="row{{ loop.index0 }}" {% if entry.enabled %}checked{% endif %} aria-label="enabled"></td>
-            <td><button type="button" class="btn btn-small btn-danger-outline" data-routing-remove>删除</button></td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-    <p class="form-note" id="routing-empty-note" {% if status.agents %}hidden{% endif %}>还没有任何执行配置。点击「新增 Agent」开始。</p>
+    <p class="form-note" id="routing-empty-note" {% if profile_groups %}hidden{% endif %}>还没有任何 Dev 执行配置。从上方初始化，或新增一个 Agent 分组。</p>
     <div class="routing-actions">
-      <button type="button" class="btn" data-routing-add>＋ 新增 Agent</button>
+      <select id="routing-new-agent" aria-label="新增 Agent">
+        {% for agent in status.agentOptions %}<option value="{{ agent }}">{{ agent }}</option>{% endfor %}
+      </select>
+      <button type="button" class="btn" data-add-agent>＋ 新增 Agent</button>
       <button type="submit" class="btn btn-primary">保存并立即生效</button>
       <button type="submit" class="btn btn-soft" formaction="{{ url_for('routing_validate') }}">校验配置</button>
     </div>
@@ -129,15 +169,19 @@
 </details>
 
 <template id="routing-row-template">
-  <tr>
-    <td><input type="text" name="agent_id" aria-label="id"></td>
-    <td><input type="text" name="agent_agent" aria-label="agent"></td>
-    <td><select name="agent_role" aria-label="role">{% for role in roles %}<option value="{{ role }}">{{ role }}</option>{% endfor %}</select></td>
-    <td><input type="text" name="agent_model" aria-label="model"></td>
-    <td><select name="agent_reasoning" aria-label="reasoning">{% for value in reasonings %}<option value="{{ value }}" {% if value == 'high' %}selected{% endif %}>{{ value }}</option>{% endfor %}</select></td>
-    <td><input type="text" name="agent_level" value="1" size="4" inputmode="numeric" aria-label="level"></td>
-    <td class="routing-enabled-cell"><input type="checkbox" name="agent_enabled_row" value="row0" checked aria-label="enabled"></td>
-    <td><button type="button" class="btn btn-small btn-danger-outline" data-routing-remove>删除</button></td>
+  <tr data-profile-row>
+    <td>
+      <input type="hidden" data-field="id">
+      <input type="hidden" data-field="agent">
+      <select data-field="model" data-model-select aria-label="model"></select>
+    </td>
+    <td><select data-field="reasoning" data-reasoning-select aria-label="reasoning"></select></td>
+    <td class="routing-level-cell">
+      <input type="range" data-field="level" min="1" max="5" step="1" value="3" data-level-range aria-label="level">
+      <output data-level-output>3</output>
+    </td>
+    <td class="routing-enabled-cell"><input type="checkbox" data-field="enabled" value="1" checked aria-label="enabled"></td>
+    <td><button type="button" class="btn btn-small btn-danger-outline" data-remove-row>删除</button></td>
   </tr>
 </template>
 

@@ -162,7 +162,8 @@
         "activity-revision-list",
         "candidate-list",
         "candidate-update-status",
-        "issue-set-difficulty"
+        "issue-set-difficulty",
+        "issue-set-assignment"
       ],
       "responsibilities": [
         "创建或复用 REVIEW/CONTINUOUS 任务",
@@ -249,7 +250,8 @@
         "candidate-submit",
         "candidate-list",
         "candidate-update-status",
-        "issue-set-difficulty"
+        "issue-set-difficulty",
+        "issue-set-assignment"
       ],
       "responsibilities": [
         "监督异常流程",

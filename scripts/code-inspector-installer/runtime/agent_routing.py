@@ -11,16 +11,29 @@
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import re
 from pathlib import Path
 from typing import Any
 
-SUPPORTED_VERSIONS = {1}
-ALLOWED_ROLES = {"DEVELOPER", "INSPECTOR"}
-ALLOWED_REASONING = {"minimal", "low", "medium", "high", "xhigh", "none"}
-MAX_AGENTS = 200
-MAX_LEVEL = 100
+# 配置版本：v1 是历史扁平 agents 列表，v2 是 Dev Execution Profile 列表。
+# 只读时兼容 v1，写盘一律输出 v2。
+SUPPORTED_VERSIONS = {1, 2}
+CONFIG_VERSION = 2
+
+# 执行配置只代表 Developer 执行能力；role 不再是可配置维度。
+ROLE_DEVELOPER = "DEVELOPER"
+
+# 离散等级：与 Inspector 的 difficulty 使用同一尺度，页面用滑杆选择。
+LEVEL_SCALE = (1, 2, 3, 4, 5)
+DEFAULT_LEVEL = 3
+MAX_PROFILES = 200
+
+# capability 未收录某模型时的兜底档位集合。页面与后端共用同一份，避免集合不一致。
+FALLBACK_REASONING = ("none", "minimal", "low", "medium", "high", "xhigh")
+CAPABILITY_VERSION = 1
 
 ROUTER_DISABLED = "DISABLED"
 ROUTER_INVALID = "INVALID"
@@ -51,51 +64,170 @@ def parse_difficulty(value: Any) -> int | None:
 
 
 def routing_config_path(home: Path) -> Path:
+    """Agent Routing 配置文件的唯一路径解析入口。
+
+    Runtime（review-db.py）与 WebApp 都必须调用本函数，读取、保存、展示指向同一文件；
+    任何一处自行拼接路径都会造成路径分裂。
+    """
     override = os.environ.get("AGENT_ROUTING_CONFIG")
     if override:
         return Path(os.path.expandvars(os.path.expanduser(override))).resolve()
-    return (home / "config" / "agent-routing.yml").resolve()
+    return Path(home).resolve() / "config" / "agent-routing.yml"
+
+
+def capability_path(home: Path) -> Path:
+    """Skill 内置 capability 元数据路径。"""
+    override = os.environ.get("AGENT_CAPABILITY_CONFIG")
+    if override:
+        return Path(os.path.expandvars(os.path.expanduser(override))).resolve()
+    return Path(home).resolve() / "config" / "agent-capabilities.yml"
+
+
+def parse_capabilities_document(document: Any) -> dict[str, list[dict[str, Any]]]:
+    """校验 capability 元数据，返回 {agent: [{model, supportedReasonings}]}。"""
+    if not isinstance(document, dict):
+        raise AgentRoutingError("capability 根节点必须是对象")
+    version = document.get("version")
+    if isinstance(version, bool) or version != CAPABILITY_VERSION:
+        raise AgentRoutingError(f"不支持的 capability version: {version}")
+    raw_agents = document.get("agents") or []
+    if not isinstance(raw_agents, list):
+        raise AgentRoutingError("capability.agents 必须是数组")
+    catalog: dict[str, list[dict[str, Any]]] = {}
+    for agent_index, raw_agent in enumerate(raw_agents):
+        if not isinstance(raw_agent, dict):
+            raise AgentRoutingError(f"capability.agents[{agent_index}] 必须是对象")
+        agent = str(raw_agent.get("agent") or "").strip()
+        if not agent:
+            raise AgentRoutingError(f"capability.agents[{agent_index}].agent 必须是非空字符串")
+        if agent in catalog:
+            raise AgentRoutingError(f"capability.agents 中 agent 必须唯一，重复: {agent}")
+        raw_models = raw_agent.get("models") or []
+        if not isinstance(raw_models, list):
+            raise AgentRoutingError(f"capability.agents[{agent_index}].models 必须是数组")
+        models: list[dict[str, Any]] = []
+        seen_models: set[str] = set()
+        for model_index, raw_model in enumerate(raw_models):
+            if not isinstance(raw_model, dict):
+                raise AgentRoutingError(
+                    f"capability.agents[{agent_index}].models[{model_index}] 必须是对象"
+                )
+            model = str(raw_model.get("model") or "").strip()
+            if not model:
+                raise AgentRoutingError(
+                    f"capability.agents[{agent_index}].models[{model_index}].model 必须是非空字符串"
+                )
+            if model in seen_models:
+                raise AgentRoutingError(f"capability 中 {agent} 的 model 必须唯一，重复: {model}")
+            seen_models.add(model)
+            raw_reasonings = raw_model.get("supportedReasonings")
+            if not isinstance(raw_reasonings, list) or not raw_reasonings:
+                raise AgentRoutingError(
+                    f"capability 中 {agent}/{model} 必须声明非空 supportedReasonings"
+                )
+            reasonings = [
+                str(item).strip().lower() for item in raw_reasonings if str(item).strip()
+            ]
+            if not reasonings:
+                raise AgentRoutingError(
+                    f"capability 中 {agent}/{model} 的 supportedReasonings 不能为空"
+                )
+            models.append({"model": model, "supportedReasonings": reasonings})
+        catalog[agent] = models
+    return catalog
+
+
+_capability_cache: dict[str, Any] = {}
+
+
+def load_capabilities(path: Path | None = None) -> dict[str, list[dict[str, Any]]]:
+    """按 mtime 缓存读取 capability；缺失或非法时返回空表（退化为通用档位集合）。"""
+    resolved = path or capability_path(_review_home())
+    try:
+        key = f"{resolved}:{resolved.stat().st_mtime_ns}"
+    except OSError:
+        return {}
+    cached = _capability_cache.get("entry")
+    if cached and cached[0] == key:
+        return cached[1]
+    try:
+        catalog = parse_capabilities_document(
+            _yaml_load(resolved.read_text(encoding="utf-8"))
+        )
+    except (AgentRoutingError, OSError, UnicodeDecodeError):
+        catalog = {}
+    _capability_cache["entry"] = (key, catalog)
+    return catalog
+
+
+def reasoning_options(
+    capabilities: dict[str, list[dict[str, Any]]], agent: str, model: str,
+) -> list[str]:
+    """返回某个 Agent/Model 支持的 reasoning 档位；未收录时退回通用集合。
+
+    页面与后端共用本函数，避免出现「后端允许但页面无法表达」的集合不一致。
+    """
+    for entry in capabilities.get(str(agent).strip(), []) or []:
+        if entry["model"] == str(model).strip():
+            return list(entry["supportedReasonings"])
+    return list(FALLBACK_REASONING)
+
+
+def catalog_agents(capabilities: dict[str, list[dict[str, Any]]]) -> list[str]:
+    return sorted(capabilities)
+
+
+def _reasoning_default(
+    capabilities: dict[str, list[dict[str, Any]]], agent: str, model: str, preferred: str | None,
+) -> str:
+    """在模型支持的档位内挑选一个合理默认值。"""
+    options = reasoning_options(capabilities, agent, model)
+    candidate = str(preferred or "").strip().lower()
+    if candidate in options:
+        return candidate
+    for fallback in ("high", "medium", "low", "minimal", "none", "xhigh"):
+        if fallback in options:
+            return fallback
+    return options[0]
 
 
 def _require_text(entry: dict[str, Any], field: str, index: int) -> str:
     value = entry.get(field)
     if not isinstance(value, str) or not value.strip():
-        raise AgentRoutingError(f"agents[{index}].{field} 必须是非空字符串")
+        raise AgentRoutingError(f"profiles[{index}].{field} 必须是非空字符串")
     return value.strip()
 
 
 def _require_bool(entry: dict[str, Any], field: str, index: int, default: bool) -> bool:
     value = entry.get(field, default)
     if not isinstance(value, bool):
-        raise AgentRoutingError(f"agents[{index}].{field} 必须是布尔值")
+        raise AgentRoutingError(f"profiles[{index}].{field} 必须是布尔值")
     return value
 
 
-def _normalize_entry(raw: Any, index: int) -> dict[str, Any]:
+def _normalize_profile(
+    raw: Any, index: int, capabilities: dict[str, list[dict[str, Any]]],
+) -> dict[str, Any]:
     if not isinstance(raw, dict):
-        raise AgentRoutingError(f"agents[{index}] 必须是对象")
-    agent_id = _require_text(raw, "id", index)
+        raise AgentRoutingError(f"profiles[{index}] 必须是对象")
+    profile_id = _require_text(raw, "id", index)
     agent = _require_text(raw, "agent", index)
     model = _require_text(raw, "model", index)
-    role = str(_require_text(raw, "role", index)).upper()
-    if role not in ALLOWED_ROLES:
+    reasoning = _require_text(raw, "reasoning", index).lower()
+    allowed = reasoning_options(capabilities, agent, model)
+    if reasoning not in allowed:
         raise AgentRoutingError(
-            f"agents[{index}].role 无效: {role}；可选值: {', '.join(sorted(ALLOWED_ROLES))}"
-        )
-    reasoning = str(_require_text(raw, "reasoning", index)).lower()
-    if reasoning not in ALLOWED_REASONING:
-        raise AgentRoutingError(
-            f"agents[{index}].reasoning 无效: {reasoning}；可选值: {', '.join(sorted(ALLOWED_REASONING))}"
+            f"profiles[{index}].reasoning 无效: {reasoning}；"
+            f"{agent}/{model} 支持: {', '.join(allowed)}"
         )
     level = raw.get("level")
-    if isinstance(level, bool) or not isinstance(level, int):
-        raise AgentRoutingError(f"agents[{index}].level 必须是整数")
-    if not 1 <= level <= MAX_LEVEL:
-        raise AgentRoutingError(f"agents[{index}].level 必须在 1 到 {MAX_LEVEL} 之间")
+    if isinstance(level, bool) or not isinstance(level, int) or level not in LEVEL_SCALE:
+        raise AgentRoutingError(
+            f"profiles[{index}].level 必须是 {LEVEL_SCALE[0]}..{LEVEL_SCALE[-1]} 的整数"
+        )
     return {
-        "id": agent_id,
+        "id": profile_id,
         "agent": agent,
-        "role": role,
         "model": model,
         "reasoning": reasoning,
         "level": level,
@@ -103,8 +235,47 @@ def _normalize_entry(raw: Any, index: int) -> dict[str, Any]:
     }
 
 
-def parse_routing_document(document: Any) -> dict[str, Any]:
-    """校验并规范化 YAML 文档，返回 {version, agents}。任何问题都抛 AgentRoutingError。"""
+def _legacy_profiles(
+    document: dict[str, Any], capabilities: dict[str, list[dict[str, Any]]],
+) -> list[dict[str, Any]]:
+    """v1 扁平 agents 列表 → v2 profiles。
+
+    执行配置只代表 Dev Execution Profile，因此旧配置里的 INSPECTOR 条目会被丢弃，
+    而带 role=DEVELOPER 或未写 role 的条目按原样保留。
+
+    旧配置产生时还没有 capability 校验，因此其 reasoning 可能超出模型实际档位
+    （例如某模型只支持 none，旧配置写了 high）。这类历史值按模型能力就近归一，
+    而不是让整份配置失效——否则一次升级就会静默停掉用户的 Router。
+    """
+    raw_agents = document.get("agents")
+    if raw_agents is None:
+        raw_agents = []
+    if not isinstance(raw_agents, list):
+        raise AgentRoutingError("agents 必须是数组")
+    profiles: list[dict[str, Any]] = []
+    for index, raw in enumerate(raw_agents):
+        if not isinstance(raw, dict):
+            raise AgentRoutingError(f"agents[{index}] 必须是对象")
+        role = str(raw.get("role") or "").strip().upper()
+        if role and role != ROLE_DEVELOPER:
+            continue  # 新配置不再产生非 Developer 执行配置
+        converted = {key: value for key, value in raw.items() if key != "role"}
+        converted.setdefault("id", f"{raw.get('agent', 'agent')}-{raw.get('model', 'model')}")
+        agent = str(converted.get("agent") or "").strip()
+        model = str(converted.get("model") or "").strip()
+        reasoning = str(converted.get("reasoning") or "").strip().lower()
+        if agent and model and reasoning not in reasoning_options(capabilities, agent, model):
+            converted["reasoning"] = _reasoning_default(capabilities, agent, model, reasoning)
+        profiles.append(converted)
+    return profiles
+
+
+def parse_routing_document(
+    document: Any, capabilities: dict[str, list[dict[str, Any]]] | None = None,
+) -> dict[str, Any]:
+    """校验并规范化配置，始终返回 v2 结构 {version, profiles}。"""
+    if capabilities is None:
+        capabilities = load_capabilities()
     if not isinstance(document, dict):
         raise AgentRoutingError("配置根节点必须是对象")
     version = document.get("version")
@@ -114,20 +285,26 @@ def parse_routing_document(document: Any) -> dict[str, Any]:
         raise AgentRoutingError(
             f"不支持的 version: {version}；当前支持: {', '.join(str(v) for v in sorted(SUPPORTED_VERSIONS))}"
         )
-    raw_agents = document.get("agents")
-    if raw_agents is None:
-        raw_agents = []
-    if not isinstance(raw_agents, list):
-        raise AgentRoutingError("agents 必须是数组")
-    if len(raw_agents) > MAX_AGENTS:
-        raise AgentRoutingError(f"agents 最多支持 {MAX_AGENTS} 项")
-    agents = [_normalize_entry(raw, index) for index, raw in enumerate(raw_agents)]
+    if version >= 2:
+        raw_profiles = document.get("profiles")
+        if raw_profiles is None:
+            raw_profiles = document.get("agents") or []
+    else:
+        raw_profiles = _legacy_profiles(document, capabilities)
+    if not isinstance(raw_profiles, list):
+        raise AgentRoutingError("profiles 必须是数组")
+    if len(raw_profiles) > MAX_PROFILES:
+        raise AgentRoutingError(f"profiles 最多支持 {MAX_PROFILES} 项")
+    profiles = [
+        _normalize_profile(raw, index, capabilities)
+        for index, raw in enumerate(raw_profiles)
+    ]
     seen: set[str] = set()
-    for entry in agents:
+    for entry in profiles:
         if entry["id"] in seen:
-            raise AgentRoutingError(f"agents.id 必须唯一，重复: {entry['id']}")
+            raise AgentRoutingError(f"profiles.id 必须唯一，重复: {entry['id']}")
         seen.add(entry["id"])
-    return {"version": version, "agents": agents}
+    return {"version": CONFIG_VERSION, "profiles": profiles}
 
 
 # ---------------------------------------------------------------------------
@@ -337,8 +514,8 @@ def _yaml_dump_scalar(value: Any) -> str:
 def _yaml_dump(document: dict[str, Any]) -> str:
     lines: list[str] = []
     for key, value in document.items():
-        if key == "agents" and isinstance(value, list):
-            lines.append("agents:")
+        if key in {"agents", "profiles"} and isinstance(value, list):
+            lines.append(f"{key}:")
             for entry in value:
                 for position, (field, field_value) in enumerate(entry.items()):
                     lines.append(f"{'- ' if position == 0 else '  '}{field}: {_yaml_dump_scalar(field_value)}")
@@ -347,49 +524,70 @@ def _yaml_dump(document: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def dump_routing_document(document: dict[str, Any]) -> str:
+def dump_routing_document(
+    document: dict[str, Any], capabilities: dict[str, list[dict[str, Any]]] | None = None,
+) -> str:
     """把配置序列化为稳定、可人工编辑的 YAML。"""
-    return _yaml_dump(parse_routing_document(document))
+    return _yaml_dump(parse_routing_document(document, capabilities))
 
 
-def parse_routing_text(text: str) -> dict[str, Any]:
-    return parse_routing_document(_yaml_load(text))
+def parse_routing_text(
+    text: str, capabilities: dict[str, list[dict[str, Any]]] | None = None,
+) -> dict[str, Any]:
+    return parse_routing_document(_yaml_load(text), capabilities)
+
+
+def document_revision(document: dict[str, Any]) -> str:
+    """配置内容的稳定指纹，用于缓存失效：配置一变，旧推荐就不再被沿用。"""
+    payload = json.dumps(document, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
 class AgentRoutingSnapshot:
     """不可变运行时快照；每个 Issue 不重新读取磁盘。"""
 
     def __init__(
-        self, status: str, agents: tuple[dict[str, Any], ...] = (), version: int | None = None,
-        path: Path | None = None, error: str | None = None,
+        self, status: str, profiles: tuple[dict[str, Any], ...] = (),
+        version: int | None = None, path: Path | None = None, error: str | None = None,
+        capabilities: dict[str, list[dict[str, Any]]] | None = None,
+        revision: str | None = None,
     ) -> None:
         self.status = status
-        self.agents = agents
+        self.profiles = profiles
         self.version = version
         self.path = path
         self.error = error
+        self.capabilities = capabilities or {}
+        self.revision = revision
 
     @property
     def enabled(self) -> bool:
         return self.status == "ENABLED"
 
-    def recommend(self, difficulty: int | None, role: str = "DEVELOPER", limit: int = 20) -> list[dict[str, Any]]:
-        """返回 level >= difficulty 的候选执行配置摘要；未启用或 difficulty 缺失时返回空列表。"""
+    # 兼容旧调用名：执行配置现在就是 Dev Execution Profile。
+    @property
+    def agents(self) -> tuple[dict[str, Any], ...]:
+        return self.profiles
+
+    def recommend(self, difficulty: int | None, limit: int = 20) -> list[dict[str, Any]]:
+        """返回 level >= difficulty 的候选执行配置；未启用或 difficulty 缺失时为空。
+
+        推荐结果完全由当前快照推导，不依赖任何持久化快照字段，因此配置一变即失效。
+        """
         if not self.enabled or difficulty is None:
             return []
-        wanted = str(role).upper()
         candidates = [
-            entry for entry in self.agents
-            if entry["enabled"] and entry["role"] == wanted and entry["level"] >= difficulty
+            entry for entry in self.profiles
+            if entry["enabled"] and entry["level"] >= difficulty
         ]
         candidates.sort(key=lambda entry: (entry["level"], entry["agent"], entry["model"], entry["id"]))
         return [
             {
+                "profileId": entry["id"],
                 "agent": entry["agent"],
                 "model": entry["model"],
                 "reasoning": entry["reasoning"],
                 "level": entry["level"],
-                "id": entry["id"],
             }
             for entry in candidates[:limit]
         ]
@@ -401,44 +599,82 @@ class AgentRoutingSnapshot:
             "version": self.version,
             "path": str(self.path) if self.path else None,
             "error": self.error,
-            "agents": [dict(entry) for entry in self.agents],
+            "revision": self.revision,
+            "profiles": [dict(entry) for entry in self.profiles],
+            "capabilities": {
+                agent: [dict(model) for model in models]
+                for agent, models in self.capabilities.items()
+            },
+            "fallbackReasonings": list(FALLBACK_REASONING),
+            "levelScale": list(LEVEL_SCALE),
         }
 
 
-def load_routing_snapshot(path: Path) -> AgentRoutingSnapshot:
+def load_routing_snapshot(path: Path, capabilities: dict[str, list[dict[str, Any]]] | None = None) -> AgentRoutingSnapshot:
     """从磁盘加载快照；文件不存在或配置非法都返回不可用快照，不抛异常。"""
+    if capabilities is None:
+        capabilities = load_capabilities(capability_path(_review_home()))
     if not path.exists():
-        return AgentRoutingSnapshot(ROUTER_DISABLED, path=path)
+        return AgentRoutingSnapshot(ROUTER_DISABLED, path=path, capabilities=capabilities)
     try:
         text = path.read_text(encoding="utf-8")
     except OSError as exc:
-        return AgentRoutingSnapshot(ROUTER_INVALID, path=path, error=f"配置无法读取: {exc}")
+        return AgentRoutingSnapshot(ROUTER_INVALID, path=path, error=f"配置无法读取: {exc}", capabilities=capabilities)
     try:
-        document = parse_routing_text(text)
+        document = parse_routing_text(text, capabilities)
     except AgentRoutingError as exc:
-        return AgentRoutingSnapshot(ROUTER_INVALID, path=path, error=str(exc))
+        return AgentRoutingSnapshot(ROUTER_INVALID, path=path, error=str(exc), capabilities=capabilities)
     return AgentRoutingSnapshot(
-        "ENABLED", tuple(document["agents"]), version=document["version"], path=path,
+        "ENABLED", tuple(document["profiles"]), version=document["version"], path=path,
+        capabilities=capabilities, revision=document_revision(document),
     )
 
 
 _current_snapshot: AgentRoutingSnapshot | None = None
 _current_path: Path | None = None
+_current_stamp: tuple[Any, ...] | None = None
+
+
+def _source_stamp(path: Path) -> tuple[Any, ...]:
+    """配置文件 + capability 的磁盘指纹，用于检测进程外的修改。"""
+    parts: list[Any] = []
+    for candidate in (path, capability_path(_review_home())):
+        try:
+            stat = candidate.stat()
+            parts.append((str(candidate), stat.st_mtime_ns, stat.st_size))
+        except OSError:
+            parts.append((str(candidate), None, None))
+    return tuple(parts)
 
 
 def get_snapshot(path: Path | None = None) -> AgentRoutingSnapshot:
-    """取得运行时快照；路径变化或尚未加载时按需从磁盘加载一次。"""
-    global _current_snapshot, _current_path
+    """取得运行时快照。
+
+    除路径变化外，还会比对磁盘指纹：配置被手工编辑或被其它进程改写时自动重载，
+    避免长期运行的进程一直沿用过期配置（推荐结果因此不会错误沿用旧快照）。
+    """
+    global _current_snapshot, _current_path, _current_stamp
     resolved = path or routing_config_path(_review_home())
-    if _current_snapshot is None or _current_path != resolved:
-        _current_snapshot = load_routing_snapshot(resolved)
+    stamp = _source_stamp(resolved)
+    if _current_snapshot is None or _current_path != resolved or _current_stamp != stamp:
+        snapshot = load_routing_snapshot(resolved)
+        if (
+            snapshot.status == ROUTER_INVALID
+            and _current_snapshot is not None and _current_snapshot.enabled
+            and _current_path == resolved
+        ):
+            # 配置在进程外被写坏时，继续沿用上一份有效配置。
+            _current_stamp = stamp
+            return _current_snapshot
+        _current_snapshot = snapshot
         _current_path = resolved
+        _current_stamp = stamp
     return _current_snapshot
 
 
 def reload_snapshot(path: Path | None = None) -> AgentRoutingSnapshot:
     """保存配置成功后立即生效；失败时保留上一份有效快照。"""
-    global _current_snapshot, _current_path
+    global _current_snapshot, _current_path, _current_stamp
     resolved = path or routing_config_path(_review_home())
     snapshot = load_routing_snapshot(resolved)
     if snapshot.status == ROUTER_INVALID and _current_snapshot is not None and _current_snapshot.enabled:
@@ -446,14 +682,22 @@ def reload_snapshot(path: Path | None = None) -> AgentRoutingSnapshot:
         return _current_snapshot
     _current_snapshot = snapshot
     _current_path = resolved
+    _current_stamp = _source_stamp(resolved)
     return snapshot
 
 
 def reset_snapshot() -> None:
     """测试或配置路径切换时清理缓存。"""
-    global _current_snapshot, _current_path
+    global _current_snapshot, _current_path, _current_stamp
     _current_snapshot = None
     _current_path = None
+    _current_stamp = None
+    _capability_cache.clear()
+
+
+def routing_revision(path: Path | None = None) -> str | None:
+    """当前生效配置的 revision；未启用 Router 时返回 None。"""
+    return get_snapshot(path).revision
 
 
 def recommend_executors(difficulty: int | None, path: Path | None = None) -> list[dict[str, Any]]:
@@ -461,13 +705,23 @@ def recommend_executors(difficulty: int | None, path: Path | None = None) -> lis
     return get_snapshot(path).recommend(difficulty)
 
 
-def save_routing_document(document: Any, path: Path | None = None) -> tuple[dict[str, Any], AgentRoutingSnapshot]:
+def load_document(path: Path, capabilities: dict[str, list[dict[str, Any]]] | None = None) -> dict[str, Any]:
+    """读取并规范化磁盘上的配置；文件不存在返回空配置。"""
+    if not path.exists():
+        return {"version": CONFIG_VERSION, "profiles": []}
+    return parse_routing_text(path.read_text(encoding="utf-8"), capabilities)
+
+
+def save_routing_document(
+    document: Any, path: Path | None = None,
+    capabilities: dict[str, list[dict[str, Any]]] | None = None,
+) -> tuple[dict[str, Any], AgentRoutingSnapshot]:
     """完整校验 → 写临时文件 → 原子替换 → reload 运行时快照。
 
     校验失败直接抛 AgentRoutingError，调用方保证现有文件不被修改。
     """
-    normalized = parse_routing_document(document)
-    text = dump_routing_document(normalized)
+    normalized = parse_routing_document(document, capabilities)
+    text = dump_routing_document(normalized, capabilities)
     resolved = path or routing_config_path(_review_home())
     resolved.parent.mkdir(parents=True, exist_ok=True)
     temporary = resolved.parent / f".{resolved.name}.saving-{os.getpid()}"
@@ -483,14 +737,22 @@ def save_routing_document(document: Any, path: Path | None = None) -> tuple[dict
     return normalized, reload_snapshot(resolved)
 
 
-def seed_document(discovered: list[dict[str, Any]]) -> dict[str, Any]:
-    """把「本机 Agent 发现结果」转换为候选配置文档。
+def _unique_id(base: str, used: set[str]) -> str:
+    candidate, suffix = base, 2
+    while candidate in used:
+        candidate = f"{base}-{suffix}"
+        suffix += 1
+    used.add(candidate)
+    return candidate
 
-    发现结果只提供 model/reasoning 等事实；id 去重与 level 兜底在这里补齐，
-    之后仍然要经过 parse_routing_document 的完整校验。
-    """
-    agents: list[dict[str, Any]] = []
-    used: set[str] = set()
+
+def discovered_to_profiles(
+    discovered: list[dict[str, Any]], capabilities: dict[str, list[dict[str, Any]]],
+    used_ids: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    """把本机发现结果转换为候选 profile；同一个 Agent 可以产出多个 Model。"""
+    used = used_ids if used_ids is not None else set()
+    profiles: list[dict[str, Any]] = []
     for entry in discovered:
         if not isinstance(entry, dict):
             continue
@@ -498,28 +760,61 @@ def seed_document(discovered: list[dict[str, Any]]) -> dict[str, Any]:
         model = str(entry.get("model") or "").strip()
         if not agent or not model:
             continue  # 无法确认模型的平台不写入，避免编造
-        base = str(entry.get("id") or f"{agent}-developer").strip() or f"{agent}-developer"
-        candidate_id, suffix = base, 2
-        while candidate_id in used:
-            candidate_id = f"{base}-{suffix}"
-            suffix += 1
-        used.add(candidate_id)
-        reasoning = str(entry.get("reasoning") or "high").strip().lower()
-        if reasoning not in ALLOWED_REASONING:
-            reasoning = "high"
+        reasoning = _reasoning_default(capabilities, agent, model, entry.get("reasoning"))
         level = entry.get("level")
-        if isinstance(level, bool) or not isinstance(level, int) or not 1 <= level <= MAX_LEVEL:
-            level = 3
-        agents.append({
-            "id": candidate_id,
+        if isinstance(level, bool) or level not in LEVEL_SCALE:
+            level = DEFAULT_LEVEL
+        # 模型名已经带平台前缀时不再重复，例如 claude-opus-5[1M] 不写成 claude-claude-…。
+        label = re.sub(r"[^A-Za-z0-9._-]+", "-", agent).strip("-").lower() or "agent"
+        base = model if model.lower().startswith(label) else f"{label}-{model}"
+        slug = re.sub(r"[^A-Za-z0-9._-]+", "-", base).strip("-").lower()
+        profiles.append({
+            "id": _unique_id(str(entry.get("id") or slug or "profile"), used),
             "agent": agent,
-            "role": "DEVELOPER",
             "model": model,
             "reasoning": reasoning,
             "level": level,
             "enabled": bool(entry.get("enabled", True)),
         })
-    return parse_routing_document({"version": 1, "agents": agents})
+    return profiles
+
+
+def seed_document(
+    discovered: list[dict[str, Any]],
+    capabilities: dict[str, list[dict[str, Any]]] | None = None,
+) -> dict[str, Any]:
+    """把本机发现结果转换为完整配置文档（仍要通过完整校验）。"""
+    catalog = capabilities if capabilities is not None else load_capabilities()
+    return parse_routing_document(
+        {"version": CONFIG_VERSION, "profiles": discovered_to_profiles(discovered, catalog)},
+        catalog,
+    )
+
+
+def merge_seed_document(
+    existing: dict[str, Any], discovered: list[dict[str, Any]],
+    capabilities: dict[str, list[dict[str, Any]]] | None = None,
+) -> dict[str, Any]:
+    """把发现结果合并进现有配置，默认保护人工配置。
+
+    只追加「现有配置里不存在的 Agent+Model+Reasoning 组合」；已有 profile 的
+    id、level、enabled 一律保持原样，不会被 seed 覆盖。
+    """
+    catalog = capabilities if capabilities is not None else load_capabilities()
+    current = parse_routing_document(existing, catalog)
+    profiles = [dict(entry) for entry in current["profiles"]]
+    used_ids = {entry["id"] for entry in profiles}
+    existing_keys = {(entry["agent"], entry["model"], entry["reasoning"]) for entry in profiles}
+    added: list[dict[str, Any]] = []
+    for candidate in discovered_to_profiles(discovered, catalog, used_ids):
+        key = (candidate["agent"], candidate["model"], candidate["reasoning"])
+        if key in existing_keys:
+            continue
+        existing_keys.add(key)
+        profiles.append(candidate)
+        added.append(candidate)
+    merged = parse_routing_document({"version": CONFIG_VERSION, "profiles": profiles}, catalog)
+    return {"document": merged, "added": added, "kept": len(profiles) - len(added)}
 
 
 def _review_home() -> Path:
@@ -540,31 +835,55 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Agent Model Routing 配置工具")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("status", help="输出当前运行时快照")
+    sub.add_parser("capabilities", help="输出 Skill 内置 Agent/Model 能力表")
     seed = sub.add_parser("seed", help="从本机已安装 Agent 生成候选配置")
-    seed.add_argument("--write", action="store_true", help="直接写入 agent-routing.yml；省略时只打印")
-    seed.add_argument("--force", action="store_true", help="已存在配置时也覆盖（默认拒绝覆盖）")
+    seed.add_argument("--write", action="store_true", help="写入 agent-routing.yml；省略时只打印")
+    seed.add_argument(
+        "--merge", action="store_true",
+        help="与现有配置合并（只追加新条目，保留人工配置）；配置存在时的默认行为",
+    )
+    seed.add_argument(
+        "--replace", action="store_true",
+        help="用发现结果整体替换现有配置；必须显式指定，避免误覆盖人工配置",
+    )
     args = parser.parse_args(argv)
 
     if args.command == "status":
         print(json.dumps(get_snapshot().as_dict(), ensure_ascii=False, indent=2))
         return 0
 
+    if args.command == "capabilities":
+        print(json.dumps(load_capabilities(), ensure_ascii=False, indent=2))
+        return 0
+
     from agent_discovery import discover_agents
 
-    document = seed_document(discover_agents())
     path = routing_config_path(_review_home())
+    discovered = discover_agents()
     if not args.write:
-        print(json.dumps(document, ensure_ascii=False, indent=2))
+        print(json.dumps(seed_document(discovered), ensure_ascii=False, indent=2))
         return 0
-    if path.exists() and not args.force:
+
+    if path.exists() and args.replace:
+        normalized, snapshot = save_routing_document(seed_document(discovered), path)
+        action = "replaced"
+    elif path.exists():
+        # 默认合并：绝不无提示覆盖人工配置。
+        existing = load_document(path)
+        merged = merge_seed_document(existing, discovered)
+        normalized, snapshot = save_routing_document(merged["document"], path)
+        action = "merged"
         print(json.dumps({
-            "error": f"配置已存在，未覆盖: {path}；确认要替换时使用 --force",
+            "note": f"已保留 {merged['kept']} 条现有配置，追加 {len(merged['added'])} 条；"
+                    "如需整体替换请显式使用 --replace",
         }, ensure_ascii=False), file=sys.stderr)
-        return 1
-    normalized, snapshot = save_routing_document(document, path)
+    else:
+        normalized, snapshot = save_routing_document(seed_document(discovered), path)
+        action = "created"
     print(json.dumps({
         "saved": str(path),
-        "agents": len(normalized["agents"]),
+        "action": action,
+        "profiles": len(normalized["profiles"]),
         "status": snapshot.status,
     }, ensure_ascii=False, indent=2))
     return 0

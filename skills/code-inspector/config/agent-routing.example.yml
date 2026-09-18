@@ -5,32 +5,35 @@
 #   - 文件不存在时 Inspector 照常工作，Issue 照常创建，只是没有推荐执行配置。
 #   - 文件存在但校验失败时不启用 Router，并在 WebApp「模型路由配置」页面显示原因。
 #
-# 等级语义：agent.level >= issue.difficulty 表示该执行配置可以完成该任务。
-# Inspector 只输出抽象 difficulty，不感知任何具体模型名称。
+# 每条记录都是一个 Dev 执行配置（Dev Execution Profile）：哪个 Agent、用哪个 Model、
+# 什么 Reasoning、达到什么等级。role 不是可配置维度——执行配置只代表 Developer 能力。
+#
+# 等级语义：level >= issue.difficulty 表示该执行配置可以完成该任务。
+# level 取离散值 1..5，与 Inspector 的 difficulty 使用同一尺度。
+#
+# 可选的 Model 与 Reasoning 档位来自 Skill 内置能力表 agent-capabilities.yml；
+# 未收录的模型也可以填写，此时 Reasoning 使用通用档位集合。
 
-version: 1
+version: 2
 
-agents:
-  - id: codex-sol-medium
-    agent: codex
-    role: DEVELOPER
-    model: gpt-5.6-sol
-    reasoning: medium
-    level: 2
-    enabled: true
+profiles:
+- id: codex-gpt-5.6-sol-high
+  agent: codex
+  model: gpt-5.6-sol
+  reasoning: high
+  level: 3
+  enabled: true
 
-  - id: codex-sol-high
-    agent: codex
-    role: DEVELOPER
-    model: gpt-5.6-sol
-    reasoning: high
-    level: 3
-    enabled: true
+- id: codex-gpt-5.1-codex-mini
+  agent: codex
+  model: gpt-5.1-codex-mini
+  reasoning: medium
+  level: 2
+  enabled: true
 
-  - id: claude-opus
-    agent: claude
-    role: DEVELOPER
-    model: claude-opus
-    reasoning: high
-    level: 4
-    enabled: true
+- id: claude-opus-5-1m
+  agent: claude
+  model: claude-opus-5[1M]
+  reasoning: high
+  level: 4
+  enabled: true
