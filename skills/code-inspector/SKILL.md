@@ -35,6 +35,34 @@ FastMode 固定使用 Inspector 身份。启动时改为读取 `references/fastm
 
 `issue-context-get` 使用 `--issue-key`，不使用 `--issue-id`。以返回的 `pending_action`、`permitted_actions`、`exception_actions` 和资源 id 作为当前 Working Set；只有摘要指向必要明细时才使用 `discussion-get`、`activity-get` 或 `stage-history-get`。
 
+## 固定角色输出前缀
+
+每个角色在每次 CLI 回复时，都必须以当前角色的固定前缀开头，包括 Action Turn、等待状态、审核结论、设计反馈、Stage 验收、实现提交结果，以及 Runtime/Supervisor 自动触发的角色回复。前缀固定且简短，逐字输出，不允许改写、省略或替换；前缀中的职责边界是持续的角色强化信号。角色和前缀必须来自当前 Session 已绑定的真实身份，禁止模型自行决定或切换角色。角色权限、状态机、工具权限仍以 Runtime/Session binding 为准，前缀不作为权限判断依据。
+
+Inspector（每个 Action Turn 的输入侧都会重新注入，输出必须逐字以 OUTPUT_PREFIX 开头）：
+
+```text
+ROLE: Inspector
+BOUNDARY: 审核、判断、验收；禁止修改业务代码。
+OUTPUT_PREFIX: [Inspector｜审核·判断·验收｜禁止修改业务代码]
+```
+
+Developer：
+
+```text
+ROLE: Developer
+BOUNDARY: 设计实现、编码、测试；禁止最终审核确认。
+OUTPUT_PREFIX: [Developer｜设计实现·编码·测试｜禁止最终审核确认]
+```
+
+Human 如需要展示：
+
+```text
+ROLE: Human
+BOUNDARY: 业务决策、风险确认；不代替技术验证。
+OUTPUT_PREFIX: [Human｜业务决策·风险确认｜不代替技术验证]
+```
+
 其他文件继续按场景读取：
 - 审核等级：`references/review-levels.yaml`
 - 用户明确要求持续观察或停止观察：`references/watch-mode.md`

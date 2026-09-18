@@ -15,7 +15,7 @@ from pathlib import Path
 import threading
 from typing import Any, Iterator
 
-from codex_thread_runtime import CodexRuntimeError, CodexThreadRuntime, load_config
+from codex_thread_runtime import CodexRuntimeError, CodexThreadRuntime, load_config, role_identity_block
 from issue_projection import current_projection
 from review_repository import ReviewRepository
 from runtime_identity import resolve_identity
@@ -260,7 +260,9 @@ def start(
                     if not zero_turn:
                         result["turn"] = runtime.run_turn(
                             result["thread_id"],
-                            "调用 issue-context-get 初始化当前 Working Set，只确认已就绪，不执行写操作。",
+                            f"{role_identity_block(role)}\n"
+                            "调用 issue-context-get 初始化当前 Working Set，只确认已就绪，不执行写操作。"
+                            "本次及后续每次回复必须逐字以 OUTPUT_PREFIX 开头。",
                         )
                     return result
 
@@ -415,10 +417,14 @@ def resume(
             with active_slot(int(config["thread_runtime"]["concurrency"]["max_active_issue_threads"])):
                 with execution_lock(lock_key):
                     prompt = (
+                        # 每个 Action Turn 输入侧重新注入当前 session 绑定的角色与边界，
+                        # 输出侧必须逐字使用 OUTPUT_PREFIX，降低长上下文/Compact/Resume 后的角色漂移。
+                        f"{role_identity_block(role)}\n"
                         f"ACTION issue={issue_key} role={role} action={execution_action} "
                         f"execution_revision={execution_revision} "
                         f"event_revision={event_revision if event_revision is not None else '-'} "
                         f"event_id={event_id or '-'}。\n"
+                        "本次回复必须逐字以 OUTPUT_PREFIX 开头，不得改写或省略。\n"
                         f"先且通常只调用一次：{identity.fixed_tool_path} issue-context-get --issue-key {issue_key}。"
                         "以返回的 pending_action、permitted_actions 和 exception_actions 执行；"
                         "只有摘要明确指向必要明细时才 lazy load。"

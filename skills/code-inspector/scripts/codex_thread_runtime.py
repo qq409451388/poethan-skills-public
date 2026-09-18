@@ -20,6 +20,38 @@ class CodexRuntimeError(RuntimeError):
 
 REVIEW_COMMAND_RE = re.compile(r"review-db(?:-[A-Za-z0-9_-]+)?\.py[\"']?\s+([a-z][a-z0-9-]+)")
 
+# 固定角色输出前缀：与安装器 ROLE_OUTPUT_PREFIXES 保持一致。
+# 前缀逐字固定，不允许模型改写；只作角色强化信号，不作为权限判断依据。
+ROLE_OUTPUT_PREFIXES: dict[str, dict[str, str]] = {
+    "inspector": {
+        "name": "Inspector",
+        "boundary": "审核、判断、验收；禁止修改业务代码",
+        "prefix": "[Inspector｜审核·判断·验收｜禁止修改业务代码]",
+    },
+    "developer": {
+        "name": "Developer",
+        "boundary": "设计实现、编码、测试；禁止最终审核确认",
+        "prefix": "[Developer｜设计实现·编码·测试｜禁止最终审核确认]",
+    },
+    "human": {
+        "name": "Human",
+        "boundary": "业务决策、风险确认；不代替技术验证",
+        "prefix": "[Human｜业务决策·风险确认｜不代替技术验证]",
+    },
+}
+
+
+def role_identity_block(role: str) -> str:
+    """按 session 绑定的真实角色生成每轮注入的短角色块。"""
+    policy = ROLE_OUTPUT_PREFIXES.get(role)
+    if policy is None:
+        raise ValueError(f"ROLE_PREFIX_UNDEFINED:{role}")
+    return (
+        f"ROLE: {policy['name']}\n"
+        f"BOUNDARY: {policy['boundary']}。\n"
+        f"OUTPUT_PREFIX: {policy['prefix']}"
+    )
+
 
 def review_db_command(item: dict[str, Any]) -> str | None:
     """只提取 Review DB 子命令名，不保留 shell 参数或工具返回正文。"""
@@ -170,6 +202,10 @@ class CodexThreadRuntime:
     ) -> dict[str, Any]:
         prompt = (
             f"Code Inspector 固定身份：operator={operator_id}, platform={agent_platform}, role={role}, issue={issue_key}。\n"
+            f"{role_identity_block(role)}\n"
+            "每次 CLI 回复（包括 Action Turn、等待状态、审核结论、设计反馈、Stage 验收和实现提交结果）"
+            "必须逐字以 OUTPUT_PREFIX 开头，不允许改写；角色和前缀来自本固定身份，不得自行切换。"
+            "角色权限、状态机和工具权限以 Runtime/Session binding 为准。\n"
             f"固定 Review 工具：{fixed_tool_path}\n"
             "只处理该 Issue 且不得切换身份。Review DB 是状态真相；每个 ACTION Turn 先调用一次 "
             "issue-context-get，并以其 pending_action/permitted_actions/exception_actions 为当前流程依据。普通 ACTION 不读取完整 "
