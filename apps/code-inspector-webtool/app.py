@@ -21,6 +21,7 @@ from markupsafe import Markup
 
 from commands import run_human_command, run_runtime_command
 from db import parse_json_field, query_all, query_one
+import routing
 
 BASE_DIR = Path(__file__).resolve().parent
 app = Flask(__name__, template_folder=str(BASE_DIR / "templates"), static_folder=str(BASE_DIR / "static"))
@@ -363,6 +364,7 @@ def issue_with_json(row: dict) -> dict:
     for field, default in (
         ("trigger_conditions", []), ("potential_impact", []), ("impact_scope", []),
         ("evidence", []), ("estimated_change", {}), ("local_terms", {}),
+        ("difficulty_reason", []), ("recommended_executors", []),
     ):
         row[field] = parse_json_field(row.get(f"{field}_json"), default)
     return row
@@ -1534,6 +1536,86 @@ def candidate_update_status(candidate_key: str):
 @app.route("/audit")
 def legacy_redirect():
     return redirect(url_for("task_list"))
+
+
+@app.get("/routing")
+def routing_config():
+    """Agent Model Routing 配置页；配置文件不存在、无效或启用都正常渲染。"""
+    try:
+        status = routing.status_view()
+    except Exception as exc:  # noqa: BLE001 - 配置页本身不能因配置问题打不开
+        status = {
+            "status": "UNAVAILABLE", "enabled": False, "agents": [], "version": None,
+            "path": str(routing.routing_config_path()), "configPath": str(routing.routing_config_path()),
+            "pathOverride": None, "error": str(exc), "pyyamlAvailable": False,
+            "enabledCount": 0, "message": "Agent Routing 模块不可用。",
+        }
+    try:
+        example = routing.example_text()
+    except Exception:  # noqa: BLE001
+        example = ""
+    try:
+        yaml_text = routing.dump_yaml(
+            {"version": status.get("version") or 1, "agents": list(status.get("agents") or [])}
+        )
+    except Exception:  # noqa: BLE001 - 未安装 PyYAML 时退回示例文本
+        yaml_text = example
+    return render_template(
+        "routing.html", status=status, example=example, yaml_text=yaml_text,
+        roles=["DEVELOPER", "INSPECTOR"], reasonings=["minimal", "low", "medium", "high", "xhigh"],
+    )
+
+
+@app.post("/routing/save")
+def routing_save():
+    """结构化表单保存：完整校验后才原子替换文件，失败时保留原配置。"""
+    mode = request.form.get("mode", "rows")
+    try:
+        if mode == "yaml":
+            result = routing.save_yaml_text(request.form.get("yaml_text", ""))
+        else:
+            result = routing.save_document({
+                "version": _routing_version(request.form.get("version")),
+                "agents": routing.agents_from_form(request.form),
+            })
+    except Exception as exc:  # noqa: BLE001
+        return redirect_back("routing_config", err=f"配置未保存：{exc}")
+    snapshot = result["snapshot"]
+    if snapshot["status"] != "ENABLED":
+        return redirect_back(
+            "routing_config", err=f"配置已写入但未启用：{snapshot.get('error') or snapshot['status']}"
+        )
+    return redirect_back(
+        "routing_config",
+        msg=f"配置已保存并立即生效，共 {len(snapshot['agents'])} 条执行配置。",
+    )
+
+
+@app.post("/routing/validate")
+def routing_validate():
+    """只校验不写盘，用于页面「校验配置」。"""
+    mode = request.form.get("mode", "rows")
+    try:
+        if mode == "yaml":
+            document = routing.load_routing_module().parse_routing_text(request.form.get("yaml_text", ""))
+        else:
+            document = {
+                "version": _routing_version(request.form.get("version")),
+                "agents": routing.agents_from_form(request.form),
+            }
+        ok, error = routing.validate_document(document)
+    except Exception as exc:  # noqa: BLE001
+        return redirect_back("routing_config", err=f"配置校验失败：{exc}")
+    if not ok:
+        return redirect_back("routing_config", err=f"配置校验失败：{error}")
+    return redirect_back("routing_config", msg=f"配置校验通过，共 {len(document['agents'])} 条执行配置。")
+
+
+def _routing_version(value: str | None) -> int:
+    text = (value or "").strip() or "1"
+    if not text.lstrip("-").isdigit():
+        raise ValueError("version 必须是整数")
+    return int(text)
 
 
 @app.context_processor

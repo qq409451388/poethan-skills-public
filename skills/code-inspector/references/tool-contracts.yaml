@@ -45,12 +45,20 @@ commands:
   issue-create:
     roles: [inspector, human]
     required: [--task-key, --title, --dimension, --severity, --summary]
-    optional: [--issue-key, --parent-issue-id, --expected-outcome, --technical-note, --local-terms, --evidence, --dedupe-key]
+    optional: [--issue-key, --parent-issue-id, --expected-outcome, --technical-note, --local-terms, --evidence, --dedupe-key, --difficulty, --difficulty-reason]
     compatibility_optional: [--remediation-benefit, --remediation-cost, --disposition, --confidence, --description, --facts, --rationale, --trigger-conditions, --potential-impact, --impact-scope, --estimated-change]
-    json_arguments: [--local-terms, --evidence, --trigger-conditions, --potential-impact, --impact-scope, --estimated-change]
+    json_arguments: [--local-terms, --evidence, --trigger-conditions, --potential-impact, --impact-scope, --estimated-change, --difficulty-reason]
     defaults: {remediation-benefit: medium, remediation-cost: medium, disposition: current_iteration, confidence: high}
     content_rule: summary 直说现象、影响和关键原因；按需使用轻量 Markdown，不保存推理过程或长日志。description 可作为旧调用的 summary 兼容输入。
     evidence_location: 优先 file_path 加 class_name/method_name/符号或 code_excerpt；line_start/line_end 只是快照提示。
+    difficulty: 可选正整数，只描述任务本身的抽象困难程度；不写具体模型名称，也不做模型能力判断。缺少时不产生推荐执行配置。
+    recommended_executors: 创建时由本机 Model Router 按 enabled + role=DEVELOPER + level>=difficulty 计算并写入 Issue；Router 未配置时为空列表，命令照常成功。
+  issue-set-difficulty:
+    roles: [inspector, human]
+    required: [--issue-key, --difficulty]
+    optional: [--difficulty-reason]
+    json_arguments: [--difficulty-reason]
+    note: 修正已创建 Issue 的困难程度并立即重算推荐执行配置；不改变 Issue 状态机。省略 --difficulty-reason 时保留原解释。
   issue-create-batch:
     roles: [inspector, human]
     required: [--task-key, --reason, --issues]
@@ -60,7 +68,7 @@ commands:
     roles: [inspector, developer, human]
     optional: [--task-key, --status, --severity, --dimension, --updated-after, --limit, --fields]
     constraints: {updated-after: ISO-8601 inclusive lower bound to avoid same-second misses, limit: 1..1000, fields: comma-separated allowlisted fields}
-    default_fields: [issue_key, title, summary, dimension, severity, status, current_attempt_no, updated_at, last_discussion_at]
+    default_fields: [issue_key, title, summary, dimension, severity, difficulty, status, current_attempt_no, updated_at, last_discussion_at]
     fields_note: 可选择任意 issue-get 返回字段；JSON 字段沿用 evidence_json 等现有响应名。
     returns_activity_summary: [last_activity_at, last_discussion_at]
   issue-list-pending-review:
@@ -73,7 +81,7 @@ commands:
     optional: [--view]
     defaults: {view: compact}
     view_values: [compact, full]
-    compact_fields: [issue_key, task_key, project_name, title, summary, expected_outcome, technical_note, local_terms_json, dimension, severity, status, evidence_json, current_attempt_no, updated_at, last_activity_at, last_discussion_at]
+    compact_fields: [issue_key, task_key, project_name, title, summary, expected_outcome, technical_note, local_terms_json, dimension, severity, difficulty, status, evidence_json, current_attempt_no, updated_at, last_activity_at, last_discussion_at]
     note: full 仅用于兼容旧字段或专项审计，普通处理不要读取完整旧正文。
   issue-context-get:
     roles: [inspector, developer, human]

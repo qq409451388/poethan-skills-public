@@ -54,6 +54,30 @@
 
     <div data-live-region="evidence">{% if issue.evidence %}<section class="panel"><h2>关键证据</h2>{{ render_references(issue.evidence) }}</section>{% endif %}</div>
 
+    {% if issue.difficulty is not none %}
+    <section class="panel" data-live-region="issue-difficulty">
+      <div class="section-head">
+        <div><h2>任务困难程度</h2><p class="section-sub">由 Inspector 给出的抽象难度，不含任何具体模型判断。</p></div>
+        <span class="badge badge-blue">difficulty = {{ issue.difficulty }}</span>
+      </div>
+      {% if issue.difficulty_reason %}<ul class="value-list">{% for reason in issue.difficulty_reason %}<li>{{ reason }}</li>{% endfor %}</ul>{% endif %}
+      <h3 class="executor-heading">可执行的 Developer 配置</h3>
+      {% if issue.recommended_executors %}
+      <p class="section-sub">按 <span class="mono">level &gt;= difficulty</span> 从本机「模型路由配置」筛选，只是候选，不代表强制调度结果。</p>
+      <div class="issue-executors">
+        {% for executor in issue.recommended_executors %}
+        <div class="issue-executor">
+          <span><strong>{{ executor.agent }}</strong> · {{ executor.model }} · reasoning {{ executor.reasoning }}</span>
+          <span class="badge">level {{ executor.level }}</span>
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <p class="panel-note">没有推荐执行配置：Model Router 未启用，或本机没有 level &gt;= {{ issue.difficulty }} 的 Developer 配置。可前往 <a href="{{ url_for('routing_config') }}">模型路由配置</a>。</p>
+      {% endif %}
+    </section>
+    {% endif %}
+
     {% if latest_design_submission %}
     <section class="panel design-brief-panel" data-live-region="design-brief">
       <div class="section-head"><div><h2>方案概要</h2><p class="section-sub">这里只说明改哪里、大概怎么改、有什么影响。</p></div><span class="badge badge-blue">设计</span></div>

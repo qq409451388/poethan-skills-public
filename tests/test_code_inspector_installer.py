@@ -1299,11 +1299,12 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 "V016__monotonic_issue_projection.sql",
                 "V017__complete_working_set_projection.sql",
                 "V018__review_tool_call_metric.sql",
+                "V019__issue_difficulty_and_executor_recommendations.sql",
             ])
             self.assertIsNotNone(upgraded["backup"])
             with sqlite3.connect(database) as conn:
                 conn.row_factory = sqlite3.Row
-                self.assertEqual(conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0], 18)
+                self.assertEqual(conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0], 19)
                 task = conn.execute("SELECT * FROM review_task WHERE id = 41").fetchone()
                 self.assertEqual((task["task_key"], task["task_type"], task["scope_fingerprint"]),
                                  ("RT-OLD", "REVIEW", "old-fingerprint"))
@@ -1395,6 +1396,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 "V016__monotonic_issue_projection.sql",
                 "V017__complete_working_set_projection.sql",
                 "V018__review_tool_call_metric.sql",
+                "V019__issue_difficulty_and_executor_recommendations.sql",
             ])
             with sqlite3.connect(database) as conn:
                 conn.row_factory = sqlite3.Row
@@ -1448,6 +1450,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 "V016__monotonic_issue_projection.sql",
                 "V017__complete_working_set_projection.sql",
                 "V018__review_tool_call_metric.sql",
+                "V019__issue_difficulty_and_executor_recommendations.sql",
             ])
             with closing(sqlite3.connect(database)) as conn, conn:
                 conn.row_factory = sqlite3.Row

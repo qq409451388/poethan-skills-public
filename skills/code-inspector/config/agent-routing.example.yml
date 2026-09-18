@@ -1,0 +1,36 @@
+# Agent Model Routing 示例配置。
+#
+# 这个功能是可选的：
+#   - 把本文件复制为 ~/.agent-review/config/agent-routing.yml 后才启用 Model Router。
+#   - 文件不存在时 Inspector 照常工作，Issue 照常创建，只是没有推荐执行配置。
+#   - 文件存在但校验失败时不启用 Router，并在 WebApp「模型路由配置」页面显示原因。
+#
+# 等级语义：agent.level >= issue.difficulty 表示该执行配置可以完成该任务。
+# Inspector 只输出抽象 difficulty，不感知任何具体模型名称。
+
+version: 1
+
+agents:
+  - id: codex-sol-medium
+    agent: codex
+    role: DEVELOPER
+    model: gpt-5.6-sol
+    reasoning: medium
+    level: 2
+    enabled: true
+
+  - id: codex-sol-high
+    agent: codex
+    role: DEVELOPER
+    model: gpt-5.6-sol
+    reasoning: high
+    level: 3
+    enabled: true
+
+  - id: claude-opus
+    agent: claude
+    role: DEVELOPER
+    model: claude-opus
+    reasoning: high
+    level: 4
+    enabled: true

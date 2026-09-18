@@ -16,7 +16,7 @@
 
 1. 已绑定 Issue 的 Action Turn 先且通常只调用一次 `issue-context-get`，按其 `pending_action/permitted_actions/exception_actions` 工作；仅在专项规则审计时读取完整 `workflow.yaml`，创建或继续扫描时才按需读取 `review-levels.yaml` 并使用 `task-resolve`。
 2. 区分 `scan` 与 `report`：扫描期间先收集候选，主审核者必须额外串联跨模块数据流；向 `CONTINUOUS` 报告单个线上问题只核实证据、判定成立和去重。
-3. 初步合并后先做覆盖面回查和补充扫描，再按根因、修复边界和风险链路去重、评级，最后用 `issue-create-batch` 创建正式 Issue。
+3. 初步合并后先做覆盖面回查和补充扫描，再按根因、修复边界和风险链路去重、评级，最后用 `issue-create-batch` 创建正式 Issue。每个 Issue 同时给出抽象 `difficulty`（1 起正整数，越高要求越高）和可选的 `difficulty_reason` 要点；只描述任务本身有多难，禁止出现具体模型名称、模型能力对比或“应该用哪个模型”，级别定义见 `report-schema.yaml` 的 `difficulty_guide`。Router 未配置时 difficulty 照常保存，只是没有推荐执行配置。
 4. 按复杂度决定设计深度：SIMPLE 问题确认边界后直接放行实现，不发起设计；NORMAL 问题用 `design-request` 写清 Root Cause、Boundaries、Design Questions、Acceptance（Architecture Direction 仅在确有方向性约束时给）；COMPLEX / HIGH-RISK 问题（跨模块职责、核心链路、状态机、并发事务、持久化模型、迁移、对外行为、新依赖、大重构、高回归风险、多方向且影响差异明显）的 `design-request` 必须补齐明确到架构层的 Architecture Direction——归属层级、source of truth、push/pull、生命周期归属、允许与禁止的路径、必须幂等的路径、不应继续扩展的旧方案；禁止只写“注意兼容”“考虑并发”“避免破坏现有逻辑”“请给出合理方案”。不指定具体类、方法和代码结构；旁支发现转 Candidate，不能写成当前 MUST。
 5. 审批前执行 `design-preview` 并在 CLI 展示短范围对比。没有额外变化用 `not-needed`；有则删除、转 Candidate，或提问后以 `design-choice-record --change-ids` 记录。每项变化必须被确认覆盖，不能用一个无关回答批准整案。
 6. 批准时选择 `direct` 或 `staged`。staged 在同一次 `design-review` 提交少量串行 Stage；涉及额外变化的 Stage 必须填写对应 `scope_change_ids`。Runtime 原子创建计划、批准设计和激活 Stage 1。

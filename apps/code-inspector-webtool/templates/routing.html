@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{% block title %}模型路由配置 · 代码检查工作台{% endblock %}
+{% block page_class %}routing-page{% endblock %}
+{% block content %}
+<header class="page-head">
+  <div class="page-title">
+    <span class="eyebrow">Agent Model Routing</span>
+    <h1>模型路由配置</h1>
+    <p>Inspector 只输出抽象困难程度（difficulty），本页定义本机哪些 Developer 执行配置有能力完成它。等级语义：<span class="mono">level &gt;= difficulty</span> 即进入推荐列表。</p>
+  </div>
+  <span class="badge {% if status.enabled %}badge-green{% elif status.status == 'INVALID' %}badge-red{% else %}badge-neutral{% endif %}">
+    {% if status.enabled %}已启用{% elif status.status == 'INVALID' %}配置错误{% elif status.status == 'UNAVAILABLE' %}不可用{% else %}未配置{% endif %}
+  </span>
+</header>
+
+<section class="panel routing-status {% if status.enabled %}routing-status-ok{% elif status.status == 'INVALID' %}routing-status-error{% else %}routing-status-off{% endif %}" data-live-region="routing-status">
+  <div class="routing-status-main">
+    <strong>{{ status.message }}</strong>
+    <p class="section-sub">配置文件：<span class="mono break-all">{{ status.configPath }}</span></p>
+    {% if status.pathOverride %}<p class="form-note">环境变量 <span class="mono">AGENT_ROUTING_CONFIG</span> 覆盖了默认路径：<span class="mono">{{ status.pathOverride }}</span></p>{% endif %}
+    {% if not status.pyyamlAvailable %}<p class="form-note">当前 Python 环境缺少 PyYAML，配置只能读取，无法保存。请先安装：<span class="mono">pip install -r apps/code-inspector-webtool/requirements.txt</span></p>{% endif %}
+  </div>
+  <dl class="routing-status-facts">
+    <div><dt>状态</dt><dd class="mono">{{ status.status }}</dd></div>
+    <div><dt>version</dt><dd class="mono">{{ status.version if status.version is not none else '—' }}</dd></div>
+    <div><dt>执行配置</dt><dd><strong>{{ status.agents|length }}</strong> 条，其中启用 <strong>{{ status.enabledCount }}</strong> 条</dd></div>
+  </dl>
+  {% if status.error %}<div class="routing-validation-error"><strong>校验错误</strong><pre class="raw-json">{{ status.error }}</pre></div>{% endif %}
+</section>
+
+<section class="panel" data-live-region="routing-table">
+  <div class="section-head">
+    <div><h2>执行配置列表</h2><p class="section-sub">同一 Agent 可以承担多个角色；Developer 推荐只取 <span class="mono">enabled = true</span> 且 <span class="mono">role = DEVELOPER</span> 的条目。</p></div>
+  </div>
+  <form method="post" action="{{ url_for('routing_save') }}" id="routing-rows-form">
+    <input type="hidden" name="mode" value="rows">
+    <div class="toolbar routing-toolbar">
+      <label>version</label><input type="text" name="version" value="{{ status.version or 1 }}" size="4" inputmode="numeric">
+    </div>
+    <div class="table-wrap">
+      <table class="routing-table">
+        <thead><tr><th>id</th><th>agent</th><th>role</th><th>model</th><th>reasoning</th><th>level</th><th>enabled</th><th>操作</th></tr></thead>
+        <tbody id="routing-agents-body">
+          {% for entry in status.agents %}
+          <tr>
+            <td><input type="text" name="agent_id" value="{{ entry.id }}" aria-label="id"></td>
+            <td><input type="text" name="agent_agent" value="{{ entry.agent }}" aria-label="agent"></td>
+            <td><select name="agent_role" aria-label="role">{% for role in roles %}<option value="{{ role }}" {% if entry.role == role %}selected{% endif %}>{{ role }}</option>{% endfor %}</select></td>
+            <td><input type="text" name="agent_model" value="{{ entry.model }}" aria-label="model"></td>
+            <td><select name="agent_reasoning" aria-label="reasoning">{% for value in reasonings %}<option value="{{ value }}" {% if entry.reasoning == value %}selected{% endif %}>{{ value }}</option>{% endfor %}</select></td>
+            <td><input type="text" name="agent_level" value="{{ entry.level }}" size="4" inputmode="numeric" aria-label="level"></td>
+            <td class="routing-enabled-cell"><input type="checkbox" name="agent_enabled_row" value="row{{ loop.index0 }}" {% if entry.enabled %}checked{% endif %} aria-label="enabled"></td>
+            <td><button type="button" class="btn btn-small btn-danger-outline" data-routing-remove>删除</button></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <p class="form-note" id="routing-empty-note" {% if status.agents %}hidden{% endif %}>还没有任何执行配置。点击「新增 Agent」开始。</p>
+    <div class="routing-actions">
+      <button type="button" class="btn" data-routing-add>＋ 新增 Agent</button>
+      <button type="submit" class="btn btn-primary">保存并立即生效</button>
+      <button type="submit" class="btn btn-soft" formaction="{{ url_for('routing_validate') }}">校验配置</button>
+    </div>
+  </form>
+</section>
+
+<details class="panel routing-yaml" {% if status.status == 'INVALID' %}open{% endif %} data-live-region="routing-yaml">
+  <summary><span><strong>YAML 原始编辑</strong><small>直接编辑整份配置文件；同样会先校验再原子替换。</small></span></summary>
+  <div class="routing-yaml-body">
+    <form method="post" action="{{ url_for('routing_save') }}">
+      <input type="hidden" name="mode" value="yaml">
+      <textarea name="yaml_text" class="routing-yaml-text" rows="22" spellcheck="false" aria-label="agent-routing.yml">{{ yaml_text }}</textarea>
+      <div class="routing-actions">
+        <button type="submit" class="btn btn-primary">保存 YAML 并立即生效</button>
+        <button type="submit" class="btn btn-soft" formaction="{{ url_for('routing_validate') }}">校验 YAML</button>
+      </div>
+    </form>
+    <details class="collapsible"><summary>查看示例 agent-routing.example.yml</summary><pre class="raw-json">{{ example }}</pre></details>
+  </div>
+</details>
+
+<template id="routing-row-template">
+  <tr>
+    <td><input type="text" name="agent_id" aria-label="id"></td>
+    <td><input type="text" name="agent_agent" aria-label="agent"></td>
+    <td><select name="agent_role" aria-label="role">{% for role in roles %}<option value="{{ role }}">{{ role }}</option>{% endfor %}</select></td>
+    <td><input type="text" name="agent_model" aria-label="model"></td>
+    <td><select name="agent_reasoning" aria-label="reasoning">{% for value in reasonings %}<option value="{{ value }}" {% if value == 'high' %}selected{% endif %}>{{ value }}</option>{% endfor %}</select></td>
+    <td><input type="text" name="agent_level" value="1" size="4" inputmode="numeric" aria-label="level"></td>
+    <td class="routing-enabled-cell"><input type="checkbox" name="agent_enabled_row" value="row0" checked aria-label="enabled"></td>
+    <td><button type="button" class="btn btn-small btn-danger-outline" data-routing-remove>删除</button></td>
+  </tr>
+</template>
+
+<script src="{{ url_for('static', filename='routing.js') }}" defer></script>
+{% endblock %}

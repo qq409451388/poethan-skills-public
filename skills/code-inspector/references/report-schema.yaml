@@ -51,6 +51,8 @@ report:
       summary: {type: markdown_string, required: true}
       dimension: {type: enum, ref: dimension, required: true}
       severity: {type: enum, ref: severity, required: true}
+      difficulty: {type: integer, required: false, min: 1, note: 任务是抽象困难程度，越高代表要求越高；只描述任务本身，不写任何具体模型名称或模型能力判断}
+      difficulty_reason: {type: array, required: false, item: {type: string}, note: 可选解释要点，如“涉及跨模块修改”“涉及并发逻辑”；Router 只依赖 difficulty}
       status: {type: enum, ref: issue_status, required: true}
       expected_outcome: {type: markdown_string, required: false}
       technical_note: {type: markdown_string, required: false}
@@ -89,3 +91,13 @@ sorting:
     - {field: severity, direction: desc, weights: {critical: 4, high: 3, medium: 2, low: 1}}
     - {field: dimension, direction: desc}
     - {field: issue_id, direction: asc}
+
+difficulty_guide:
+  purpose: 只表达任务本身有多难；由本机 Model Router 结合本机 Agent/Model 能力等级配置决定哪些 Developer 执行配置能完成它。
+  forbidden: 不输出具体模型名称、模型能力对比或“应该用哪个模型”；不引入 FAST/NORMAL/STRONG/EXPERT 之类的中间档位。
+  scale:
+    1: 单点、边界清晰的小改动，例如文案、空值判断、单方法修正。
+    2: 局部修改，影响一个模块内的少量文件，无并发与数据模型变化。
+    3: 跨模块或跨层修改，涉及接口契约、状态扩散或需要补充回归测试。
+    4: 涉及状态机、并发事务一致性、持久化模型或对外行为变化。
+    5: 高风险核心链路改造、数据迁移、大范围重构，或失败后果不可逆。

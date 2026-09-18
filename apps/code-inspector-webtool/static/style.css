@@ -461,3 +461,42 @@ tbody tr:last-child td { border-bottom: 0; }
   html { scroll-behavior: auto; }
   *, *::before, *::after { transition-duration: .01ms !important; animation-duration: .01ms !important; }
 }
+
+/* 模型路由配置页 */
+.routing-page { max-width: 1320px; }
+.routing-status { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 16px 24px; border-left: 4px solid var(--border-strong); }
+.routing-status-ok { border-left-color: var(--green); }
+.routing-status-error { border-left-color: var(--red); }
+.routing-status-off { border-left-color: var(--amber); }
+.routing-status-main strong { display: block; margin-bottom: 4px; font-size: 15px; }
+.routing-status-main p { margin: 3px 0 0; }
+.routing-status-facts { display: grid; grid-template-columns: repeat(3, auto); gap: 4px 22px; margin: 0; }
+.routing-status-facts dt { color: var(--muted); font-size: 11px; }
+.routing-status-facts dd { margin: 1px 0 0; }
+.routing-validation-error { grid-column: 1 / -1; padding: 11px 13px; border: 1px solid #efb7b7; border-radius: 9px; background: var(--red-soft); }
+.routing-validation-error strong { display: block; color: var(--red); }
+.routing-validation-error .raw-json { margin-top: 7px; background: #fff; white-space: pre-wrap; }
+.routing-toolbar { margin-bottom: 10px; }
+.routing-toolbar input { width: 90px; }
+.routing-table { min-width: 900px; }
+.routing-table input[type="text"], .routing-table select { min-width: 110px; }
+.routing-table input[size="4"] { min-width: 68px; }
+.routing-enabled-cell { text-align: center; }
+.routing-enabled-cell input { width: 17px; height: 17px; }
+.routing-actions { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 14px; }
+.routing-yaml > summary { cursor: pointer; }
+.routing-yaml > summary > span { display: inline-flex; margin-left: 5px; flex-direction: column; vertical-align: middle; }
+.routing-yaml > summary strong { font-size: 15px; }
+.routing-yaml > summary small { color: var(--muted); font-size: 11px; font-weight: 400; }
+.routing-yaml-body { margin-top: 13px; }
+.routing-yaml-text { min-height: 380px; font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre; }
+.executor-heading { margin: 14px 0 4px; font-size: 13px; }
+.issue-executors { display: grid; gap: 7px; margin-top: 11px; }
+.issue-executor { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 4px 14px; padding: 9px 11px; border: 1px solid var(--border); border-radius: 9px; background: #f8fafc; }
+.issue-executor strong { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.issue-executor span { color: var(--muted); font-size: 12px; }
+
+@media (max-width: 820px) {
+  .routing-status { grid-template-columns: 1fr; }
+  .routing-status-facts { grid-template-columns: 1fr 1fr; }
+}

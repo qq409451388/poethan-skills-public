@@ -19,6 +19,35 @@
 
 同一个实际 Agent 可以承担多个角色，但每个角色必须配置不同 alias，以便权限校验和审计日志明确区分逻辑身份。同一平台、同一角色配置多个 alias 时，必须且只能有一个绑定设置 `"default": true`。角色的会话启动参数由 `session_selector` 配置；当前 `dev` 表示 developer，`insp` 表示 inspector。
 
+## Developer 执行模型推荐（可选）
+
+Inspector 只输出抽象的 `difficulty`（1 起正整数，越高要求越高），不感知任何具体模型名称。是否把它换算成“哪些 Developer 执行配置可以完成这个任务”，由本机级配置文件决定：
+
+```text
+~/.agent-review/config/agent-routing.yml
+```
+
+该文件不存在时功能完全不启用，Issue 照常创建、状态机照常流转，只是没有推荐列表。配置结构见 [config/agent-routing.example.yml](config/agent-routing.example.yml)：
+
+```yaml
+version: 1
+
+agents:
+  - id: codex-sol-high
+    agent: codex
+    role: DEVELOPER
+    model: gpt-5.6-sol
+    reasoning: high
+    level: 3
+    enabled: true
+```
+
+筛选语义是 `enabled = true` 且 `role = DEVELOPER` 且 `level >= difficulty`。`level` 不要求连续；结果只是“可执行候选”，不改变 Issue 状态机，也不代表强制调度结果。
+
+配置文件的查看与修改统一在 WebApp 的「模型路由配置」页面完成（`/routing`）：新增、删除、修改、校验、保存和 YAML 原始编辑。保存流程是「完整校验 → 写临时文件 → 原子替换 → reload 运行时快照」，校验失败不修改现有文件，reload 失败继续沿用上一份有效配置，都不需要重启 WebApp。
+
+配置文件由人类维护，Agent 只读取筛选结果，不修改它。
+
 ## 安装
 
 macOS / Linux 在仓库根目录执行：
