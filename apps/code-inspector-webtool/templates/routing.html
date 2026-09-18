@@ -18,7 +18,6 @@
     <strong>{{ status.message }}</strong>
     <p class="section-sub">配置文件：<span class="mono break-all">{{ status.configPath }}</span></p>
     {% if status.pathOverride %}<p class="form-note">环境变量 <span class="mono">AGENT_ROUTING_CONFIG</span> 覆盖了默认路径：<span class="mono">{{ status.pathOverride }}</span></p>{% endif %}
-    {% if not status.pyyamlAvailable %}<p class="form-note">当前 Python 环境缺少 PyYAML，配置只能读取，无法保存。请先安装：<span class="mono">pip install -r apps/code-inspector-webtool/requirements.txt</span></p>{% endif %}
   </div>
   <dl class="routing-status-facts">
     <div><dt>状态</dt><dd class="mono">{{ status.status }}</dd></div>

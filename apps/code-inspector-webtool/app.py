@@ -1547,7 +1547,7 @@ def routing_config():
         status = {
             "status": "UNAVAILABLE", "enabled": False, "agents": [], "version": None,
             "path": str(routing.routing_config_path()), "configPath": str(routing.routing_config_path()),
-            "pathOverride": None, "error": str(exc), "pyyamlAvailable": False,
+            "pathOverride": None, "error": str(exc),
             "enabledCount": 0, "message": "Agent Routing 模块不可用。",
         }
     try:
@@ -1558,7 +1558,7 @@ def routing_config():
         yaml_text = routing.dump_yaml(
             {"version": status.get("version") or 1, "agents": list(status.get("agents") or [])}
         )
-    except Exception:  # noqa: BLE001 - 未安装 PyYAML 时退回示例文本
+    except Exception:  # noqa: BLE001 - 序列化异常时退回示例文本，页面仍可打开
         yaml_text = example
     discovered, discovery_error = [], None
     try:

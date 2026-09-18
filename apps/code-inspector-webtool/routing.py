@@ -80,7 +80,6 @@ def status_view() -> dict[str, Any]:
     view["configPath"] = str(path)
     # 环境变量覆盖只在排查时展示，避免页面误导实际生效路径。
     view["pathOverride"] = os.environ.get("AGENT_ROUTING_CONFIG") or None
-    view["pyyamlAvailable"] = module.yaml is not None
     if not path.exists() and view["status"] == module.ROUTER_DISABLED:
         view["message"] = "尚未配置：复制示例文件为 agent-routing.yml 后即可启用模型路由。"
     elif view["status"] == module.ROUTER_INVALID:

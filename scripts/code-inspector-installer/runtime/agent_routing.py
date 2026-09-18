@@ -12,13 +12,9 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Any
-
-try:  # PyYAML 是可选依赖；缺失时 Router 自动降级为未启用。
-    import yaml
-except ModuleNotFoundError:  # pragma: no cover - 取决于运行环境是否安装 PyYAML
-    yaml = None
 
 SUPPORTED_VERSIONS = {1}
 ALLOWED_ROLES = {"DEVELOPER", "INSPECTOR"}
@@ -134,22 +130,230 @@ def parse_routing_document(document: Any) -> dict[str, Any]:
     return {"version": version, "agents": agents}
 
 
+# ---------------------------------------------------------------------------
+# 内置极简 YAML 子集：本配置只需要「标量 + 映射 + 映射列表」。
+#
+# 刻意不依赖 PyYAML：Agent Runtime（review-db.py）与 WebApp 可能运行在不带
+# 第三方库的 Python 上，若依赖缺失会导致整个功能静默失效。内置解析器保证
+# 两端在任意环境下行为一致；遇到子集之外的语法会明确报错，而不是误解析。
+# ---------------------------------------------------------------------------
+
+_BARE_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
+_INTEGER = re.compile(r"^-?\d+$")
+_AMBIGUOUS_SCALAR = re.compile(r"^(?:true|false|null|~|-?\d+)$", re.IGNORECASE)
+_QUOTE_TRIGGER = "-?:,[]{}#&*!|>'\"%@`"
+
+
+def _strip_comment(line: str) -> str:
+    """去掉行尾注释；引号内的 `#` 不算注释。"""
+    quote = ""
+    for index, char in enumerate(line):
+        if quote:
+            if char == quote:
+                quote = ""
+            continue
+        if char in {'"', "'"}:
+            quote = char
+        elif char == "#" and (index == 0 or line[index - 1] in " \t"):
+            return line[:index]
+    return line
+
+
+def _unquote(text: str) -> str:
+    text = text.strip()
+    if len(text) < 2 or text[0] != text[-1] or text[0] not in {'"', "'"}:
+        return text
+    inner = text[1:-1]
+    if text[0] == "'":
+        return inner.replace("''", "'")
+    escapes = {"n": "\n", "t": "\t", "r": "\r", '"': '"', "\\": "\\"}
+    result: list[str] = []
+    index = 0
+    while index < len(inner):
+        char = inner[index]
+        if char == "\\" and index + 1 < len(inner):
+            result.append(escapes.get(inner[index + 1], inner[index + 1]))
+            index += 2
+            continue
+        result.append(char)
+        index += 1
+    return "".join(result)
+
+
+def _yaml_scalar(text: str) -> Any:
+    """标量解析。yes/no/on/off 保持字符串，避免把 agent id 误判成布尔值。"""
+    raw = text.strip()
+    if raw == "" or raw in {"~", "null", "Null", "NULL"}:
+        return None
+    if raw[0] in {'"', "'"}:
+        return _unquote(raw)
+    if raw.lower() == "true":
+        return True
+    if raw.lower() == "false":
+        return False
+    if _INTEGER.match(raw):
+        return int(raw)
+    return raw
+
+
+def _yaml_lines(text: str) -> list[tuple[int, str, int]]:
+    lines: list[tuple[int, str, int]] = []
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    for number, raw in enumerate(normalized.split("\n"), 1):
+        indent_prefix = raw[: len(raw) - len(raw.lstrip())]
+        if "\t" in indent_prefix:
+            raise AgentRoutingError(f"YAML 不支持 Tab 缩进（第 {number} 行）")
+        content = _strip_comment(raw).rstrip()
+        if not content.strip():
+            continue
+        lines.append((len(content) - len(content.lstrip(" ")), content.strip(), number))
+    return lines
+
+
+def _yaml_map(lines: list[tuple[int, str, int]], index: int, indent: int) -> tuple[dict[str, Any], int]:
+    result: dict[str, Any] = {}
+    while index < len(lines):
+        level, content, number = lines[index]
+        if level < indent:
+            break
+        if level > indent:
+            raise AgentRoutingError(f"YAML 缩进不正确（第 {number} 行）")
+        if content.startswith("-"):
+            break
+        key, separator, rest = content.partition(":")
+        if not separator:
+            raise AgentRoutingError(f"YAML 需要 `key: value` 形式（第 {number} 行）")
+        name = _unquote(key.strip())
+        if not name:
+            raise AgentRoutingError(f"YAML 键不能为空（第 {number} 行）")
+        rest = rest.strip()
+        if rest:
+            result[name] = _yaml_scalar(rest)
+            index += 1
+        else:
+            index += 1
+            # 块序列允许与父键同列（PyYAML 默认输出就是 `agents:` 后接同列 `- `），
+            # 因此同列且以 `-` 开头的行也要作为本键的子块。
+            child = (
+                index < len(lines)
+                and (lines[index][0] > indent
+                     or (lines[index][0] == indent and lines[index][1].startswith("-")))
+            )
+            if child:
+                result[name], index = _yaml_block(lines, index, lines[index][0])
+            else:
+                result[name] = None
+    return result, index
+
+
+def _yaml_list(lines: list[tuple[int, str, int]], index: int, indent: int) -> tuple[list[Any], int]:
+    result: list[Any] = []
+    while index < len(lines):
+        level, content, number = lines[index]
+        if level < indent:
+            break
+        if level > indent:
+            raise AgentRoutingError(f"YAML 缩进不正确（第 {number} 行）")
+        if not content.startswith("-"):
+            break
+        rest = content[1:]
+        if rest and not rest.startswith(" "):
+            raise AgentRoutingError(f"YAML 列表项需要 `- ` 前缀（第 {number} 行）")
+        rest = rest.strip()
+        if not rest:
+            index += 1
+            if index < len(lines) and lines[index][0] > indent:
+                value, index = _yaml_block(lines, index, lines[index][0])
+                result.append(value)
+            else:
+                result.append(None)
+            continue
+        key, separator, _value = rest.partition(":")
+        if not separator or not _BARE_KEY.match(key.strip()):
+            result.append(_yaml_scalar(rest))
+            index += 1
+            continue
+        # 列表项是映射：把首行与后续更深缩进的行合成子块，复用同一套映射解析。
+        item_indent = indent + 2
+        sub = [(item_indent, rest, number)]
+        index += 1
+        while index < len(lines) and lines[index][0] > indent:
+            sub.append(lines[index])
+            index += 1
+        item, consumed = _yaml_map(sub, 0, item_indent)
+        if consumed != len(sub):
+            raise AgentRoutingError(f"YAML 列表项结构不正确（第 {number} 行）")
+        result.append(item)
+    return result, index
+
+
+def _yaml_block(lines: list[tuple[int, str, int]], index: int, indent: int):
+    if lines[index][1].startswith("-"):
+        return _yaml_list(lines, index, indent)
+    return _yaml_map(lines, index, indent)
+
+
+def _yaml_load(text: str) -> Any:
+    lines = _yaml_lines(text)
+    if not lines:
+        return None
+    value, consumed = _yaml_block(lines, 0, lines[0][0])
+    if consumed != len(lines):
+        raise AgentRoutingError(f"YAML 结构不正确（第 {lines[consumed][2]} 行）")
+    return value
+
+
+def _yaml_quote(text: str) -> str:
+    needs_quote = (
+        text == ""
+        or _AMBIGUOUS_SCALAR.match(text) is not None
+        or text != text.strip()
+        or text[0] in _QUOTE_TRIGGER
+        or ": " in text
+        or " #" in text
+        or any(char in text for char in "\n\t\r")
+    )
+    if not needs_quote:
+        return text
+    escaped = (
+        text.replace("\\", "\\\\").replace('"', '\\"')
+        .replace("\n", "\\n").replace("\t", "\\t").replace("\r", "\\r")
+    )
+    return f'"{escaped}"'
+
+
+def _yaml_dump_scalar(value: Any) -> str:
+    if value is True:
+        return "true"
+    if value is False:
+        return "false"
+    if value is None:
+        return "null"
+    if isinstance(value, int):
+        return str(value)
+    return _yaml_quote(str(value))
+
+
+def _yaml_dump(document: dict[str, Any]) -> str:
+    lines: list[str] = []
+    for key, value in document.items():
+        if key == "agents" and isinstance(value, list):
+            lines.append("agents:")
+            for entry in value:
+                for position, (field, field_value) in enumerate(entry.items()):
+                    lines.append(f"{'- ' if position == 0 else '  '}{field}: {_yaml_dump_scalar(field_value)}")
+        else:
+            lines.append(f"{key}: {_yaml_dump_scalar(value)}")
+    return "\n".join(lines) + "\n"
+
+
 def dump_routing_document(document: dict[str, Any]) -> str:
     """把配置序列化为稳定、可人工编辑的 YAML。"""
-    normalized = parse_routing_document(document)
-    if yaml is None:
-        raise AgentRoutingError("当前环境缺少 PyYAML，无法保存 YAML 配置")
-    return yaml.safe_dump(normalized, allow_unicode=True, sort_keys=False, default_flow_style=False)
+    return _yaml_dump(parse_routing_document(document))
 
 
 def parse_routing_text(text: str) -> dict[str, Any]:
-    if yaml is None:
-        raise AgentRoutingError("当前环境缺少 PyYAML，无法解析 YAML 配置")
-    try:
-        document = yaml.safe_load(text)
-    except yaml.YAMLError as exc:
-        raise AgentRoutingError(f"YAML 解析失败: {exc}") from exc
-    return parse_routing_document(document)
+    return parse_routing_document(_yaml_load(text))
 
 
 class AgentRoutingSnapshot:
