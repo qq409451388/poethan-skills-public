@@ -16,6 +16,7 @@
   --purple: #6d28d9;
   --purple-soft: #f5f0ff;
   --shadow: 0 8px 24px rgba(15, 23, 42, .05);
+  --sticky-head-top: 58px;
 }
 
 * { box-sizing: border-box; }
@@ -271,6 +272,23 @@ tbody tr:last-child td { border-bottom: 0; }
 .collapsible-panel:not([open]) > summary::after { content: "展开 ▸"; }
 .collapsible-panel > summary:focus-visible { outline: 3px solid rgba(37, 99, 235, .24); outline-offset: 2px; }
 .collapsible-panel-body { margin-top: 14px; }
+.stage-plan-panel, .record-panel { padding-top: 0; overflow: clip; scroll-margin-top: var(--sticky-head-top); }
+.stage-plan-panel > summary, .record-panel > summary {
+  position: sticky;
+  top: var(--sticky-head-top);
+  z-index: 6;
+  margin: 0 -18px;
+  padding: 16px 18px;
+  background: var(--panel);
+}
+.record-panel .tabs {
+  position: sticky;
+  top: var(--record-tabs-top, 148px);
+  z-index: 5;
+  margin: 0 -18px 12px;
+  padding: 8px 18px;
+  background: var(--panel);
+}
 .callout { margin-top: 12px; padding: 12px 14px; border-left: 4px solid var(--blue); border-radius: 0 8px 8px 0; background: var(--blue-soft); }
 .collapsible { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); }
 .collapsible summary { color: var(--blue); cursor: pointer; font-weight: 650; }
@@ -291,12 +309,17 @@ tbody tr:last-child td { border-bottom: 0; }
 .raw-details { margin: 0; padding: 10px 12px; }
 .raw-json { max-width: 100%; margin: 8px 0 0; padding: 11px 13px; overflow: auto; border: 1px solid var(--border); border-radius: 7px; background: #f4f6f8; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; }
 .empty-inline { padding: 14px; border: 1px dashed var(--border-strong); border-radius: 8px; color: var(--muted); text-align: center; }
-.stage-plan-panel { overflow: hidden; }
+.stage-plan-panel { overflow: clip; }
 .stage-plans { display: grid; gap: 14px; margin-top: 13px; }
 .stage-plan { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
 .stage-plan.active { border-color: #b8cdf8; box-shadow: 0 0 0 2px rgba(37, 99, 235, .05); }
 .stage-plan.historical { background: #fafbfc; }
 .stage-plan-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 13px; border-bottom: 1px solid var(--border); background: #f8fafc; }
+.stage-plan > .stage-plan-head { cursor: pointer; list-style: none; }
+.stage-plan > .stage-plan-head::-webkit-details-marker { display: none; }
+.stage-plan > .stage-plan-head::after { flex: none; color: var(--blue); font-size: 11px; font-weight: 700; white-space: nowrap; }
+.stage-plan[open] > .stage-plan-head::after { content: "收起 ▾"; }
+.stage-plan:not([open]) > .stage-plan-head::after { content: "展开 ▸"; }
 .stage-list { padding: 4px 13px; }
 .stage-item { border-bottom: 1px solid var(--border); }
 .stage-item:last-child { border-bottom: 0; }
@@ -368,6 +391,16 @@ tbody tr:last-child td { border-bottom: 0; }
 .design-brief-panel { border-left: 4px solid var(--blue); }
 .record-stream { display: grid; gap: 8px; }
 .record-stream .event { margin-bottom: 0; }
+.tab-pane:not(.records-expanded) .event.record-over-limit { display: none; }
+.tab-pane:not(.records-expanded) .round:not(:has(.event:not(.record-over-limit))) { display: none; }
+.record-expander { display: flex; align-items: center; justify-content: center; width: 100%; margin-top: 8px; padding: 9px 12px; border: 1px dashed var(--border-strong); border-radius: 8px; background: #f8fafc; color: var(--blue); cursor: pointer; font: inherit; font-size: 12px; font-weight: 700; }
+.record-expander:hover { border-color: #b8cdf8; background: var(--blue-soft); }
+.record-expander .record-expander-less { display: none; }
+.tab-pane.records-expanded .record-expander .record-expander-more { display: none; }
+.tab-pane.records-expanded .record-expander .record-expander-less { display: inline; }
+.tab-pane[data-tab-pane="discussion"] .event.record-role-inspector_agent { border-left: 3px solid var(--blue); background: var(--blue-soft); }
+.tab-pane[data-tab-pane="discussion"] .event.record-role-development_agent { border-left: 3px solid var(--green); background: var(--green-soft); }
+.tab-pane[data-tab-pane="discussion"] .event.record-role-human { border-left: 3px solid var(--amber); background: var(--amber-soft); }
 .runtime-card { margin-top: 10px; padding: 12px; border: 1px solid var(--border); border-radius: 9px; background: #f8fafc; }
 .runtime-kv { display: grid; grid-template-columns: 130px 1fr; gap: 5px 12px; margin: 10px 0 0; font-size: 13px; }
 .runtime-kv dt { color: var(--muted); }.runtime-kv dd { margin: 0; overflow-wrap: anywhere; }

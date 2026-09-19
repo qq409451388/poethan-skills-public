@@ -93,9 +93,10 @@ macOS / Linux 在仓库根目录执行：
 python3 scripts/code-inspector-installer/install.py install
 python3 scripts/code-inspector-installer/install.py verify
 
-# 安装后把唯一的全局命令加入 PATH（一次性）：
+# 安装后把角色命令加入 PATH（一次性）：
 echo 'export PATH="$HOME/.agent-review/bin:$PATH"' >> ~/.zshrc
-command -v reviewctl   # 应输出 ~/.agent-review/bin/reviewctl
+command -v cictl-dev   # 应输出 ~/.agent-review/bin/cictl-dev
+command -v cictl-insp  # 应输出 ~/.agent-review/bin/cictl-insp
 ```
 
 Windows 在 PowerShell 中执行：

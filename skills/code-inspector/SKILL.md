@@ -20,24 +20,25 @@ Multi-Thread 默认关闭。只有 `config/runtime.json` 允许且用户在当�
 - 所有角色：`references/core-workflow.md`
 - 当前角色：`references/role-workflows.md` 中对应的 Developer 或 Inspector 章节
 
-FastMode 固定使用 Inspector 身份。启动时改为读取 `references/fastmode.md`，锁定命令中的 Issue Scope，并按输入顺序串行审核；Developer Agent 不是前置条件，Human 负责开发沟通与最终状态，Inspector 只负责代码检查、验证和记录。FastMode 不依赖 `pending_action`，不启动 Runtime、Watch、Multi-Thread 或 Developer，不自动关闭 Issue。FastMode 的验证结论只用专用 `reviewctl fast pass|fail` 写入；普通 `metadata` 只记录事实，不能启用 FastMode 或改变权限和控制流。
+FastMode 固定使用 Inspector 身份。启动时改为读取 `references/fastmode.md`，锁定命令中的 Issue Scope，并按输入顺序串行审核；Developer Agent 不是前置条件，Human 负责开发沟通与最终状态，Inspector 只负责代码检查、验证和记录。FastMode 不依赖 `pending_action`，不启动 Runtime、Watch、Multi-Thread 或 Developer，不自动关闭 Issue。FastMode 的验证结论只用专用 `cictl-insp fast pass|fail` 写入；普通 `metadata` 只记录事实，不能启用 FastMode 或改变权限和控制流。
 
 以下大型文件由 Runtime/CLI 强制执行，普通 Action Turn 不读取；仅在专项审计或修改规则本身时按需查阅：
 
 - 状态机与状态变更：`references/workflow.yaml`
 - 数据库工具完整参数：`references/tool-contracts.yaml`
 
-普通 Issue 与 FastMode 的首次上下文读取都固定使用：
+普通 Issue 与 FastMode 的首次上下文读取都固定使用当前角色命令：
 
 ```bash
-reviewctl issue context <issue_key>
+cictl-dev issue context <issue_key>   # Developer
+cictl-insp issue context <issue_key>  # Inspector
 ```
 
-`reviewctl issue context` 使用位置参数 <issue_key>。以返回的 `pending_action`、`permitted_actions`、`exception_actions` 和资源 id 作为当前 Working Set；只有摘要指向必要明细时才使用 `reviewctl discussion show`、`reviewctl activity show` 或 `reviewctl stage history`。
+角色命令使用位置参数 `<issue_key>`。以返回的 `pending_action`、`permitted_actions`、`exception_actions` 和资源 id 作为当前 Working Set；只有摘要指向必要明细时才使用当前角色命令的 `discussion show`、`activity show` 或 `stage history`。
 
 ## 统一 CLI 入口
 
-全局只安装一个命令 `reviewctl`，固定格式 `reviewctl <操作域> <动作> [位置参数] [动态参数]`，例如 `reviewctl issue show RI-1`、`reviewctl stage review RI-1 1 @review.json`。Issue、Task、Stage、Activity 等 ID 一律使用位置参数，不再重复书写 `--issue-key`、`--stage-no`；复杂结构化数据只接受 `@文件路径` 或 `-`（stdin），完整 Schema 通过 `reviewctl schema <domain-action>`（如 `reviewctl schema stage-review`）查看。角色和逻辑身份来自当前 Skill 的固定工具入口，不存在公开的身份切换参数；未激活身份只能查看 help/schema，执行运行时命令会被拒绝。
+安装两个角色专用命令：Developer 使用 `cictl-dev`，Inspector 使用 `cictl-insp`。固定格式为 `<cictl-command> <操作域> <动作> [位置参数] [动态参数]`，例如 `cictl-dev issue show RI-1`、`cictl-insp stage review RI-1 1 @review.json`。两个命令各自只包含对应角色允许的命令集；Issue、Task、Stage、Activity 等 ID 一律使用位置参数，不再重复书写 `--issue-key`、`--stage-no`；复杂结构化数据只接受 `@文件路径` 或 `-`（stdin），Schema 通过当前角色命令的 `schema <domain-action>` 查看。
 
 ## 固定角色输出前缀
 

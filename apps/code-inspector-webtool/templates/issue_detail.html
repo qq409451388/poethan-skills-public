@@ -3,7 +3,7 @@
 {% from "components/evidence.html" import render_references %}
 {% from "components/issue_copy_button.html" import issue_copy_button %}
 {% macro render_collaboration_record(record, compact=false) %}
-<article class="event {% if record.record_kind == 'discussion' %}discussion-item{% endif %}" data-record-kind="{{ record.record_kind }}"{% if record.record_kind == 'activity' %} data-activity-type="{{ record.activity_type }}"{% endif %}>
+<article class="event{% if record.record_kind == 'discussion' %} discussion-item{% endif %} record-role-{{ (record.operator_type or 'unknown')|lower }}" data-record-kind="{{ record.record_kind }}"{% if record.record_kind == 'activity' %} data-activity-type="{{ record.activity_type }}"{% endif %}>
   <div class="event-head"><div>
     {% if record.record_kind == 'activity' %}<strong>{{ record.activity_type|label }}</strong>{% endif %}
     <span class="event-operator">提交人 <b class="mono">{{ record.operator_id or '—' }}</b> · {{ record.operator_type|label }}</span>
@@ -78,20 +78,18 @@
     {% endif %}
     </div>
 
-    <section class="panel stage-plan-panel" id="execution-plan" data-live-region="execution-plan">
-      <div class="section-head">
-        <div><h2>执行计划</h2><p class="section-sub">复杂 Issue 按 Stage 串行开发与验收；简单 Issue 可以没有执行计划。</p></div>
-        {% if active_stage_plan %}<span class="badge badge-blue">执行计划 {{ current_execution_stage.stage_no if current_execution_stage else active_stage_plan|length }} / {{ active_stage_plan|length }}</span>{% endif %}
-      </div>
+    <details class="panel stage-plan-panel collapsible-panel" id="execution-plan" data-live-region="execution-plan">
+      <summary><span><strong>执行计划</strong><small>复杂 Issue 按 Stage 串行开发与验收；简单 Issue 可以没有执行计划。</small></span>{% if active_stage_plan %}<span class="badge badge-blue">执行计划 {{ current_execution_stage.stage_no if current_execution_stage else active_stage_plan|length }} / {{ active_stage_plan|length }}</span>{% endif %}</summary>
+      <div class="collapsible-panel-body">
       {% if stage_plans %}
       <div class="stage-plans">
         {% for plan_no, plan in stage_plans.items() %}
         {% set is_active_plan = active_stage_plan and plan_no == active_stage_plan[0].plan_no %}
-        <section class="stage-plan {% if is_active_plan %}active{% else %}historical{% endif %}">
-          <div class="stage-plan-head"><strong>Stage Plan #{{ plan_no }}</strong><span class="badge {% if is_active_plan %}badge-blue{% else %}badge-status-SUPERSEDED{% endif %}">{% if is_active_plan %}当前计划{% else %}历史计划{% endif %}</span></div>
+        <details class="stage-plan {% if is_active_plan %}active{% else %}historical{% endif %}" {% if loop.first %}open{% endif %}>
+          <summary class="stage-plan-head"><strong>Stage Plan #{{ plan_no }}</strong><span class="badge {% if is_active_plan %}badge-blue{% else %}badge-status-SUPERSEDED{% endif %}">{% if is_active_plan %}当前计划{% else %}历史计划{% endif %}</span></summary>
           <div class="stage-list">
           {% for execution_stage in plan %}
-            <details class="stage-item stage-{{ execution_stage.status }} {% if current_execution_stage and execution_stage.id == current_execution_stage.id %}current{% endif %}" {% if current_execution_stage and execution_stage.id == current_execution_stage.id %}open{% endif %}>
+            <details class="stage-item stage-{{ execution_stage.status }} {% if current_execution_stage and execution_stage.id == current_execution_stage.id %}current{% endif %}">
               <summary>
                 <span class="stage-marker">{% if execution_stage.status == 'APPROVED' %}✓{% elif execution_stage.status in ('IN_PROGRESS', 'PENDING_REVIEW') %}●{% elif execution_stage.status == 'SUPERSEDED' %}×{% else %}○{% endif %}</span>
                 <span class="stage-summary"><strong>Stage {{ execution_stage.stage_no }} · {{ execution_stage.title }}</strong><small>{{ execution_stage.objective }}</small></span>
@@ -137,11 +135,12 @@
             </details>
           {% endfor %}
           </div>
-        </section>
+        </details>
         {% endfor %}
       </div>
       {% else %}<div class="empty-inline">当前 Issue 没有 Stage Plan；简单问题可直接实现。</div>{% endif %}
-    </section>
+      </div>
+    </details>
 
     <div data-live-region="implementation">
     {% if latest_implementation %}
@@ -158,8 +157,9 @@
     {% endif %}
     </div>
 
-    <section class="panel record-panel" data-live-region="collaboration-records">
-      <div class="section-head"><div><h2>协作记录</h2><p class="section-sub">全部记录按最新优先汇总；协作提交也会进入讨论视图。</p></div></div>
+    <details class="panel record-panel collapsible-panel" data-live-region="collaboration-records" open>
+      <summary><span><strong>协作记录</strong><small>全部记录按最新优先汇总；协作提交也会进入讨论视图。</small></span></summary>
+      <div class="collapsible-panel-body">
       <div class="tabs" role="tablist"><button type="button" class="tab active" data-tab-target="all">全部 {{ all_records|length }}</button><button type="button" class="tab" data-tab-target="discussion">讨论 {{ discussion_records|length }}</button><button type="button" class="tab" data-tab-target="history">处理历史 {{ activities|length }}</button></div>
       <div class="tab-pane active" data-tab-pane="all">
         <div class="record-stream">{% for record in all_records %}{{ render_collaboration_record(record, record.record_kind == 'activity' and not record.is_collaborative_submission) }}{% else %}<div class="empty">暂无协作记录。</div>{% endfor %}</div>
@@ -179,7 +179,8 @@
         {% endfor %}
         </div>{% else %}<div class="empty">暂无处理历史。</div>{% endif %}
       </div>
-    </section>
+      </div>
+    </details>
   </div>
 
   <aside class="sidecol"><div class="sticky">
@@ -335,7 +336,7 @@
       <div class="tool-reads">
         <h3>工具调用</h3>
         <p class="section-sub">Review DB CLI 真实调用，普通模式与 Runtime 模式统一统计。</p>
-        <div class="tool-read-grid">{% for tool in ai_summary.tool_calls %}<div><span>{{ tool.name }}</span><strong>{{ tool.count }}</strong>{% if tool.failure_count %}<small>失败 {{ tool.failure_count }}</small><small>失败率 {{ tool.failure_rate }}%</small>{% endif %}</div>{% endfor %}</div>
+        <div class="tool-read-grid">{% for tool in ai_summary.tool_calls %}<div><span>{{ tool.name }}</span><strong>{{ tool.count }}</strong>{% if tool.failure_count %}<small>失败 {{ tool.failure_count }}</small><small>失败率 {{ tool.failure_rate }}%</small>{% endif %}</div>{% else %}<p class="panel-note">这个 Issue 暂无工具调用记录。</p>{% endfor %}</div>
       </div>
       <details class="collapsible issue-turns">
         <summary>最近 AI 执行记录（{{ ai_summary.recent_turns|length }}）</summary>

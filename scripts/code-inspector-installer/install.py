@@ -227,6 +227,21 @@ def reviewctl_adapter_path(home: Path, alias: str) -> Path:
     return home / "internal" / "reviewctl-adapters" / f"reviewctl-{alias}.py"
 
 
+def cictl_command_name(role: str) -> str:
+    """返回 Codex 的角色专用 PATH 命令名。"""
+    names = {"developer": "cictl-dev", "inspector": "cictl-insp"}
+    try:
+        return names[role]
+    except KeyError as exc:
+        raise ValueError(f"Codex 不支持为角色生成 cictl 命令: {role}") from exc
+
+
+def cictl_launcher_path(home: Path, role: str, windows: bool | None = None) -> Path:
+    windows = os.name == "nt" if windows is None else windows
+    suffix = ".cmd" if windows else ""
+    return home / "bin" / f"{cictl_command_name(role)}{suffix}"
+
+
 def install_reviewctl(home: Path, force: bool, windows: bool | None = None) -> Path:
     """安装全局唯一 CLI 入口 reviewctl。
 
@@ -276,8 +291,37 @@ def write_reviewctl_adapter(home: Path, alias: str) -> Path:
     return wrapper
 
 
+def write_cictl_launcher(home: Path, role: str, alias: str, windows: bool | None = None) -> Path:
+    """安装固定角色的 PATH 命令，避免依赖会话环境传递身份。"""
+    windows = os.name == "nt" if windows is None else windows
+    launcher = cictl_launcher_path(home, role, windows)
+    tool = home / "bin" / "reviewctl.py"
+    adapter = (
+        "#!/usr/bin/env python3\n"
+        "import importlib.util, sys\n"
+        "from pathlib import Path\n"
+        f"tool = Path({str(tool)!r})\n"
+        "spec = importlib.util.spec_from_file_location('code_inspector_cictl', tool)\n"
+        "module = importlib.util.module_from_spec(spec)\n"
+        "sys.modules[spec.name] = module\n"
+        "spec.loader.exec_module(module)\n"
+        f"raise SystemExit(module.main(sys.argv[1:], trusted_operator_id={alias!r}))\n"
+    )
+    if windows:
+        py_launcher = home / "bin" / f"{cictl_command_name(role)}.py"
+        atomic_write_text(py_launcher, adapter, executable=False)
+        content = f'@echo off\npython "{py_launcher}" %*\nexit /b %errorlevel%\n'
+        atomic_write_text(launcher, content, executable=False)
+    else:
+        atomic_write_text(launcher, adapter, executable=True)
+    return launcher
+
+
 def link_runtime(home: Path, skill_config: dict[str, Any], force: bool, skill_source: Path | None = None) -> None:
     install_reviewctl(home, force)
+    # Codex 的两个角色使用固定 PATH 命令；身份仍由安装器绑定，不取自环境变量。
+    write_cictl_launcher(home, "developer", "codex-dev")
+    write_cictl_launcher(home, "inspector", "codex-insp")
     src = SCRIPT_DIR / "runtime" / "review_db.py"
     dst = home / "bin" / "review-db.py"
     atomic_copy_path(src, dst, force)
@@ -431,41 +475,39 @@ def generated_skill_text(platform: str, identities: list[dict[str, Any]], target
 
     legacy_to_reviewctl = _load_reviewctl_registry()
 
-    def reviewctl_commands(policy_commands: list[str]) -> str:
+    def reviewctl_commands(policy_commands: list[str], tool: str) -> str:
         entries: list[str] = []
         for legacy in policy_commands:
             for new_command in legacy_to_reviewctl.get(legacy, []):
-                entries.append(new_command)
+                entries.append(new_command.replace("reviewctl ", f"{tool} ", 1))
         return ", ".join(entries) or "（无）"
 
     rows = []
     for item in identities:
         role = item["role"]
         policy = item["role_policy"]
-        # Agent-facing instructions use the single PATH entry.  The private
-        # adapter remains installed and is still used by the runtime to bind
-        # the session identity; its absolute path must not leak into prompts.
-        tool = "reviewctl"
+        tool = cictl_command_name(role) if platform == "codex" else f'python "{target / "tools" / f"reviewctl-{item["alias"]}.py"}"'
         default_label = "（默认身份）" if item.get("default") else ""
         rows.append(
             f"## {item['alias']} · {role} · {policy['session_selector']}{default_label}\n\n"
             f"固定工具：`{tool}`。当前 Session 的角色和逻辑身份由运行时私有绑定保证，"
-            "命令统一使用 `reviewctl <域> <动作>` 格式，"
+            f"命令统一使用 `{tool} <域> <动作>` 格式，"
             "不存在也不得另传 `--agent` 或 `--operator-id`。\n\n"
-            f"可执行命令：{reviewctl_commands(policy['commands'])}。\n\n"
+            f"可执行命令：{reviewctl_commands(policy['commands'], tool)}。\n\n"
             f"每轮角色强化块（每个 Action Turn 的输入侧都会重新注入，输出回复必须以 OUTPUT_PREFIX 开头）：\n\n"
             f"```\n{role_identity_block(role)}\n```\n\n"
             f"职责：{'；'.join(policy['responsibilities'])}。\n\n"
             f"禁止：{', '.join(policy['prohibited'])}。"
         )
     watch_path = target / "scripts" / "watch.py"
+    inspector_tool = "cictl-insp" if platform == "codex" else "<fixed_tool>"
     routing = (
         "激活后必须读取 `references/core-workflow.md`，并只读取 "
         "`references/role-workflows.md` 中当前锁定角色的章节。普通 Action Turn 先调用一次 "
-        "`reviewctl issue context <issue_key>`（即 `<fixed_tool> issue context <issue_key>`）。"
-        "`reviewctl issue context` 使用位置参数 <issue_key>。以返回的 pending_action、permitted_actions、exception_actions 和资源 id 为 Working Set；只有需要正文时才 "
-        "lazy load。所有命令使用 `reviewctl <域> <动作> [位置参数] [@动态参数文件]`；"
-        "复杂结构化数据只接受 `@文件路径` 或 `-`（stdin），Schema 用 `reviewctl schema <domain-action>` 查看。"
+        "当前角色命令的 `issue context <issue_key>`（即 `<fixed_tool> issue context <issue_key>`）。"
+        "角色专用命令使用位置参数 <issue_key>。以返回的 pending_action、permitted_actions、exception_actions 和资源 id 为 Working Set；只有需要正文时才 "
+        "lazy load。所有命令使用当前角色的 `cictl-dev` 或 `cictl-insp`；"
+        "复杂结构化数据只接受 `@文件路径` 或 `-`（stdin），Schema 用当前角色命令的 `schema <domain-action>` 查看。"
         "状态机、权限、参数和前置条件由 Runtime/CLI 强制校验；普通 Action 不读取完整 "
         "`workflow.yaml` 或 `tool-contracts.yaml`，仅在专项审计或修改规则本身时查阅。不得直接操作 SQLite。\n\n"
         "## 固定角色输出前缀\n\n"
@@ -496,10 +538,10 @@ def generated_skill_text(platform: str, identities: list[dict[str, Any]], target
         " Human 明确请求的审查；不启动 Runtime、Watch、Multi-Thread、Developer Thread/Session/Event，不伪造 "
         "`implementation-submit` 或 Developer Activity，不修改业务代码，不自动 `CONFIRMED` 或 `CANCELLED`。"
         "FastMode 的 PASS/FAIL 只使用 Inspector 专用的 "
-        "`reviewctl fast pass|fail <issue_key> --content <result_summary> [--evidence <evidence_summary>]` 写入；普通 `metadata` "
+        f"`{inspector_tool} fast pass|fail <issue_key> --content <result_summary> [--evidence <evidence_summary>]` 写入；普通 `metadata` "
         "只记录事实，不能启用 FastMode 或改变权限和控制流。"
         "FastMode 必须读取 `references/fastmode.md`，首次读取固定执行 "
-        "`reviewctl issue context <issue_key>`。\n\n"
+        f"`{inspector_tool} issue context <issue_key>`。\n\n"
         "只有用户明确要求持续观察或停止观察时才读取 `references/watch-mode.md`；"
         f"Watcher 入口为 `python \"{watch_path}\"`。审核等级和报告导出分别按需读取 "
         "`references/review-levels.yaml`、`references/report-schema.yaml`。"
@@ -520,6 +562,16 @@ def generated_codex_rules(identities: list[dict[str, Any]], skill_target: Path) 
         for name in (f"reviewctl-{item['alias']}.py", f"review-db-{item['alias']}.py"):
             wrapper = str(skill_target / "tools" / name)
             for pattern in (["python", wrapper], [wrapper]):
+                encoded_pattern = json.dumps(pattern, ensure_ascii=False, separators=(",", ":"))
+                encoded_justification = json.dumps(justification, ensure_ascii=False)
+                lines.append(
+                    f"prefix_rule(pattern={encoded_pattern}, decision=\"allow\", "
+                    f"justification={encoded_justification})"
+                )
+        if item["role"] in {"developer", "inspector"}:
+            command = cictl_command_name(item["role"])
+            launcher = str(skill_target.parents[2] / ".agent-review" / "bin" / command)
+            for pattern in ([command], [launcher]):
                 encoded_pattern = json.dumps(pattern, ensure_ascii=False, separators=(",", ":"))
                 encoded_justification = json.dumps(justification, ensure_ascii=False)
                 lines.append(
@@ -597,13 +649,18 @@ def install_role_skills(
             rules_path = install_codex_rules(target_root.parent, identities, target, force)
             print(f"[rules] {rules_path}", file=sys.stderr)
         for item in identities:
+            fixed_tool = (
+                cictl_launcher_path(home, item["role"])
+                if platform == "codex"
+                else target / "tools" / f"reviewctl-{item['alias']}.py"
+            )
             bindings[item["alias"]] = {
                 "alias": item["alias"], "agent": platform, "role": item["role"],
                 "agent_platform": platform,
                 "runtime_backend": "codex-app-server" if platform == "codex" else "external",
                 "default": item["default"], "role_policy": item["role_policy"],
                 "skill_path": str(target),
-                "fixed_tool_path": str(target / "tools" / f"reviewctl-{item['alias']}.py"),
+                "fixed_tool_path": str(fixed_tool),
             }
         print(f"[skills] {target} ({platform}: {', '.join(i['alias'] for i in identities)})", file=sys.stderr)
     (home / "config" / "agent-bindings.json").write_text(

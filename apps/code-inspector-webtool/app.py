@@ -814,47 +814,17 @@ def token_total(row: dict) -> int:
 
 
 def review_db_tool_counts(rows: list[dict]) -> list[dict]:
-    totals = {
-        str(row["command"]): {
-            "count": int(row.get("call_count") or 0),
-            "failure_count": int(row.get("failure_count") or 0),
-        }
-        for row in rows
-    }
-    preferred = [
-        "issue-context-get", "issue-get", "activity-get", "discussion-get",
-        "stage-get", "stage-history-get", "design-preview", "decision-list",
-        "fast-review-record",
-    ]
-    entries = {
-        name: {
-            "name": name,
-            **counts,
-            "failure_rate": round(100 * counts["failure_count"] / counts["count"], 1)
-            if counts["count"] else 0.0,
-        }
-        for name, counts in totals.items()
-    }
-    failed_names = sorted(
-        (name for name, entry in entries.items() if entry["failure_count"]),
-        key=lambda name: (-entries[name]["failure_rate"], -entries[name]["failure_count"], name),
-    )
-    ordered = [entries.pop(name) for name in failed_names]
-    ordered.extend(
-        entries.pop(name, {
-            "name": name, "count": 0, "failure_count": 0, "failure_rate": 0.0,
+    entries = []
+    for row in rows:
+        count = int(row.get("call_count") or 0)
+        failure_count = int(row.get("failure_count") or 0)
+        entries.append({
+            "name": str(row["command"]),
+            "count": count,
+            "failure_count": failure_count,
+            "failure_rate": round(100 * failure_count / count, 1) if count else 0.0,
         })
-        for name in preferred
-        if name not in failed_names
-    )
-    ordered.extend(
-        entry
-        for name, entry in sorted(
-            entries.items(), key=lambda item: (-item[1]["count"], item[0])
-        )
-        if entry["count"]
-    )
-    return ordered
+    return sorted(entries, key=lambda entry: (-entry["count"], entry["name"]))
 
 
 def issue_ai_summary(issue_key: str, threads: list[dict], events: list[dict]) -> dict:

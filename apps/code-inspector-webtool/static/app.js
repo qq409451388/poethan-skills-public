@@ -314,6 +314,16 @@ document.querySelectorAll('[data-only-pending-switch]').forEach((toggle) => {
       item.classList.remove('active');
       item.removeAttribute('aria-selected');
     });
+    copy.querySelectorAll('.record-expander').forEach((item) => item.remove());
+    copy.querySelectorAll('.record-over-limit, .records-expanded').forEach((item) => {
+      item.classList.remove('record-over-limit', 'records-expanded');
+    });
+    // classList 改写会顺带压缩属性里的空白，先统一两侧，避免被误判成内容变化。
+    copy.querySelectorAll('[class]').forEach((element) => {
+      const value = element.getAttribute('class');
+      const normalized = value.trim().replace(/\s+/g, ' ');
+      if (normalized !== value) element.setAttribute('class', normalized);
+    });
     return copy.innerHTML;
   }
 
@@ -322,6 +332,9 @@ document.querySelectorAll('[data-only-pending-switch]').forEach((toggle) => {
       openDetails: Array.from(region.querySelectorAll('details')).map((item) => item.open),
       activeTabs: Array.from(region.querySelectorAll('.tabs')).map(
         (tabs) => tabs.querySelector('.tab.active')?.dataset.tabTarget || null,
+      ),
+      expandedRecords: Array.from(region.querySelectorAll('.tab-pane')).map(
+        (pane) => pane.classList.contains('records-expanded'),
       ),
     };
   }
@@ -340,6 +353,10 @@ document.querySelectorAll('[data-only-pending-switch]').forEach((toggle) => {
       scope?.querySelectorAll('[data-tab-pane]').forEach((pane) => {
         pane.classList.toggle('active', pane.dataset.tabPane === target);
       });
+    });
+    region.querySelectorAll('.tab-pane').forEach((pane, index) => {
+      if (state.expandedRecords[index] === undefined) return;
+      pane.classList.toggle('records-expanded', state.expandedRecords[index]);
     });
   }
 
@@ -362,6 +379,67 @@ document.querySelectorAll('[data-only-pending-switch]').forEach((toggle) => {
     const element = regions.find((region) => region.getBoundingClientRect().bottom > topOffset);
     return element ? { key: element.dataset.liveRegion, top: element.getBoundingClientRect().top } : null;
   }
+
+  const RECORD_PREVIEW_LIMIT = 5;
+
+  function renderRecordPreviews(scope) {
+    scope.querySelectorAll('.tab-pane').forEach((pane) => {
+      const records = Array.from(pane.querySelectorAll('.event'));
+      const expander = pane.querySelector(':scope > .record-expander');
+      if (records.length <= RECORD_PREVIEW_LIMIT) {
+        records.forEach((record) => record.classList.remove('record-over-limit'));
+        pane.classList.remove('records-expanded');
+        expander?.remove();
+        return;
+      }
+      records.forEach((record, index) => {
+        record.classList.toggle('record-over-limit', index >= RECORD_PREVIEW_LIMIT);
+      });
+      if (expander) return;
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'record-expander';
+      button.innerHTML = '<span class="record-expander-more">点击展开完整内容</span>'
+        + '<span class="record-expander-less">收起</span>';
+      pane.append(button);
+    });
+  }
+
+  document.addEventListener('click', (event) => {
+    const expander = event.target.closest('.record-expander');
+    if (!expander) return;
+    expander.closest('.tab-pane')?.classList.toggle('records-expanded');
+  });
+
+  function openHashTarget() {
+    if (window.location.hash.length < 2) return;
+    let target = null;
+    try {
+      target = document.querySelector(window.location.hash);
+    } catch (_error) {
+      return;
+    }
+    if (target?.matches('details.collapsible-panel')) target.open = true;
+  }
+
+  // tab 行要贴在吸顶标题下面，标题高度随语言和换行变化，所以按实际高度算偏移。
+  function syncStickyOffsets() {
+    const topbar = document.querySelector('.topbar');
+    const top = Math.round(topbar?.getBoundingClientRect().height || 58);
+    document.documentElement.style.setProperty('--sticky-head-top', `${top}px`);
+    document.querySelectorAll('.record-panel').forEach((panel) => {
+      const summary = panel.querySelector(':scope > summary');
+      if (summary) {
+        panel.style.setProperty('--record-tabs-top', `${top + Math.round(summary.offsetHeight)}px`);
+      }
+    });
+  }
+
+  renderRecordPreviews(document);
+  openHashTarget();
+  syncStickyOffsets();
+  window.addEventListener('hashchange', openHashTarget);
+  window.addEventListener('resize', syncStickyOffsets);
 
   async function refreshIssue() {
     if (requestInFlight || userIsEditing()) return;
@@ -386,6 +464,8 @@ document.querySelectorAll('[data-only-pending-switch]').forEach((toggle) => {
         const replacement = incoming.cloneNode(true);
         current.replaceWith(replacement);
         restoreRegionState(replacement, state);
+        renderRecordPreviews(replacement);
+        syncStickyOffsets();
         addCsrfTokens(replacement);
         changed = true;
       });
