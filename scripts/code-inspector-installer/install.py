@@ -442,13 +442,15 @@ def generated_skill_text(platform: str, identities: list[dict[str, Any]], target
     for item in identities:
         role = item["role"]
         policy = item["role_policy"]
-        tool_path = target / "tools" / f"reviewctl-{item['alias']}.py"
-        tool = f'python "{tool_path}"'
+        # Agent-facing instructions use the single PATH entry.  The private
+        # adapter remains installed and is still used by the runtime to bind
+        # the session identity; its absolute path must not leak into prompts.
+        tool = "reviewctl"
         default_label = "（默认身份）" if item.get("default") else ""
         rows.append(
             f"## {item['alias']} · {role} · {policy['session_selector']}{default_label}\n\n"
-            f"固定工具：`{tool}`。该入口是全局 `reviewctl` 的私有身份适配器，"
-            "已经固化角色和逻辑身份；命令统一使用 `reviewctl <域> <动作>` 格式，"
+            f"固定工具：`{tool}`。当前 Session 的角色和逻辑身份由运行时私有绑定保证，"
+            "命令统一使用 `reviewctl <域> <动作>` 格式，"
             "不存在也不得另传 `--agent` 或 `--operator-id`。\n\n"
             f"可执行命令：{reviewctl_commands(policy['commands'])}。\n\n"
             f"每轮角色强化块（每个 Action Turn 的输入侧都会重新注入，输出回复必须以 OUTPUT_PREFIX 开头）：\n\n"

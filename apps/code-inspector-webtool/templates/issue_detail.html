@@ -54,64 +54,6 @@
 
     <div data-live-region="evidence">{% if issue.evidence %}<section class="panel"><h2>关键证据</h2>{{ render_references(issue.evidence) }}</section>{% endif %}</div>
 
-    {% if issue.difficulty is not none %}
-    <section class="panel" data-live-region="issue-difficulty">
-      <div class="section-head">
-        <div><h2>任务困难程度</h2><p class="section-sub">由 Inspector 给出的抽象难度，不含任何具体模型判断。</p></div>
-        <span class="badge badge-blue">difficulty = {{ issue.difficulty }}</span>
-      </div>
-      {% if issue.difficulty_reason %}<ul class="value-list">{% for reason in issue.difficulty_reason %}<li>{{ reason }}</li>{% endfor %}</ul>{% endif %}
-
-      {% if issue.assignment %}
-      <h3 class="executor-heading">已选定的执行者</h3>
-      <div class="issue-executors">
-        <div class="issue-executor {% if issue.assignment_status == 'VALID' %}issue-executor-assigned{% else %}issue-executor-stale{% endif %}">
-          <span><strong>{{ issue.assignment.agent }}</strong> · {{ issue.assignment.model }} · reasoning {{ issue.assignment.reasoning }}<br><small class="mono">{{ issue.assignment.profileId }}</small></span>
-          <span class="badge {% if issue.assignment_status == 'VALID' %}badge-green{% else %}badge-red{% endif %}">
-            {% if issue.assignment_status == 'VALID' %}有效{% else %}已失效{% endif %} · level {{ issue.assignment.level }}
-          </span>
-        </div>
-      </div>
-      {% if issue.assignment_status == 'STALE' %}
-      <div class="executor-stale-warning" role="alert">
-        <strong>当前执行配置已失效，请重新选择。</strong>
-        <p>原因：{{ issue.assignment_invalid_reason|assignment_reason }}（历史分配记录不会被删除，也不会自动改选其它执行者）。</p>
-      </div>
-      {% endif %}
-      {% endif %}
-
-      <h3 class="executor-heading">候选执行配置</h3>
-      {% if issue.recommended_executors %}
-      <p class="section-sub">按 <span class="mono">level &gt;= difficulty</span> 从本机「模型路由配置」<strong>实时</strong>计算，只是候选，不代表强制调度结果；修改 Routing 不会自动改动上面的已选定执行者。</p>
-      <div class="issue-executors">
-        {% for executor in issue.recommended_executors %}
-        <div class="issue-executor">
-          <span><strong>{{ executor.agent }}</strong> · {{ executor.model }} · reasoning {{ executor.reasoning }}<br><small class="mono">{{ executor.profileId }}</small></span>
-          <span class="badge">level {{ executor.level }}</span>
-        </div>
-        {% endfor %}
-      </div>
-      {% else %}
-      <p class="panel-note">没有候选执行配置：Model Router 未启用，或本机没有 level &gt;= {{ issue.difficulty }} 的 Dev 配置。可前往 <a href="{{ url_for('routing_config') }}">模型路由配置</a>。</p>
-      {% endif %}
-
-      {% if assignment_profiles %}
-      <form method="post" action="{{ url_for('issue_set_assignment', issue_key=issue.issue_key) }}" class="executor-assign-form">
-        <label for="assignment-profile">指定执行者（只列出 <span class="mono">enabled</span> 且 <span class="mono">level &gt;= difficulty</span> 的合法候选）</label>
-        <select name="profile_id" id="assignment-profile">
-          <option value="">— 清除分配 —</option>
-          {% for profile in assignment_profiles %}
-          <option value="{{ profile.id }}" {% if issue.assignment and issue.assignment.profileId == profile.id %}selected{% endif %}>{{ profile.agent }} · {{ profile.model }} · {{ profile.reasoning }} · Lv{{ profile.level }}</option>
-          {% endfor %}
-        </select>
-        <button class="btn btn-small">保存分配</button>
-      </form>
-      {% elif issue.assignment_status == 'STALE' %}
-      <p class="panel-note">当前没有满足 <span class="mono">level &gt;= {{ issue.difficulty }}</span> 的启用执行配置，无法重新选择；请先在 <a href="{{ url_for('routing_config') }}">模型路由配置</a> 调整。</p>
-      {% endif %}
-    </section>
-    {% endif %}
-
     {% if latest_design_submission %}
     <section class="panel design-brief-panel" data-live-region="design-brief">
       <div class="section-head"><div><h2>方案概要</h2><p class="section-sub">这里只说明改哪里、大概怎么改、有什么影响。</p></div><span class="badge badge-blue">设计</span></div>
@@ -238,50 +180,6 @@
         </div>{% else %}<div class="empty">暂无处理历史。</div>{% endif %}
       </div>
     </section>
-
-    <section class="panel runtime-panel" id="agent-runtime" data-live-region="agent-runtime">
-      <div class="section-head"><div><h2>AI 运行</h2><p class="section-sub">查看这个 Issue 的 AI 消耗和最近执行结果。</p></div><a class="btn btn-small" href="{{ url_for('runtime_overview') }}">查看全局 AI 运行情况</a></div>
-      <div class="issue-ai-metrics">
-        <div><span>AI Token</span>{% if ai_summary.token_usage_available %}<strong>{{ ai_summary.total_tokens|compact_count }}</strong>{% else %}<strong>—</strong><small>当前模式暂无法获取模型 Token Usage</small>{% endif %}</div>
-        <div><span>模型唤醒</span><strong>{{ ai_summary.wakeups }} 次</strong></div>
-        <div><span>上下文占用</span><strong>{% if ai_summary.context_usage is not none %}{{ ai_summary.context_usage }}%{% else %}—{% endif %}</strong></div>
-        <div><span>最近一次执行</span><strong class="runtime-result-{{ ai_summary.latest_kind }}">{{ ai_summary.latest_status }}</strong></div>
-      </div>
-      <details class="usage-breakdown issue-usage-breakdown">
-        <summary>查看执行与 Token 构成</summary>
-        {% if ai_summary.token_usage_available %}
-        <div class="usage-breakdown-grid">
-          <div><span>初始化</span><strong>{{ ai_summary.init_count or 0 }} 次</strong></div>
-          <div><span>业务执行</span><strong>{{ ai_summary.action_count or 0 }} 次</strong></div>
-          <div><span>上下文整理</span><strong>{{ ai_summary.compact_count or 0 }} 次</strong></div>
-          <div><span>Input</span><strong>{{ ai_summary.input_tokens|compact_count }}</strong></div>
-          <div><span>Cached Input</span><strong>{{ ai_summary.cached_input_tokens|compact_count }}</strong></div>
-          <div><span>Output</span><strong>{{ ai_summary.output_tokens|compact_count }}</strong></div>
-        </div>
-        {% else %}<p class="panel-note">当前模式暂无法获取模型 Token Usage。</p>{% endif %}
-      </details>
-      <div class="tool-reads">
-        <h3>工具调用</h3>
-        <p class="section-sub">Review DB CLI 真实调用，普通模式与 Runtime 模式统一统计。</p>
-        <div class="tool-read-grid">{% for tool in ai_summary.tool_calls %}<div><span>{{ tool.name }}</span><strong>{{ tool.count }}</strong>{% if tool.failure_count %}<small>失败 {{ tool.failure_count }}</small><small>失败率 {{ tool.failure_rate }}%</small>{% endif %}</div>{% endfor %}</div>
-      </div>
-      <details class="collapsible issue-turns">
-        <summary>最近 AI 执行记录（{{ ai_summary.recent_turns|length }}）</summary>
-        <div class="table-wrap"><table><thead><tr><th>执行类型</th><th>Token</th><th>工具调用</th><th>时间</th></tr></thead><tbody>
-        {% for turn in ai_summary.recent_turns %}<tr><td>{{ turn.turn_type|runtime_label }}<br><small class="mono">{{ turn.turn_type }}</small></td><td>{{ turn.total_tokens|compact_count }}<br><small>Input {{ turn.input_tokens or 0 }} / Cached {{ turn.cached_input_tokens or 0 }} / Output {{ turn.output_tokens or 0 }}</small></td><td><pre class="inline-json">{{ turn.review_db_calls|json_pretty }}</pre></td><td>{{ turn.created_at|localtime }}</td></tr>{% else %}<tr><td colspan="4" class="empty">尚无 AI 执行记录。</td></tr>{% endfor %}
-        </tbody></table></div>
-      </details>
-      <details class="collapsible issue-runtime-diagnostics">
-        <summary>高级诊断</summary>
-        {% for runtime in runtime_threads %}
-        <div class="runtime-card">
-          <div><strong>{{ runtime.role|runtime_label }} AI 会话</strong> <span class="badge badge-status-{{ runtime.thread_status }}">{{ runtime.thread_status|runtime_label }}</span> <small class="mono">{{ runtime.thread_status }}</small></div>
-          <dl class="runtime-kv"><dt>执行身份</dt><dd class="mono">{{ runtime.operator_id }}</dd><dt>平台 / 后端</dt><dd>{{ runtime.agent_platform }} / {{ runtime.runtime_backend }}</dd><dt>Thread ID</dt><dd class="mono">{{ runtime.thread_id }}</dd><dt>Worker / Lease</dt><dd><span class="mono">{{ runtime.worker_id or '—' }}</span> / {{ runtime.lease_until|localtime }}</dd><dt>最近事件</dt><dd>{{ runtime.last_event|runtime_label if runtime.last_event else '—' }}{% if runtime.last_event %} <small class="mono">{{ runtime.last_event }}</small>{% endif %}</dd><dt>原始异常</dt><dd>{{ runtime.error_code or '—' }}{% if runtime.error_message %} · {{ runtime.error_message }}{% endif %}</dd></dl>
-        </div>
-        {% else %}<div class="empty-inline">当前 Issue 尚无 AI 会话。</div>{% endfor %}
-        {% if runtime_events %}<div class="runtime-events">{% for event in runtime_events %}<div><span class="badge badge-status-{{ event.status }}">{{ event.status|runtime_label }}</span> {{ event.event_type|runtime_label }} <small class="mono">{{ event.status }} · {{ event.event_type }} · Event Revision {{ event.projection_revision if event.projection_revision is not none else '—' }}</small>{% if event.last_error %}<small>{{ event.failure_kind or '—' }} · {{ event.last_error }}</small>{% endif %}</div>{% endfor %}</div>{% endif %}
-      </details>
-    </section>
   </div>
 
   <aside class="sidecol"><div class="sticky">
@@ -354,6 +252,110 @@
     </section>
 
     <section class="panel score-panel" data-live-region="issue-score"><h2>问题评级</h2><div class="score-grid"><div><span>严重度</span><strong class="sev-{{ issue.severity }}">{{ issue.severity|label }}</strong></div><div><span>维度</span><strong>{{ issue.dimension|label }}</strong></div></div></section>
+
+    {% if issue.difficulty is not none %}
+    <details class="panel difficulty-panel collapsible-panel" data-live-region="issue-difficulty">
+      <summary><span><strong>任务困难程度</strong><small>由 Inspector 给出的抽象难度，不含任何具体模型判断。</small></span><span class="badge badge-blue">difficulty = {{ issue.difficulty }}</span></summary>
+      <div class="collapsible-panel-body">
+      {% if issue.difficulty_reason %}<ul class="value-list">{% for reason in issue.difficulty_reason %}<li>{{ reason }}</li>{% endfor %}</ul>{% endif %}
+
+      {% if issue.assignment %}
+      <h3 class="executor-heading">已选定的执行者</h3>
+      <div class="issue-executors">
+        <div class="issue-executor {% if issue.assignment_status == 'VALID' %}issue-executor-assigned{% else %}issue-executor-stale{% endif %}">
+          <span><strong>{{ issue.assignment.agent }}</strong> · {{ issue.assignment.model }} · reasoning {{ issue.assignment.reasoning }}<br><small class="mono">{{ issue.assignment.profileId }}</small></span>
+          <span class="badge {% if issue.assignment_status == 'VALID' %}badge-green{% else %}badge-red{% endif %}">
+            {% if issue.assignment_status == 'VALID' %}有效{% else %}已失效{% endif %} · level {{ issue.assignment.level }}
+          </span>
+        </div>
+      </div>
+      {% if issue.assignment_status == 'STALE' %}
+      <div class="executor-stale-warning" role="alert">
+        <strong>当前执行配置已失效，请重新选择。</strong>
+        <p>原因：{{ issue.assignment_invalid_reason|assignment_reason }}（历史分配记录不会被删除，也不会自动改选其它执行者）。</p>
+      </div>
+      {% endif %}
+      {% endif %}
+
+      <h3 class="executor-heading">候选执行配置</h3>
+      {% if issue.recommended_executors %}
+      <p class="section-sub">按 <span class="mono">level &gt;= difficulty</span> 从本机「模型路由配置」<strong>实时</strong>计算，只是候选，不代表强制调度结果；修改 Routing 不会自动改动上面的已选定执行者。</p>
+      <div class="issue-executors">
+        {% for executor in issue.recommended_executors %}
+        <div class="issue-executor">
+          <span><strong>{{ executor.agent }}</strong> · {{ executor.model }} · reasoning {{ executor.reasoning }}<br><small class="mono">{{ executor.profileId }}</small></span>
+          <span class="badge">level {{ executor.level }}</span>
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <p class="panel-note">没有候选执行配置：Model Router 未启用，或本机没有 level &gt;= {{ issue.difficulty }} 的 Dev 配置。可前往 <a href="{{ url_for('routing_config') }}">模型路由配置</a>。</p>
+      {% endif %}
+
+      {% if assignment_profiles %}
+      <form method="post" action="{{ url_for('issue_set_assignment', issue_key=issue.issue_key) }}" class="executor-assign-form">
+        <label for="assignment-profile">指定执行者（只列出 <span class="mono">enabled</span> 且 <span class="mono">level &gt;= difficulty</span> 的合法候选）</label>
+        <select name="profile_id" id="assignment-profile">
+          <option value="">— 清除分配 —</option>
+          {% for profile in assignment_profiles %}
+          <option value="{{ profile.id }}" {% if issue.assignment and issue.assignment.profileId == profile.id %}selected{% endif %}>{{ profile.agent }} · {{ profile.model }} · {{ profile.reasoning }} · Lv{{ profile.level }}</option>
+          {% endfor %}
+        </select>
+        <button class="btn btn-small">保存分配</button>
+      </form>
+      {% elif issue.assignment_status == 'STALE' %}
+      <p class="panel-note">当前没有满足 <span class="mono">level &gt;= {{ issue.difficulty }}</span> 的启用执行配置，无法重新选择；请先在 <a href="{{ url_for('routing_config') }}">模型路由配置</a> 调整。</p>
+      {% endif %}
+      </div>
+    </details>
+    {% endif %}
+
+    <details class="panel runtime-panel collapsible-panel" id="agent-runtime" data-live-region="agent-runtime">
+      <summary><span><strong>AI 运行</strong><small>查看这个 Issue 的 AI 消耗和最近执行结果。</small></span></summary>
+      <div class="collapsible-panel-body">
+      <div class="issue-ai-metrics">
+        <div><span>AI Token</span>{% if ai_summary.token_usage_available %}<strong>{{ ai_summary.total_tokens|compact_count }}</strong>{% else %}<strong>—</strong><small>当前模式暂无法获取模型 Token Usage</small>{% endif %}</div>
+        <div><span>模型唤醒</span><strong>{{ ai_summary.wakeups }} 次</strong></div>
+        <div><span>上下文占用</span><strong>{% if ai_summary.context_usage is not none %}{{ ai_summary.context_usage }}%{% else %}—{% endif %}</strong></div>
+        <div><span>最近一次执行</span><strong class="runtime-result-{{ ai_summary.latest_kind }}">{{ ai_summary.latest_status }}</strong></div>
+      </div>
+      <details class="usage-breakdown issue-usage-breakdown">
+        <summary>查看执行与 Token 构成</summary>
+        {% if ai_summary.token_usage_available %}
+        <div class="usage-breakdown-grid">
+          <div><span>初始化</span><strong>{{ ai_summary.init_count or 0 }} 次</strong></div>
+          <div><span>业务执行</span><strong>{{ ai_summary.action_count or 0 }} 次</strong></div>
+          <div><span>上下文整理</span><strong>{{ ai_summary.compact_count or 0 }} 次</strong></div>
+          <div><span>Input</span><strong>{{ ai_summary.input_tokens|compact_count }}</strong></div>
+          <div><span>Cached Input</span><strong>{{ ai_summary.cached_input_tokens|compact_count }}</strong></div>
+          <div><span>Output</span><strong>{{ ai_summary.output_tokens|compact_count }}</strong></div>
+        </div>
+        {% else %}<p class="panel-note">当前模式暂无法获取模型 Token Usage。</p>{% endif %}
+      </details>
+      <div class="tool-reads">
+        <h3>工具调用</h3>
+        <p class="section-sub">Review DB CLI 真实调用，普通模式与 Runtime 模式统一统计。</p>
+        <div class="tool-read-grid">{% for tool in ai_summary.tool_calls %}<div><span>{{ tool.name }}</span><strong>{{ tool.count }}</strong>{% if tool.failure_count %}<small>失败 {{ tool.failure_count }}</small><small>失败率 {{ tool.failure_rate }}%</small>{% endif %}</div>{% endfor %}</div>
+      </div>
+      <details class="collapsible issue-turns">
+        <summary>最近 AI 执行记录（{{ ai_summary.recent_turns|length }}）</summary>
+        <div class="table-wrap"><table><thead><tr><th>执行类型</th><th>Token</th><th>工具调用</th><th>时间</th></tr></thead><tbody>
+        {% for turn in ai_summary.recent_turns %}<tr><td>{{ turn.turn_type|runtime_label }}<br><small class="mono">{{ turn.turn_type }}</small></td><td>{{ turn.total_tokens|compact_count }}<br><small>Input {{ turn.input_tokens or 0 }} / Cached {{ turn.cached_input_tokens or 0 }} / Output {{ turn.output_tokens or 0 }}</small></td><td><pre class="inline-json">{{ turn.review_db_calls|json_pretty }}</pre></td><td>{{ turn.created_at|localtime }}</td></tr>{% else %}<tr><td colspan="4" class="empty">尚无 AI 执行记录。</td></tr>{% endfor %}
+        </tbody></table></div>
+      </details>
+      <details class="collapsible issue-runtime-diagnostics">
+        <summary>高级诊断</summary>
+        {% for runtime in runtime_threads %}
+        <div class="runtime-card">
+          <div><strong>{{ runtime.role|runtime_label }} AI 会话</strong> <span class="badge badge-status-{{ runtime.thread_status }}">{{ runtime.thread_status|runtime_label }}</span> <small class="mono">{{ runtime.thread_status }}</small></div>
+          <dl class="runtime-kv"><dt>执行身份</dt><dd class="mono">{{ runtime.operator_id }}</dd><dt>平台 / 后端</dt><dd>{{ runtime.agent_platform }} / {{ runtime.runtime_backend }}</dd><dt>Thread ID</dt><dd class="mono">{{ runtime.thread_id }}</dd><dt>Worker / Lease</dt><dd><span class="mono">{{ runtime.worker_id or '—' }}</span> / {{ runtime.lease_until|localtime }}</dd><dt>最近事件</dt><dd>{{ runtime.last_event|runtime_label if runtime.last_event else '—' }}{% if runtime.last_event %} <small class="mono">{{ runtime.last_event }}</small>{% endif %}</dd><dt>原始异常</dt><dd>{{ runtime.error_code or '—' }}{% if runtime.error_message %} · {{ runtime.error_message }}{% endif %}</dd></dl>
+        </div>
+        {% else %}<div class="empty-inline">当前 Issue 尚无 AI 会话。</div>{% endfor %}
+        {% if runtime_events %}<div class="runtime-events">{% for event in runtime_events %}<div><span class="badge badge-status-{{ event.status }}">{{ event.status|runtime_label }}</span> {{ event.event_type|runtime_label }} <small class="mono">{{ event.status }} · {{ event.event_type }} · Event Revision {{ event.projection_revision if event.projection_revision is not none else '—' }}</small>{% if event.last_error %}<small>{{ event.failure_kind or '—' }} · {{ event.last_error }}</small>{% endif %}</div>{% endfor %}</div>{% endif %}
+      </details>
+      <a class="btn btn-soft btn-block" href="{{ url_for('runtime_overview') }}">查看全局 AI 运行情况</a>
+      </div>
+    </details>
   </div></aside>
 </div>
 

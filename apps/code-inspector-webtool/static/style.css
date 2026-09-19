@@ -254,6 +254,23 @@ tbody tr:last-child td { border-bottom: 0; }
 .issue-layout { display: grid; grid-template-columns: minmax(0, 1.9fr) minmax(330px, .9fr); gap: 16px; }
 .maincol, .sidecol { min-width: 0; }
 .sticky { position: sticky; top: 74px; }
+@media (min-width: 1101px) {
+  .sidecol .issue-ai-metrics { grid-template-columns: 1fr 1fr; }
+  .sidecol .issue-usage-breakdown .usage-breakdown-grid { grid-template-columns: 1fr 1fr; }
+  .sidecol .tool-read-grid { grid-template-columns: 1fr; }
+  .sidecol .issue-turns table { min-width: 0; }
+  .sidecol .issue-executor { grid-template-columns: 1fr; align-items: start; }
+}
+.collapsible-panel > summary { display: flex; align-items: center; justify-content: space-between; gap: 10px; cursor: pointer; list-style: none; }
+.collapsible-panel > summary::-webkit-details-marker { display: none; }
+.collapsible-panel > summary > span:first-child { display: flex; min-width: 0; flex-direction: column; }
+.collapsible-panel > summary strong { font-size: 15px; font-weight: 750; }
+.collapsible-panel > summary small { margin-top: 2px; color: var(--muted); font-size: 12px; font-weight: 400; }
+.collapsible-panel > summary::after { flex: none; color: var(--blue); font-size: 11px; font-weight: 700; white-space: nowrap; }
+.collapsible-panel[open] > summary::after { content: "收起 ▾"; }
+.collapsible-panel:not([open]) > summary::after { content: "展开 ▸"; }
+.collapsible-panel > summary:focus-visible { outline: 3px solid rgba(37, 99, 235, .24); outline-offset: 2px; }
+.collapsible-panel-body { margin-top: 14px; }
 .callout { margin-top: 12px; padding: 12px 14px; border-left: 4px solid var(--blue); border-radius: 0 8px 8px 0; background: var(--blue-soft); }
 .collapsible { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); }
 .collapsible summary { color: var(--blue); cursor: pointer; font-weight: 650; }
