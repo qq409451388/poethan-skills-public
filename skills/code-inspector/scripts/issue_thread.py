@@ -261,7 +261,7 @@ def start(
                         result["turn"] = runtime.run_turn(
                             result["thread_id"],
                             f"{role_identity_block(role)}\n"
-                            "调用 issue-context-get 初始化当前 Working Set，只确认已就绪，不执行写操作。"
+                            "调用 reviewctl issue context 初始化当前 Working Set，只确认已就绪，不执行写操作。"
                             "本次及后续每次回复必须逐字以 OUTPUT_PREFIX 开头。",
                         )
                     return result
@@ -425,7 +425,7 @@ def resume(
                         f"event_revision={event_revision if event_revision is not None else '-'} "
                         f"event_id={event_id or '-'}。\n"
                         "本次回复必须逐字以 OUTPUT_PREFIX 开头，不得改写或省略。\n"
-                        f"先且通常只调用一次：{identity.fixed_tool_path} issue-context-get --issue-key {issue_key}。"
+                        f"先且通常只调用一次：{identity.fixed_tool_path} issue context {issue_key}。"
                         "以返回的 pending_action、permitted_actions 和 exception_actions 执行；"
                         "只有摘要明确指向必要明细时才 lazy load。"
                     )

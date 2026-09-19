@@ -15,10 +15,10 @@ $code-inspector fastmode RI-XXX [RI-YYY ...]
 3. 按输入顺序去重，并逐个执行固定首次读取：
 
    ```bash
-   <fixed_tool> issue-context-get --issue-key <issue_key>
+   reviewctl issue context <issue_key>
    ```
 
-   `issue-context-get` 使用 `--issue-key`，禁止使用 `--issue-id`。该读取同时验证 Issue 真实存在；任一 Issue 不存在时明确报告 `<issue_key> 不存在`，不得替换成其他 Issue。
+   `reviewctl issue context` 使用位置参数 <issue_key>。该读取同时验证 Issue 真实存在；任一 Issue 不存在时明确报告 `<issue_key> 不存在`，不得替换成其他 Issue。
 4. 启动成功后在 Session 内锁定：`session_role=inspector`、`workflow_mode=FASTMODE`、`issue_scope=[去重后的 Issue Key]`、`developer_agent_required=false`、`human_coordinated=true`。
 5. Scope 只存在于当前 Session 内存，不新增数据库字段。后续“重新检查”只能针对当前 Scope；要换一批 Issue，先 `$code-inspector exit`，再重新启动 FastMode。
 
@@ -33,15 +33,15 @@ $code-inspector fastmode RI-XXX [RI-YYY ...]
 
 ## 记录结果
 
-需要正文时仍可使用 `issue-get`、`activity-get`、`discussion-get`、`stage-history-get`；可以执行测试和静态检查，并用 `discussion-append` 补充讨论。
+需要正文时仍可使用 `reviewctl issue show`、`reviewctl activity show`、`reviewctl discussion show`、`reviewctl stage history`；可以执行测试和静态检查，并用 `reviewctl discussion add` 补充讨论。
 
 每个 Issue 使用专用命令原子记录结论和可选验证证据：
 
 ```bash
-<fixed_tool> fast-review-record --issue-key <issue_key> --decision pass --content <result_summary> [--evidence <evidence_summary>]
+reviewctl fast pass|fail <issue_key> --content <result_summary> [--evidence <evidence_summary>]
 ```
 
-失败时使用 `--decision fail`，正文明确列出失败原因与必须修改项。命令内部自动写入 `metadata.workflow_mode=FASTMODE` 作为审计事实；调用方不能传入或伪造模式 metadata。PASS 写入 `VERIFICATION_PASSED`，FAIL 写入 `VERIFICATION_FAILED`；提供 `--evidence` 时同时写入 `VERIFICATION_EVIDENCE_ADDED`。该命令不触发 Developer Runtime Event，也不修改 Issue 状态。
+失败时使用 `reviewctl fast fail <issue_key> ...`，正文明确列出失败原因与必须修改项。命令内部自动写入 `metadata.workflow_mode=FASTMODE` 作为审计事实；调用方不能传入或伪造模式 metadata。PASS 写入 `VERIFICATION_PASSED`，FAIL 写入 `VERIFICATION_FAILED`；提供 `--evidence` 时同时写入 `VERIFICATION_EVIDENCE_ADDED`。该命令不触发 Developer Runtime Event，也不修改 Issue 状态。
 
 不要使用 `activity-append ... --metadata '{"workflow_mode":"FASTMODE"}'` 表达 FastMode。`metadata` 不能决定权限、模式或控制流；普通 `activity-append` 始终执行标准 Workflow 语义。
 

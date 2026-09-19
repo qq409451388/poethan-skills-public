@@ -38,6 +38,19 @@ CAPABILITY_VERSION = 1
 ROUTER_DISABLED = "DISABLED"
 ROUTER_INVALID = "INVALID"
 
+# Assignment（真正选定的执行者）状态。判定只看「当前配置」，不看历史 revision。
+ASSIGNMENT_NONE = "NONE"
+ASSIGNMENT_VALID = "VALID"
+ASSIGNMENT_STALE = "STALE"
+
+# STALE 原因码；WebApp 与 Inspector 直接复用，不需要各自再推导。
+ASSIGNMENT_REASON_ROUTER_DISABLED = "router_disabled"
+ASSIGNMENT_REASON_PROFILE_MISSING = "profile_missing"
+ASSIGNMENT_REASON_PROFILE_DISABLED = "profile_disabled"
+ASSIGNMENT_REASON_PROFILE_CHANGED = "profile_changed"
+ASSIGNMENT_REASON_LEVEL_BELOW_DIFFICULTY = "profile_level_below_difficulty"
+ASSIGNMENT_REASON_LEVEL_REDUCED = "profile_level_reduced"
+
 
 class AgentRoutingError(ValueError):
     """配置无效；调用方应保留上一份有效快照并记录日志。"""
@@ -569,6 +582,25 @@ class AgentRoutingSnapshot:
     def agents(self) -> tuple[dict[str, Any], ...]:
         return self.profiles
 
+    def profile(self, profile_id: Any) -> dict[str, Any] | None:
+        """按 id 查找当前配置里的执行配置；不存在返回 None。"""
+        wanted = str(profile_id or "").strip()
+        if not wanted:
+            return None
+        return next((entry for entry in self.profiles if entry["id"] == wanted), None)
+
+    def candidates(self, difficulty: int | None) -> list[dict[str, Any]]:
+        """可被选为执行者的合法候选：enabled 且 level >= difficulty。
+
+        assignment 下拉与 Inspector 选择都只应使用这一集合。
+        """
+        if not self.enabled or difficulty is None:
+            return []
+        return [
+            dict(entry) for entry in self.profiles
+            if entry["enabled"] and entry["level"] >= difficulty
+        ]
+
     def recommend(self, difficulty: int | None, limit: int = 20) -> list[dict[str, Any]]:
         """返回 level >= difficulty 的候选执行配置；未启用或 difficulty 缺失时为空。
 
@@ -608,6 +640,52 @@ class AgentRoutingSnapshot:
             "fallbackReasonings": list(FALLBACK_REASONING),
             "levelScale": list(LEVEL_SCALE),
         }
+
+
+def assignment_state(
+    assignment: Any, difficulty: int | None, snapshot: AgentRoutingSnapshot | None = None,
+) -> tuple[str, str | None]:
+    """判定 assignment 当前是否仍然有效，返回 (status, reason)。
+
+    判定完全基于「当前 Routing 配置 + 当前 difficulty」，不比较 routingRevision：
+    配置整体被替换后如果 profile 内容恰好一致，assignment 仍然有效。
+    本函数只判定，不修改任何数据，也不会自动改选其它执行者。
+    """
+    if not isinstance(assignment, dict) or not assignment.get("profileId"):
+        return ASSIGNMENT_NONE, None
+    current = snapshot if snapshot is not None else get_snapshot()
+    if current is None or not current.enabled:
+        return ASSIGNMENT_STALE, ASSIGNMENT_REASON_ROUTER_DISABLED
+    profile = current.profile(assignment.get("profileId"))
+    if profile is None:
+        return ASSIGNMENT_STALE, ASSIGNMENT_REASON_PROFILE_MISSING
+    if not profile["enabled"]:
+        return ASSIGNMENT_STALE, ASSIGNMENT_REASON_PROFILE_DISABLED
+    if (
+        profile["agent"] != assignment.get("agent")
+        or profile["model"] != assignment.get("model")
+        or profile["reasoning"] != assignment.get("reasoning")
+    ):
+        return ASSIGNMENT_STALE, ASSIGNMENT_REASON_PROFILE_CHANGED
+    if difficulty is not None and profile["level"] < difficulty:
+        return ASSIGNMENT_STALE, ASSIGNMENT_REASON_LEVEL_BELOW_DIFFICULTY
+    assigned_level = assignment.get("level")
+    if isinstance(assigned_level, int) and profile["level"] < assigned_level:
+        return ASSIGNMENT_STALE, ASSIGNMENT_REASON_LEVEL_REDUCED
+    return ASSIGNMENT_VALID, None
+
+
+def assignment_view(
+    assignment: Any, difficulty: int | None,
+    snapshot: AgentRoutingSnapshot | None = None,
+) -> dict[str, Any]:
+    """返回 assignment + 状态，供 Issue Context / WebApp 直接透出。"""
+    status, reason = assignment_state(assignment, difficulty, snapshot)
+    return {
+        "assignment": assignment if isinstance(assignment, dict) else {},
+        "assignmentStatus": status,
+        "assignmentInvalidReason": reason,
+    }
 
 
 def load_routing_snapshot(path: Path, capabilities: dict[str, list[dict[str, Any]]] | None = None) -> AgentRoutingSnapshot:

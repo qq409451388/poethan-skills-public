@@ -474,11 +474,12 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             codex_skill_text = (codex_skill / "SKILL.md").read_text(encoding="utf-8")
             trae_skill_text = (trae_skill / "SKILL.md").read_text(encoding="utf-8")
             dsh_skill_text = (dsh_skill / "SKILL.md").read_text(encoding="utf-8")
-            self.assertIn(str(codex_skill / "tools" / "review-db-codex-dev.py"), codex_skill_text)
-            self.assertIn(str(codex_skill / "tools" / "review-db-codex-insp.py"), codex_skill_text)
-            self.assertIn(str(trae_skill / "tools" / "review-db-trae-inspector.py"), trae_skill_text)
-            self.assertIn(str(dsh_skill / "tools" / "review-db-dsh-developer.py"), dsh_skill_text)
-            self.assertIn(str(dsh_skill / "tools" / "review-db-dsh-inspector.py"), dsh_skill_text)
+            self.assertIn(str(codex_skill / "tools" / "reviewctl-codex-dev.py"), codex_skill_text)
+            self.assertIn(str(codex_skill / "tools" / "reviewctl-codex-insp.py"), codex_skill_text)
+            self.assertIn(str(trae_skill / "tools" / "reviewctl-trae-inspector.py"), trae_skill_text)
+            self.assertIn(str(dsh_skill / "tools" / "reviewctl-dsh-developer.py"), dsh_skill_text)
+            self.assertIn(str(dsh_skill / "tools" / "reviewctl-dsh-inspector.py"), dsh_skill_text)
+            self.assertNotIn(str(codex_skill / "tools" / "review-db-codex-dev.py"), codex_skill_text)
             self.assertIn("$code-inspector start dev", dsh_skill_text)
             self.assertIn("$code-inspector start insp", dsh_skill_text)
             self.assertIn("$code-inspector fastmode RI-XXX [RI-YYY ...]", dsh_skill_text)
@@ -487,27 +488,27 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             self.assertIn("$code-inspector fastmode RI-XXX [RI-YYY ...]", codex_skill_text)
             self.assertIn("FastMode 固定使用 Inspector 身份", codex_skill_text)
             self.assertIn("Developer Agent 不是前置条件", codex_skill_text)
-            self.assertIn("fast-review-record --issue-key <issue_key>", codex_skill_text)
+            self.assertIn("reviewctl fast pass|fail <issue_key> --content <result_summary>", codex_skill_text)
             self.assertIn("普通 `metadata` 只记录事实", codex_skill_text)
             self.assertIn("references/fastmode.md", codex_skill_text)
             self.assertIn("references/core-workflow.md", codex_skill_text)
             self.assertIn("references/role-workflows.md", codex_skill_text)
-            fixed_context_syntax = "<fixed_tool> issue-context-get --issue-key <issue_key>"
+            fixed_context_syntax = "reviewctl issue context <issue_key>"
             source_skill_text = (ROOT / "skills" / "code-inspector" / "SKILL.md").read_text(encoding="utf-8")
             self.assertIn(fixed_context_syntax, source_skill_text)
             self.assertIn(fixed_context_syntax, codex_skill_text)
             self.assertIn("$code-inspector fastmode RI-XXX [RI-YYY ...]", source_skill_text)
             self.assertIn("FastMode 固定使用 Inspector 身份", source_skill_text)
             self.assertIn("Developer Agent 不是前置条件", source_skill_text)
-            self.assertIn("专用 `fast-review-record`", source_skill_text)
-            self.assertIn("`issue-context-get` 使用 `--issue-key`，不使用 `--issue-id`", source_skill_text)
-            self.assertIn("`issue-context-get` 使用 `--issue-key`，不使用 `--issue-id`", codex_skill_text)
+            self.assertIn("专用 `reviewctl fast pass|fail`", source_skill_text)
+            self.assertIn("`reviewctl issue context` 使用位置参数 <issue_key>", source_skill_text)
+            self.assertIn("`reviewctl issue context` 使用位置参数 <issue_key>", codex_skill_text)
             self.assertIn(
                 "普通 Action 不读取完整 `workflow.yaml` 或 `tool-contracts.yaml`",
                 codex_skill_text,
             )
             self.assertIn("普通 Action", codex_skill_text)
-            self.assertIn("activity-get", codex_skill_text)
+            self.assertIn("reviewctl activity show", codex_skill_text)
             self.assertIn("Issue、讨论、阶段提交、审核、验证和报告默认使用简明中文", codex_skill_text)
             self.assertIn("让测试人员和项目负责人", codex_skill_text)
             self.assertIn("新写代码注释默认用中文", codex_skill_text)
@@ -541,7 +542,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             self.assertIn("<issue_key> 不存在", fastmode_text)
             self.assertIn("pending_action=null", fastmode_text)
             self.assertIn("不自动设置 `CONFIRMED`", fastmode_text)
-            self.assertIn("fast-review-record --issue-key <issue_key> --decision pass", fastmode_text)
+            self.assertIn("reviewctl fast pass|fail <issue_key> --content", fastmode_text)
             self.assertNotIn("activity-append --issue-key <issue_key> --activity-type VERIFICATION", fastmode_text)
             self.assertIn("$code-inspector start` 即可启动", trae_skill_text)
             self.assertIn('固定工具：`python "', codex_skill_text)
@@ -573,7 +574,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             self.assertIn("Human 只作为极低频最终兜底", core_text)
             self.assertIn("主审核者必须额外串联跨模块数据流", role_text)
             self.assertIn("先做覆盖面回查和补充扫描", role_text)
-            self.assertIn("stage-prepare", role_text)
+            self.assertIn("reviewctl stage prepare", role_text)
             self.assertIn("原子创建计划、批准设计和激活 Stage 1", role_text)
             self.assertNotIn("stage-plan-create", role_text)
             self.assertIn("连续两次失败必须重新判断设计是否对齐", role_text)
@@ -1301,11 +1302,12 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 "V018__review_tool_call_metric.sql",
                 "V019__issue_difficulty_and_executor_recommendations.sql",
                 "V020__routing_revision_and_assignment.sql",
+                "V021__routing_decoupled_from_projection.sql",
             ])
             self.assertIsNotNone(upgraded["backup"])
             with sqlite3.connect(database) as conn:
                 conn.row_factory = sqlite3.Row
-                self.assertEqual(conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0], 20)
+                self.assertEqual(conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0], 21)
                 task = conn.execute("SELECT * FROM review_task WHERE id = 41").fetchone()
                 self.assertEqual((task["task_key"], task["task_type"], task["scope_fingerprint"]),
                                  ("RT-OLD", "REVIEW", "old-fingerprint"))
@@ -1399,6 +1401,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 "V018__review_tool_call_metric.sql",
                 "V019__issue_difficulty_and_executor_recommendations.sql",
                 "V020__routing_revision_and_assignment.sql",
+                "V021__routing_decoupled_from_projection.sql",
             ])
             with sqlite3.connect(database) as conn:
                 conn.row_factory = sqlite3.Row
@@ -1454,6 +1457,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 "V018__review_tool_call_metric.sql",
                 "V019__issue_difficulty_and_executor_recommendations.sql",
                 "V020__routing_revision_and_assignment.sql",
+                "V021__routing_decoupled_from_projection.sql",
             ])
             with closing(sqlite3.connect(database)) as conn, conn:
                 conn.row_factory = sqlite3.Row

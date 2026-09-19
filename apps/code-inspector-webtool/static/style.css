@@ -547,3 +547,9 @@ tbody tr:last-child td { border-bottom: 0; }
 .executor-assign-form { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; margin-top: 13px; padding-top: 12px; border-top: 1px solid var(--border); }
 .executor-assign-form label { width: 100%; color: var(--muted); font-size: 11px; }
 .executor-assign-form select { width: auto; min-width: 280px; }
+
+/* Assignment 失效提示 */
+.issue-executor-stale { border-color: #efb7b7; background: var(--red-soft); }
+.executor-stale-warning { margin-top: 12px; padding: 11px 13px; border-left: 4px solid var(--red); border-radius: 0 8px 8px 0; background: var(--red-soft); }
+.executor-stale-warning strong { display: block; color: var(--red); }
+.executor-stale-warning p { margin: 4px 0 0; font-size: 12px; }

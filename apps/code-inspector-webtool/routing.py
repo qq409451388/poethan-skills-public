@@ -287,12 +287,35 @@ def recommended_for(difficulty: Any) -> list[dict[str, Any]]:
         return []
 
 
-def enabled_profiles() -> list[dict[str, Any]]:
-    """当前可用（启用）的执行配置，用于人工指定 assignment。"""
+def candidate_profiles(difficulty: Any) -> list[dict[str, Any]]:
+    """可作为执行者的合法候选：enabled 且 level >= difficulty。
+
+    与 Router 的推荐集合完全一致；不展示所有 enabled profile，避免选到
+    当前根本完不成该任务的执行配置。
+    """
     try:
-        return [dict(entry) for entry in _snapshot().profiles if entry["enabled"]]
+        value = int(difficulty) if difficulty is not None else None
+    except (TypeError, ValueError):
+        return []
+    try:
+        return _snapshot().candidates(value)
     except Exception:  # noqa: BLE001
         return []
+
+
+def assignment_state(assignment: Any, difficulty: Any) -> tuple[str, str | None]:
+    """返回 (assignmentStatus, assignmentInvalidReason)；只判定不改写。"""
+    try:
+        value = int(difficulty) if difficulty is not None else None
+    except (TypeError, ValueError):
+        value = None
+    try:
+        module = load_routing_module()
+        return module.assignment_state(assignment, value, _snapshot())
+    except Exception:  # noqa: BLE001 - 判定失败不应打断 Issue 页面
+        if isinstance(assignment, dict) and assignment.get("profileId"):
+            return "STALE", "router_disabled"
+        return "NONE", None
 
 
 def profile_groups(status: dict[str, Any]) -> list[dict[str, Any]]:

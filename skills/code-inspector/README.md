@@ -64,8 +64,22 @@ agents:
 ### 推荐与分配
 
 - `difficulty` 是 Inspector 输出的抽象能力要求。
-- 推荐（`recommendedExecutors`）由 Router 按**当前**配置动态计算，并带 `routing_revision` 作为缓存失效标记；配置一改，历史 Issue 的推荐立即按新配置重算，不会永久沿用旧快照。
-- 真正选定的执行者是独立的 `assignment` 字段，用 `issue-set-assignment` 写入，与候选推荐分开持久化。
+- 推荐（`recommendedExecutors`）由 Router 按**当前**配置动态计算，是 `difficulty + 当前 Routing 配置` 的投影，不落库、不缓存。读取 Issue 不会写数据库，也不会推进 `projection_revision`。
+- 真正选定的执行者是独立的 `assignment` 字段，用 `issue-set-assignment` 写入。只接受 `enabled` 且 `level >= difficulty` 的合法候选。
+
+两者生命周期不同：Routing 配置变化只会让 assignment 变成 `STALE`，**不会自动改选**，也不会删除历史分配。`reviewctl issue show` / `reviewctl issue context` 返回：
+
+```json
+{
+  "assignment": {"profileId": "...", "agent": "...", "model": "...", "reasoning": "...", "level": 3},
+  "assignmentStatus": "STALE",
+  "assignmentInvalidReason": "profile_level_below_difficulty"
+}
+```
+
+`assignmentStatus` 取 `VALID` / `STALE` / `NONE`。判定只看**当前配置内容**，不看历史 `routingRevision`：即使配置整体重写，只要被选 profile 的 agent/model/reasoning/level 仍然一致且满足 difficulty，就仍是 `VALID`。失效原因包括 `router_disabled`、`profile_missing`、`profile_disabled`、`profile_changed`、`profile_level_below_difficulty`、`profile_level_reduced`。
+
+`projection_revision` 只表示 Issue 核心 Working Set / Workflow 状态变化：`difficulty` 与 `assignment` 的变更会推进它，而 Routing 配置变化、推荐重算、单纯读取 Issue 都不会。
 
 ### 页面与保存流程
 
@@ -78,6 +92,10 @@ macOS / Linux 在仓库根目录执行：
 ```bash
 python3 scripts/code-inspector-installer/install.py install
 python3 scripts/code-inspector-installer/install.py verify
+
+# 安装后把唯一的全局命令加入 PATH（一次性）：
+echo 'export PATH="$HOME/.agent-review/bin:$PATH"' >> ~/.zshrc
+command -v reviewctl   # 应输出 ~/.agent-review/bin/reviewctl
 ```
 
 Windows 在 PowerShell 中执行：
@@ -100,7 +118,9 @@ python scripts/code-inspector-installer/install.py verify
 以上目录中的 references/ 复制自：
 <repository>/skills/code-inspector/references
 
-~/.agent-review/bin/review-db.py
+~/.agent-review/bin/reviewctl        # 全局唯一 CLI 入口（加入 PATH 后 command -v reviewctl 可用）
+~/.agent-review/bin/reviewctl.py     -> 复制自 <repository>/scripts/code-inspector-installer/runtime/reviewctl.py
+~/.agent-review/bin/review-db.py     # 内部兼容层，使用说明不再暴露
   -> 复制自 <repository>/scripts/code-inspector-installer/runtime/review_db.py
 ```
 
@@ -181,11 +201,11 @@ Inspector 修改 Task 状态时遵守标准状态机。Human 具有 Task 状态�
 
 讨论消息使用独立的 `discussion-*` 命令，不再用 `COMMENT_ADDED / DESIGN_GUIDANCE` 塞进处理历史。`discussion-list` 默认只返回最近 20 条摘要，并支持 `--cursor` / `--since` 增量读取；正文通过 `discussion-get` 按 id 获取。页面“讨论”视图还会只读投影设计、Stage 和实现正式提交；这些提交仍以 Activity 作为唯一数据源并保留在处理历史，“全部”视图去重后按最新优先展示。Developer、Inspector 修正自己的讨论消息时直接 `discussion-amend`；待审核的设计、Stage、实现提交可用 `activity-amend`，一旦被审核就锁定。讨论达成一致后由 Inspector 用 `decision-record` 写入短结论并关联讨论；同一类型和作用域的新结论成为当前有效版本，历史版本只留审计。
 
-用户与 Inspector 的当前 CLI 对话是需求澄清和关键设计确认入口，Issue/Web 只用于自动留档、回看和管理纠错。明确 Bug、唯一合理实现、普通代码细节或用户已明确允许的变化无需重复询问；新增持久化或基础设施、数据变更、对外行为变化、新依赖、范围扩大或多种影响不同的方案，必须先由 Inspector 在 CLI 用日常中文简短询问。用户回答后用 `design-choice-record` 绑定当前设计，`design-review` 再以 `--confirmation recorded --confirmation-id <id>` 批准；设计修订后旧确认失效。其余设计明确使用 `--confirmation not-needed`。
+用户与 Inspector 的当前 CLI 对话是需求澄清和关键设计确认入口，Issue/Web 只用于自动留档、回看和管理纠错。明确 Bug、唯一合理实现、普通代码细节或用户已明确允许的变化无需重复询问；新增持久化或基础设施、数据变更、对外行为变化、新依赖、范围扩大或多种影响不同的方案，必须先由 Inspector 在 CLI 用日常中文简短询问。用户回答后用 `reviewctl design confirm` 绑定当前设计，再用 `reviewctl design approve` 批准；设计修订后旧确认失效。其余设计在审批动态参数中声明 `confirmation: not-needed`。
 
 ## 设计与实现协作
 
-设计职责按层划分：Inspector 是能力更强的模型，用 `design-request` 负责 What / Why / Boundary / Architecture Direction / Acceptance——根因、应在哪一层解决、推荐和禁止的架构方向、不可破坏语义、方案必须回答的问题和验收条件；Developer 用 `design-submit` 在该框架内决定具体 How——修改哪些类和方法、数据流与 API/DB/状态落地、幂等并发事务、测试方案。Inspector 不下沉到具体代码实现，Developer 不重新决定已确定的架构方向；Developer 认为方向有事实错误时通过讨论反馈，由 Inspector 修订，不得静默改向。Inspector 用 `design-review` 绑定当前设计提交并明确批准或驳回，审批时检查方向遵守、根因解决、边界、Design Questions 回答、验收可验证、无必要复杂化和 scope change；实现方式与自身偏好不同不构成驳回理由。
+设计职责按层划分：Inspector 用 `reviewctl design request` 负责 What / Why / Boundary / Architecture Direction / Acceptance——根因、应在哪一层解决、推荐和禁止的架构方向、不可破坏语义、方案必须回答的问题和验收条件；Developer 用 `reviewctl design submit` 在该框架内决定具体 How——修改哪些类和方法、数据流与 API/DB/状态落地、幂等并发事务、测试方案。Inspector 不下沉到具体代码实现，Developer 不重新决定已确定的架构方向；Developer 认为方向有事实错误时通过讨论反馈，由 Inspector 修订，不得静默改向。Inspector 用 `reviewctl design approve|reject` 绑定当前设计提交并明确批准或驳回，审批时检查方向遵守、根因解决、边界、Design Questions 回答、验收可验证、无必要复杂化和 scope change；实现方式与自身偏好不同不构成驳回理由。
 
 设计深度随复杂度分级（规则见 `references/workflow.yaml` 的 `design_depth`）：SIMPLE 问题确认边界后直接实现，不要求 design-request 和 Stage Plan；NORMAL 问题设计至少覆盖 Root Cause、Boundaries、Design Questions、Acceptance；COMPLEX / HIGH-RISK 问题（跨模块职责、核心链路、状态机、并发事务一致性、持久化模型、数据迁移、对外行为、新依赖、大重构、高回归风险）还必须给出明确到架构层的 Architecture Direction（状态归属、source of truth、push/pull、生命周期管理、允许与禁止路径、必须幂等的路径），禁止“注意兼容”“考虑并发”这类空话。批准时必须选择 `direct` 或 `staged`；staged 会在同一事务中创建 Stage Plan、批准设计并默认激活 Stage 1。设计状态下 Developer 不得修改业务代码或提交实现。
 
@@ -198,7 +218,7 @@ COMPLEX     Inspector(五段式含架构方向) → Developer(方案) → Inspec
 
 实现审核失败时，若只是代码未按批准方案正确落地，则记录 `VERIFICATION_FAILED` 并回 `IN_PROGRESS`；若方向本身被新证据推翻，则转 `REDESIGN_REQUIRED`。转入后 Runtime 先唤醒 Inspector 并拒绝 Developer 直接重交方案：Inspector 必须重新检查 Root Cause、Architecture Direction、Boundaries、Acceptance 哪些判断失误，先用 `design-request` 提交修订后的架构级指导，Developer 再提交新方案。连续两次失败后 Inspector 必须主动重新判断失败属于实现还是设计，避免重复阅读与大范围返工。
 
-复杂 Issue 可在设计批准前创建 Stage Plan。Stage 独立于 Issue 状态，按 `PLANNED → IN_PROGRESS → PENDING_REVIEW → APPROVED` 串行推进。Developer 在改码前先用 `stage-prepare` 声明影响范围、原因和历史保护项，完成后通过 `stage-submit` 提交 commit、Diff、当前测试、历史累计回归与代码证据。Inspector 默认从 `stage-get` 读取当前 Stage、合并后的有界保护约束和历史摘要；确需核验证据时再用 `stage-history-get` 按 stage 读取完整 baseline。审核使用 BLOCKER/MUST/SHOULD/NIT 四级 finding，只有前两级阻断。通过时建立包含已验证行为、输入输出契约、业务语义和测试集合的 `PASSED` baseline，自动激活下一 Stage。第二轮起不得新增无关 SHOULD/NIT，新 BLOCKER/MUST 必须解释此前遗漏原因和实际风险；阻断项清零且所有验收通过后必须 PASS。若发现整案错误则显式进入 `REDESIGN_REQUIRED`，旧计划完整保留。所有 Stage 通过后才允许 `implementation-submit`，且仍需最终整体验证。简单 Issue 无需 Stage。
+复杂 Issue 可在设计批准前创建 Stage Plan。Stage 独立于 Issue 状态，按 `PLANNED → IN_PROGRESS → PENDING_REVIEW → APPROVED` 串行推进。Developer 在改码前先用 `reviewctl stage prepare` 声明影响范围和原因，历史保护项默认从既有 baseline 继承；完成后通过 `reviewctl stage submit` 提交 commit 和当前测试，命令自动关联 Git Diff 与上一轮阻断 finding。Inspector 默认从 `reviewctl stage show` 读取当前 Stage、合并后的有界保护约束和历史摘要；确需核验证据时再用 `reviewctl stage history` 读取完整 baseline。审核使用 BLOCKER/MUST/SHOULD/NIT 四级 finding，只有前两级阻断。通过时建立包含已验证行为、输入输出契约、业务语义和测试集合的 `PASSED` baseline，自动激活下一 Stage。第二轮起不得新增无关 SHOULD/NIT，新 BLOCKER/MUST 必须解释此前遗漏原因和实际风险；阻断项清零且所有验收通过后必须 PASS。若发现整案错误则用 `reviewctl stage redesign` 进入 `REDESIGN_REQUIRED`，旧计划完整保留。所有 Stage 通过后才允许 `reviewctl impl submit`，且仍需最终整体验证。简单 Issue 无需 Stage。
 
 ## Human 最终兜底
 
@@ -212,7 +232,7 @@ Human 使用 `human-confirmation-resolve` 记录业务边界或风险决定，�
 
 ## 多 Issue Runtime
 
-启用 Thread Isolation 后，Supervisor 只保存 `(issue_key, operator_id) → thread_id`、固定身份、租约和事件等轻量调度数据；具体审核、实现、Diff/Evidence/测试分析由独立 Issue Thread 完成。Review Domain 的可执行状态变化会在同一事务写入 Runtime Event。Event 只作为唤醒信号：Supervisor 领取时重新计算当前 Issue Projection，同一 Issue/Role 的旧事件会标记为 `SUPERSEDED`，没有真实待办时不会调用模型；dispatch 使用事务内 Event row-id cutoff，晚于快照的新 Event 不会被误收敛。Resume 会再次检查 Projection，无待办时直接 `SKIPPED_STALE`，待办变化时使用最新 action。Projection revision 是 Issue 自身的单调 Working Set 版本，由数据库触发器覆盖 Issue、Activity、Discussion、Decision、Stage 和相关 Task 字段变化；领取时的 event revision 只用于追踪，Prompt、Compact 和 metrics 使用 Resume 时重读的 execution revision。普通 Action Turn 先且通常只调用一次 `issue-context-get` 获取同一 SQLite read snapshot 下的有界 Working Set（包括项目治理字段、Issue 初始 evidence/local terms 和最近 8 条讨论摘要），再按资源 id 懒加载明细；evidence 与 local terms 同样有数量和单项长度上限。`pending_action` 表示当前待办，`permitted_actions` 与 `exception_actions` 由 Runtime 权限唯一计算。每个 INIT/ACTION/COMPACT Turn 只记录 Token 数和 Review DB 子命令计数，不保存提示词、工具参数、返回正文或推理内容。App Server 适配层、Registry CLI、事件调度器、静默多目标 Watcher和兼容性探针位于 `scripts/`，开关集中在 `config/runtime.json`。
+启用 Thread Isolation 后，Supervisor 只保存 `(issue_key, operator_id) → thread_id`、固定身份、租约和事件等轻量调度数据；具体审核、实现、Diff/Evidence/测试分析由独立 Issue Thread 完成。Review Domain 的可执行状态变化会在同一事务写入 Runtime Event。Event 只作为唤醒信号：Supervisor 领取时重新计算当前 Issue Projection，同一 Issue/Role 的旧事件会标记为 `SUPERSEDED`，没有真实待办时不会调用模型；dispatch 使用事务内 Event row-id cutoff，晚于快照的新 Event 不会被误收敛。Resume 会再次检查 Projection，无待办时直接 `SKIPPED_STALE`，待办变化时使用最新 action。Projection revision 是 Issue 自身的单调 Working Set 版本，由数据库触发器覆盖 Issue、Activity、Discussion、Decision、Stage 和相关 Task 字段变化；领取时的 event revision 只用于追踪，Prompt、Compact 和 metrics 使用 Resume 时重读的 execution revision。普通 Action Turn 先且通常只调用一次 `reviewctl issue context <issue_key>` 获取同一 SQLite read snapshot 下的有界 Working Set（包括项目治理字段、Issue 初始 evidence/local terms 和最近 8 条讨论摘要），再按资源 id 懒加载明细；evidence 与 local terms 同样有数量和单项长度上限。`pending_action` 表示当前待办，`permitted_actions` 与 `exception_actions` 由 Runtime 权限唯一计算。每个 INIT/ACTION/COMPACT Turn 只记录 Token 数和 Review DB 子命令计数，不保存提示词、工具参数、返回正文或推理内容。App Server 适配层、Registry CLI、事件调度器、静默多目标 Watcher和兼容性探针位于 `scripts/`，开关集中在 `config/runtime.json`。
 
 ```bash
 python3 scripts/issue-thread.py status

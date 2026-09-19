@@ -34,10 +34,10 @@ except ModuleNotFoundError:  # 仓库内直接执行时，模块尚未复制到�
     )
 
 try:
-    from agent_routing import get_snapshot, parse_difficulty, recommend_executors, routing_revision
+    from agent_routing import assignment_view, get_snapshot, parse_difficulty, recommend_executors
 except ModuleNotFoundError:  # 仓库内直接执行时，同目录模块尚未复制到安装目录。
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from agent_routing import get_snapshot, parse_difficulty, recommend_executors, routing_revision
+    from agent_routing import assignment_view, get_snapshot, parse_difficulty, recommend_executors
 
 SEVERITY_WEIGHT = {"critical": 4, "high": 3, "medium": 2, "low": 1}
 BENEFIT_WEIGHT = {"high": 3, "medium": 2, "low": 1}
@@ -735,6 +735,17 @@ def task_list(args: argparse.Namespace) -> None:
         audit(conn, actor_id(args), "task.list", "review_task", None, True, f"count={len(rows)}")
     print_json(rows)
 
+def task_get(args: argparse.Namespace) -> None:
+    require_agent(args.agent)
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM review_task WHERE task_key = ?", (args.task_key,),
+        ).fetchone()
+        if not row:
+            raise KeyError(f"任务不存在: {args.task_key}")
+        audit(conn, actor_id(args), "task.get", "review_task", args.task_key, True)
+    print_json(dict(row))
+
 def cancel_open_issues_for_closed_task(
     conn: sqlite3.Connection, args: argparse.Namespace, task_id: int, task_key: str
 ) -> int:
@@ -886,7 +897,7 @@ def issue_create(args: argparse.Namespace) -> None:
             raise RuntimeError("请先创建任务版本")
 
         issue_key = args.issue_key or f"RI-{uuid.uuid4().hex[:8].upper()}"
-        recommended, revision = compute_recommendations(payload["difficulty"])
+        # 推荐不落库：它是 difficulty + 当前 Routing 的动态投影，读取时计算。
         conn.execute(
             """INSERT INTO review_issue(
                 issue_key, task_id, introduced_version, parent_issue_id, title, dimension,
@@ -894,8 +905,8 @@ def issue_create(args: argparse.Namespace) -> None:
                 status, description, facts, trigger_conditions_json, potential_impact_json,
                 impact_scope_json, rationale, evidence_json, estimated_change_json, dedupe_key,
                 summary, expected_outcome, technical_note, local_terms_json,
-                difficulty, difficulty_reason_json, recommended_executors_json, routing_revision
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PROPOSED', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                difficulty, difficulty_reason_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PROPOSED', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 issue_key, task["id"], task["current_version"], args.parent_issue_id,
                 payload["title"], payload["dimension"], payload["severity"], payload["remediation_benefit"],
@@ -906,7 +917,7 @@ def issue_create(args: argparse.Namespace) -> None:
                 payload.get("dedupe_key") or issue_dedupe_key(payload),
                 payload["summary"], payload["expected_outcome"], payload["technical_note"],
                 dumps(payload["local_terms"]),
-                payload["difficulty"], dumps(payload["difficulty_reason"]), dumps(recommended), revision,
+                payload["difficulty"], dumps(payload["difficulty_reason"]),
             ),
         )
         issue_id = conn.execute("SELECT id FROM review_issue WHERE issue_key = ?", (issue_key,)).fetchone()["id"]
@@ -982,7 +993,6 @@ def issue_create_batch(args: argparse.Namespace) -> None:
         created: list[str] = []
         for payload, dedupe_key in new_payloads:
             issue_key = payload.get("issue_key") or f"RI-{uuid.uuid4().hex[:8].upper()}"
-            recommended, revision = compute_recommendations(payload["difficulty"])
             conn.execute(
                 """INSERT INTO review_issue(
                     issue_key, task_id, introduced_version, parent_issue_id, title, dimension,
@@ -990,8 +1000,8 @@ def issue_create_batch(args: argparse.Namespace) -> None:
                     status, description, facts, trigger_conditions_json, potential_impact_json,
                     impact_scope_json, rationale, evidence_json, estimated_change_json, dedupe_key,
                     summary, expected_outcome, technical_note, local_terms_json,
-                    difficulty, difficulty_reason_json, recommended_executors_json, routing_revision
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PROPOSED', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    difficulty, difficulty_reason_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PROPOSED', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     issue_key, task["id"], version, payload.get("parent_issue_id"), payload["title"], payload["dimension"],
                     payload["severity"], payload["remediation_benefit"], payload["remediation_cost"],
@@ -1001,7 +1011,7 @@ def issue_create_batch(args: argparse.Namespace) -> None:
                     dumps(payload.get("estimated_change", {})), dedupe_key,
                     payload["summary"], payload["expected_outcome"], payload["technical_note"],
                     dumps(payload["local_terms"]),
-                    payload["difficulty"], dumps(payload["difficulty_reason"]), dumps(recommended), revision,
+                    payload["difficulty"], dumps(payload["difficulty_reason"]),
                 ),
             )
             issue_id = conn.execute("SELECT id FROM review_issue WHERE issue_key = ?", (issue_key,)).fetchone()["id"]
@@ -1038,8 +1048,9 @@ ISSUE_GET_COMPACT_FIELDS = [
     "technical_note", "local_terms_json", "dimension", "severity", "status",
     "evidence_json", "current_attempt_no", "updated_at", "last_activity_at", "last_discussion_at",
     # difficulty 与 assignment 是判断「谁来做」的关键信息，compact 视图必须带上。
+    # assignmentStatus / assignmentInvalidReason 是读取时计算的派生字段。
     "difficulty", "difficulty_reason_json", "recommended_executors_json",
-    "routing_revision", "assignment_json",
+    "assignment", "assignmentStatus", "assignmentInvalidReason",
 ]
 
 def selected_issue_fields(value: str | None) -> list[str] | None:
@@ -1159,11 +1170,11 @@ def issue_get(args: argparse.Namespace) -> None:
                 item[key],
                 {} if key in {"estimated_change_json", "local_terms_json"} else [],
             )
-        # 推荐是当前 Routing 配置的函数：revision 变化时重算，避免返回过期快照。
-        item["recommended_executors_json"] = refresh_recommendations(
-            conn, args.issue_key, item.get("difficulty"), item.get("routing_revision"),
-        )
-        item["routing_revision"] = routing_revision()
+        # 推荐按当前 Routing 配置在内存中计算：不写库，也不推进 projection_revision。
+        item["recommended_executors_json"] = runtime_recommendations(item.get("difficulty"))
+        # assignment_json 已在通用 JSON 解码循环中转成对象，不再二次 loads。
+        item["assignment"] = item.get("assignment_json") or {}
+        item.update(assignment_status_view(item["assignment"], item.get("difficulty")))
         if args.view == "compact":
             item = {field: item[field] for field in ISSUE_GET_COMPACT_FIELDS}
         audit(conn, actor_id(args), "issue.get", "review_issue", args.issue_key, True)
@@ -1205,59 +1216,31 @@ def apply_assessment_update(
     return changed
 
 
-def compute_recommendations(difficulty: int | None) -> tuple[list[dict[str, Any]], str | None]:
-    """按当前 Routing 配置计算推荐，并返回配置 revision 作为缓存标记。"""
-    try:
-        return recommend_executors(difficulty), routing_revision()
-    except (RuntimeError, ValueError):
-        # Router 异常不能让问题创建/读取失败；退化为「无推荐」。
-        return [], None
+def runtime_recommendations(difficulty: int | None) -> list[dict[str, Any]]:
+    """按当前 Routing 配置动态计算候选执行配置。
 
-
-def current_recommendations(
-    difficulty: int | None, stored_revision: str | None, stored: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """读取时按当前配置动态计算；revision 未变则复用已存缓存。
-
-    与 refresh_recommendations 的区别：本函数只计算不落库，用于在只读快照内构造返回值。
+    纯读取：不落库、不推进 projection_revision。推荐属于旁路信息，
+    任何一次读取都不应产生 Issue 核心业务写入副作用。
     """
-    try:
-        current = routing_revision()
-    except (RuntimeError, ValueError):
-        return []
-    if stored_revision == current:
-        return stored
     try:
         return recommend_executors(difficulty)
     except (RuntimeError, ValueError):
         return []
 
 
-def refresh_recommendations(
-    conn: sqlite3.Connection, issue_key: str, difficulty: int | None, stored_revision: str | None,
-) -> list[dict[str, Any]]:
-    """推荐是当前配置的函数，不是历史快照。
+def assignment_status_view(assignment: Any, difficulty: int | None) -> dict[str, Any]:
+    """返回 assignment 及其当前状态（VALID / STALE / NONE）。
 
-    持久化字段只作为缓存：revision 与当前配置不一致时重新计算并回写，
-    避免 Routing 修改后旧 Issue 继续沿用过期结果。
+    只判定，不改写 assignment：失效时保留历史数据，等待 Inspector / Human 重新选择。
     """
     try:
-        current = routing_revision()
+        return assignment_view(assignment, difficulty, get_snapshot())
     except (RuntimeError, ValueError):
-        return []
-    if stored_revision == current:
-        row = conn.execute(
-            "SELECT recommended_executors_json FROM review_issue WHERE issue_key = ?", (issue_key,)
-        ).fetchone()
-        if row is not None:
-            return loads(row[0], [])
-    recommended = current_recommendations(difficulty, None, [])
-    conn.execute(
-        "UPDATE review_issue SET recommended_executors_json = ?, routing_revision = ?, "
-        "updated_at = CURRENT_TIMESTAMP WHERE issue_key = ?",
-        (dumps(recommended), current, issue_key),
-    )
-    return recommended
+        return {
+            "assignment": assignment if isinstance(assignment, dict) else {},
+            "assignmentStatus": "STALE",
+            "assignmentInvalidReason": "router_disabled",
+        }
 
 
 def apply_difficulty_update(
@@ -1273,28 +1256,28 @@ def apply_difficulty_update(
         raise KeyError(f"问题不存在: {issue_key}")
     if reason is not None and not isinstance(reason, list):
         raise ValueError("difficulty-reason 必须是 JSON 数组")
-    recommended, revision = compute_recommendations(difficulty)
-    assignments = [
-        "difficulty = ?", "recommended_executors_json = ?", "routing_revision = ?",
-        "updated_at = CURRENT_TIMESTAMP",
-    ]
-    values: list[Any] = [difficulty, dumps(recommended), revision]
+    sets = ["difficulty = ?", "updated_at = CURRENT_TIMESTAMP"]
+    values: list[Any] = [difficulty]
     if reason is not None:
-        assignments.insert(1, "difficulty_reason_json = ?")
+        sets.insert(1, "difficulty_reason_json = ?")
         values.insert(1, dumps(reason))
     values.append(issue_key)
-    conn.execute(
-        f"UPDATE review_issue SET {', '.join(assignments)} WHERE issue_key = ?", values,
-    )
+    conn.execute(f"UPDATE review_issue SET {', '.join(sets)} WHERE issue_key = ?", values)
     audit(conn, actor_id(args), "issue.set-difficulty", "review_issue", issue_key, True,
           f"difficulty={difficulty}")
-    result = loads(
+    # difficulty 是核心业务字段，会推进 projection_revision；推荐与 assignment 都不在这里改写。
+    # assignment 若因此不再满足新 difficulty，读取时按当前配置判定为 STALE，历史数据保留。
+    assignment = loads(
         conn.execute(
-            "SELECT recommended_executors_json FROM review_issue WHERE issue_key = ?", (issue_key,)
+            "SELECT assignment_json FROM review_issue WHERE issue_key = ?", (issue_key,)
         ).fetchone()[0],
-        [],
+        {},
     )
-    return {"difficulty": difficulty, "recommendedExecutors": result}
+    return {
+        "difficulty": difficulty,
+        "recommendedExecutors": runtime_recommendations(difficulty),
+        **assignment_status_view(assignment, difficulty),
+    }
 
 
 def issue_set_difficulty(args: argparse.Namespace) -> None:
@@ -1313,11 +1296,15 @@ def apply_assignment_update(
 ) -> dict[str, Any]:
     """记录真正选定的执行配置（assignment），与候选推荐区分开。
 
-    只接受当前 Routing 配置中存在且启用的 profile；推荐本身是候选，不是调度结果。
+    只接受「enabled 且 level >= 当前 difficulty」的合法候选——与页面下拉展示的集合一致，
+    避免绕过界面写入一个当前根本完不成该任务的执行者。推荐本身是候选，不是调度结果。
     """
-    row = conn.execute("SELECT id FROM review_issue WHERE issue_key = ?", (issue_key,)).fetchone()
+    row = conn.execute(
+        "SELECT difficulty FROM review_issue WHERE issue_key = ?", (issue_key,)
+    ).fetchone()
     if not row:
         raise KeyError(f"问题不存在: {issue_key}")
+    difficulty = row["difficulty"]
     if not profile_id:
         assignment: dict[str, Any] = {}
     else:
@@ -1327,12 +1314,17 @@ def apply_assignment_update(
             snapshot = None
         if snapshot is None or not snapshot.enabled:
             raise RuntimeError("Model Router 未启用，无法记录执行者分配")
-        match = next(
-            (entry for entry in snapshot.profiles if entry["id"] == profile_id and entry["enabled"]),
-            None,
-        )
-        if match is None:
+        if difficulty is None:
+            # 没有 difficulty 就无法判断候选是否够格；页面此时也不会给出任何候选。
+            raise ValueError("Issue 尚未设置 difficulty，无法指定执行者；请先用 issue-set-difficulty 标注困难程度")
+        match = snapshot.profile(profile_id)
+        if match is None or not match["enabled"]:
             raise ValueError(f"执行配置不存在或未启用: {profile_id}")
+        if match["level"] < difficulty:
+            raise ValueError(
+                f"执行配置 {profile_id} 的 level {match['level']} 低于当前 difficulty {difficulty}，"
+                "不能作为执行者"
+            )
         assignment = {
             "profileId": match["id"],
             "agent": match["agent"],
@@ -1359,7 +1351,13 @@ def issue_set_assignment(args: argparse.Namespace) -> None:
         assignment = apply_assignment_update(
             conn, args, args.issue_key, (args.profile_id or "").strip() or None,
         )
-    print_json({"issue_key": args.issue_key, "assignment": assignment})
+        difficulty = conn.execute(
+            "SELECT difficulty FROM review_issue WHERE issue_key = ?", (args.issue_key,)
+        ).fetchone()["difficulty"]
+    print_json({
+        "issue_key": args.issue_key,
+        **assignment_status_view(assignment, difficulty),
+    })
 
 
 def issue_update_assessment(args: argparse.Namespace) -> None:
@@ -2353,8 +2351,7 @@ def issue_context_get(args: argparse.Namespace) -> None:
             """SELECT i.issue_key, i.title, i.summary, i.expected_outcome, i.technical_note,
                       i.status, i.dimension, i.severity, i.current_attempt_no,
                       i.evidence_json, i.local_terms_json,
-                      i.difficulty, i.recommended_executors_json, i.routing_revision,
-                      i.assignment_json,
+                      i.difficulty, i.assignment_json,
                       t.task_key, t.project_name, t.review_level, t.review_scope, t.baseline_ref
                FROM review_issue i JOIN review_task t ON t.id=i.task_id
                WHERE i.issue_key=?""",
@@ -2420,12 +2417,13 @@ def issue_context_get(args: argparse.Namespace) -> None:
     issue_json = dict(issue)
     evidence = loads(issue_json.pop("evidence_json"), [])
     local_terms = loads(issue_json.pop("local_terms_json"), {})
-    issue_json["recommendedExecutors"] = current_recommendations(
-        issue_json.get("difficulty"),
-        issue_json.pop("routing_revision", None),
-        loads(issue_json.pop("recommended_executors_json"), []),
-    )
-    issue_json["assignment"] = loads(issue_json.pop("assignment_json"), {})
+    # 推荐是 difficulty + 当前 Routing 的动态投影：即使持久化列里还有旧值也一律忽略，
+    # 因此读取不会写库，也不会推进 projection_revision。
+    issue_json.pop("recommended_executors_json", None)
+    issue_json.pop("routing_revision", None)
+    issue_json["recommendedExecutors"] = runtime_recommendations(issue_json.get("difficulty"))
+    assignment = loads(issue_json.pop("assignment_json"), {})
+    issue_json.update(assignment_status_view(assignment, issue_json.get("difficulty")))
     issue_json["evidence"], issue_json["evidence_truncated"] = bounded_context_evidence(evidence)
     issue_json["evidence_count"] = len(evidence)
     issue_json["local_terms"], issue_json["local_terms_truncated"] = bounded_context_local_terms(local_terms)
@@ -3716,6 +3714,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--include-closed", action="store_true")
     p.set_defaults(func=task_list)
 
+    p = sub.add_parser("task-get")
+    p.add_argument("--task-key", required=True)
+    p.set_defaults(func=task_get)
+
     p = sub.add_parser("task-update-status")
     p.add_argument("--task-key", required=True)
     p.add_argument("--status", required=True, choices=sorted(TASK_STATUSES))
@@ -3769,7 +3771,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("issue-create-batch")
     p.add_argument("--task-key", required=True)
     p.add_argument("--reason", required=True)
-    p.add_argument("--issues", required=True, help='JSON 数组；每项使用 issue-create 的字段（title、dimension、severity 必填，evidence、local-terms 等同格式），如 [{"title":"...","dimension":"...","severity":"..."}]')
+    p.add_argument("--issues", required=True, help='JSON 数组；每项使用 issue-create 的字段（title、dimension、severity、summary 必填，evidence、local-terms 等同格式），如 [{"title":"...","dimension":"...","severity":"...","summary":"..."}]')
     p.set_defaults(func=issue_create_batch)
 
     p = sub.add_parser("issue-list")
@@ -3902,7 +3904,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--content", required=True)
     p.add_argument("--summary", help="最多 180 字、3 行的正式决策摘要；省略时从 content 生成")
     p.add_argument("--review-result", default="{}", help='JSON 对象；含 findings（按 BLOCKER/MUST/SHOULD/NIT 分组，阻断项需 evidence 和 risk）、historical_regression（按已批准 stage_no，每项 status 和 evidence）、current_acceptance（按顺序逐项 status 和 evidence）')
-    p.add_argument("--baseline", default="{}", help='JSON 对象；approved 时必填，含 verified_behaviors、input_output_contracts、business_semantics、tests，前两者和 tests 不能为空')
+    p.add_argument("--baseline", default="{}", help='JSON 对象；approved 时必填，含 verified_behaviors、input_output_contracts、business_semantics、tests，其中 verified_behaviors 和 tests 不能为空')
     p.set_defaults(func=stage_review)
 
     p = sub.add_parser("human-escalate")
@@ -4086,7 +4088,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     return parser
 
-def main() -> int:
+def main(propagate_errors: bool = False) -> int:
     parser = build_parser()
     args = parser.parse_args()
     success = False
@@ -4097,6 +4099,8 @@ def main() -> int:
         success = True
     except Exception as exc:
         failure = exc
+        if propagate_errors:
+            raise
         if not isinstance(exc, DatabaseOpenError):
             try:
                 with connect() as conn:

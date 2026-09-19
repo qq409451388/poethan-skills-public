@@ -208,7 +208,7 @@ class CodexThreadRuntime:
             "角色权限、状态机和工具权限以 Runtime/Session binding 为准。\n"
             f"固定 Review 工具：{fixed_tool_path}\n"
             "只处理该 Issue 且不得切换身份。Review DB 是状态真相；每个 ACTION Turn 先调用一次 "
-            "issue-context-get，并以其 pending_action/permitted_actions/exception_actions 为当前流程依据。普通 ACTION 不读取完整 "
+            "reviewctl issue context，并以其 pending_action/permitted_actions/exception_actions 为当前流程依据。普通 ACTION 不读取完整 "
             "workflow.yaml 或 tool-contracts.yaml；仅在专项审计时按需查阅。"
         )
         params: dict[str, Any] = {

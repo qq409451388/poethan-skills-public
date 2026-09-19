@@ -16,7 +16,7 @@ Session 激活时由安装绑定固化 `session_operator_id`、`session_role`、
 
 默认业务键为 `(issue_key, operator_id)`；Mapping 同时固化 role、agent_platform、runtime_backend 与 thread_id。同一键只能有一个有效 Thread，CLI 的 `--role` 只做期望值校验，权限来源始终是安装器生成的 operator binding。首次 Dispatch 优先完成 `thread/start → persist mapping → 原始 Event Action Turn completed`；固定身份、Issue、Role 与 Tool 由 Runtime 注入。能力探针确认 `zero_turn_resume` 时不创建独立 Initialization Turn；旧协议不支持时才回退到 INIT Turn并单独记账。只有 Action Turn 成功后 Event 才能进入 DONE。
 
-已有 Mapping 时必须 Resume 原 Thread并发送最小事件；Resume 使用 `excludeTurns=true`。Resume 在调用模型前重读 Projection：没有待办时返回 `SKIPPED_STALE` 且 Event 记为 `SUPERSEDED`，待办已改变时用最新 `pending_action` 替换 Event 中的旧 action。真正开始的 Action Turn 先调用一次 `issue-context-get` 获取有界 Working Set，只有摘要指向必要明细时才继续读取。不得复制 Supervisor 会话历史。Issue reopen 优先 unarchive/resume 原 Thread。
+已有 Mapping 时必须 Resume 原 Thread并发送最小事件；Resume 使用 `excludeTurns=true`。Resume 在调用模型前重读 Projection：没有待办时返回 `SKIPPED_STALE` 且 Event 记为 `SUPERSEDED`，待办已改变时用最新 `pending_action` 替换 Event 中的旧 action。真正开始的 Action Turn 先调用一次 `reviewctl issue context <issue_key>` 获取有界 Working Set，只有摘要指向必要明细时才继续读取。不得复制 Supervisor 会话历史。Issue reopen 优先 unarchive/resume 原 Thread。
 
 初始化 Prompt 必须包含 operator_id、agent_platform、role、fixed_tool_path 和 issue_key。子 Thread 只使用固定工具，只处理绑定的 Issue 与角色，不得调用底层工具伪造身份，不得发现或调度其他 Issue。角色不明、Issue 不存在、Mapping 冲突、无法 Resume、锁失败、协议异常时 fail closed；非 Codex 平台当前记录为 `runtime_backend=external`，不得伪装成 Codex App Server Thread，也不得退回 Supervisor 执行业务工作。
 
@@ -46,7 +46,7 @@ Dispatch Lock 串行化同一 `(issue_key, operator_id)`，并完整覆盖 looku
 
 仅当以下条件全部满足才主动 Compact：功能和 capability flag 已启用；本机实测支持 compact 后继续及跨进程 resume；App Server 提供可靠的 `totalTokens/modelContextWindow`；usage 达到 threshold；当前仍有实际后续动作；当前工作单元尚未 Compact。Staged 模式的工作单元边界是上一 Stage 已 APPROVED 且下一 Stage 已存在；Direct 模式的边界是当前 Projection revision 已超过该 Thread 上一个成功 Action 的 revision。
 
-顺序固定为：工作单元结果已持久化 → 确认仍有实际后续工作 → 检查埋点 usage → compact → 用 `issue-context-get` 恢复 Working Set。Compact 失败只记录一次并继续 Thread，不在同一工作单元无限重试；最终 Stage 完成且没有后续动作时不 compact。阈值先保持配置值，依据 Turn 指标再调整。
+顺序固定为：工作单元结果已持久化 → 确认仍有实际后续工作 → 检查埋点 usage → compact → 用 `reviewctl issue context <issue_key>` 恢复 Working Set。Compact 失败只记录一次并继续 Thread，不在同一工作单元无限重试；最终 Stage 完成且没有后续动作时不 compact。阈值先保持配置值，依据 Turn 指标再调整。
 
 ## CLI 路由
 

@@ -38,14 +38,14 @@ Watch 不授权切换角色。若用户要求唤醒后由 Inspector 审核，但
 ```text
 python <skill>/scripts/watch.py \
   --kind stage-status \
-  --tool <skill>/tools/review-db-<alias>.py \
+  --tool <skill>/tools/reviewctl-<alias>.py \
   --target RI-00497003 \
   --stage 2 \
   --expect PENDING_REVIEW \
   --role inspector
 ```
 
-Watcher 默认每 120 秒通过固定角色工具的 `watch-probe` 查询一次。该探针只返回最小状态且不写读取审计，避免长期轮询造成审计表膨胀；Watcher 不得直接访问数据库。状态未命中时 stdout/stderr 均保持空；查询 JSON、Stage、Activity、Diff 和日志不得进入对话。查询错误写入系统临时目录；连续三次查询失败只发出 `WATCH_QUERY_FAILED` 最小事件，由 Agent 重新诊断。
+Watcher 默认每 120 秒通过固定角色工具的 `reviewctl watch` 探针查询一次。该探针只返回最小状态且不写读取审计，避免长期轮询造成审计表膨胀；Watcher 不得直接访问数据库。状态未命中时 stdout/stderr 均保持空；查询 JSON、Stage、Activity、Diff 和日志不得进入对话。查询错误写入系统临时目录；连续三次查询失败只发出 `WATCH_QUERY_FAILED` 最小事件，由 Agent 重新诊断。
 
 Watch Mode 禁止创建或维持宿主 Goal，纯等待阶段不得使用 Goal automatic continuation。启动后只向用户简短说明目标、唤醒条件和 120 秒静默轮询，然后由一个长生命周期 Shell command 在同一进程内部完成全部 sleep、查询和条件判断。未命中时该 command 不输出、不结束，也不创建新的 Goal turn。不要把 watcher 放入会周期性恢复模型的 Goal 或循环 Agent 调用中。
 

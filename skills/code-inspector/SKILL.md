@@ -11,7 +11,7 @@ description: 在用户明确开启代码检查模式后，按安装时分配的 
 
 面向人的 Issue、讨论、提交、审核、验证和报告默认使用简明中文：先讲现象、影响、结论、验证结果和下一步，再补必要技术证据，确保测试人员和项目负责人无需理解内部实现也能读懂。新写代码注释也默认用中文解释业务目的和约束。Git 提交标题和正文同样默认使用中文；仓库采用 Conventional Commits 时可保留 `feat/fix/refactor(scope)` 等固定前缀，但冒号后的摘要和正文必须用中文说明业务变化，例如 `refactor(analytics): 统一淘宝数据源边界`，不得只写英文摘要。若项目已有强制语言规范则遵循项目规范。
 
-Inspector 可以补充实现约束，但不得扩展用户目标。Developer 用 `--scope-changes` 声明范围扩大或新增持久化、迁移、外部行为等必须让用户知道的变化；Inspector 审批前用 `design-preview` 在当前 CLI 展示差异。未确认的变化只能删除、转 Candidate，或逐项确认，不能进入 Stage。
+Inspector 可以补充实现约束，但不得扩展用户目标。Developer 用 `reviewctl design submit` 的动态参数 `scope_changes` 声明范围扩大或新增持久化、迁移、外部行为等必须让用户知道的变化；Inspector 审批前用 `reviewctl design preview` 在当前 CLI 展示差异。未确认的变化只能删除、转 Candidate，或逐项确认，不能进入 Stage。
 
 Multi-Thread 默认关闭。只有 `config/runtime.json` 允许且用户在当前 Session 明确要求开启时，才可启动按当前 `session_operator_id + session_role` 限定的 Supervisor。它只能 claim、start、resume 当前身份的 Event/Thread；跨 Role 或跨 Operator 一律以 `SESSION_SCOPE_VIOLATION` 失败。Watch 与 Multi-Thread 分别授权，任何模式都禁止创建或恢复宿主 Goal。
 
@@ -20,7 +20,7 @@ Multi-Thread 默认关闭。只有 `config/runtime.json` 允许且用户在当�
 - 所有角色：`references/core-workflow.md`
 - 当前角色：`references/role-workflows.md` 中对应的 Developer 或 Inspector 章节
 
-FastMode 固定使用 Inspector 身份。启动时改为读取 `references/fastmode.md`，锁定命令中的 Issue Scope，并按输入顺序串行审核；Developer Agent 不是前置条件，Human 负责开发沟通与最终状态，Inspector 只负责代码检查、验证和记录。FastMode 不依赖 `pending_action`，不启动 Runtime、Watch、Multi-Thread 或 Developer，不自动关闭 Issue。FastMode 的验证结论只用专用 `fast-review-record` 写入；普通 `metadata` 只记录事实，不能启用 FastMode 或改变权限和控制流。
+FastMode 固定使用 Inspector 身份。启动时改为读取 `references/fastmode.md`，锁定命令中的 Issue Scope，并按输入顺序串行审核；Developer Agent 不是前置条件，Human 负责开发沟通与最终状态，Inspector 只负责代码检查、验证和记录。FastMode 不依赖 `pending_action`，不启动 Runtime、Watch、Multi-Thread 或 Developer，不自动关闭 Issue。FastMode 的验证结论只用专用 `reviewctl fast pass|fail` 写入；普通 `metadata` 只记录事实，不能启用 FastMode 或改变权限和控制流。
 
 以下大型文件由 Runtime/CLI 强制执行，普通 Action Turn 不读取；仅在专项审计或修改规则本身时按需查阅：
 
@@ -30,10 +30,14 @@ FastMode 固定使用 Inspector 身份。启动时改为读取 `references/fastm
 普通 Issue 与 FastMode 的首次上下文读取都固定使用：
 
 ```bash
-<fixed_tool> issue-context-get --issue-key <issue_key>
+reviewctl issue context <issue_key>
 ```
 
-`issue-context-get` 使用 `--issue-key`，不使用 `--issue-id`。以返回的 `pending_action`、`permitted_actions`、`exception_actions` 和资源 id 作为当前 Working Set；只有摘要指向必要明细时才使用 `discussion-get`、`activity-get` 或 `stage-history-get`。
+`reviewctl issue context` 使用位置参数 <issue_key>。以返回的 `pending_action`、`permitted_actions`、`exception_actions` 和资源 id 作为当前 Working Set；只有摘要指向必要明细时才使用 `reviewctl discussion show`、`reviewctl activity show` 或 `reviewctl stage history`。
+
+## 统一 CLI 入口
+
+全局只安装一个命令 `reviewctl`，固定格式 `reviewctl <操作域> <动作> [位置参数] [动态参数]`，例如 `reviewctl issue show RI-1`、`reviewctl stage review RI-1 1 @review.json`。Issue、Task、Stage、Activity 等 ID 一律使用位置参数，不再重复书写 `--issue-key`、`--stage-no`；复杂结构化数据只接受 `@文件路径` 或 `-`（stdin），完整 Schema 通过 `reviewctl schema <domain-action>`（如 `reviewctl schema stage-review`）查看。角色和逻辑身份来自当前 Skill 的固定工具入口，不存在公开的身份切换参数；未激活身份只能查看 help/schema，执行运行时命令会被拒绝。
 
 ## 固定角色输出前缀
 

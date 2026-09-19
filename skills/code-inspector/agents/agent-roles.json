@@ -54,6 +54,7 @@
       "session_selector": "dev",
       "commands": [
         "task-list",
+        "task-get",
         "issue-list",
         "issue-list-pending-review",
         "issue-get",
@@ -123,6 +124,7 @@
         "task-create",
         "task-resolve",
         "task-list",
+        "task-get",
         "task-update",
         "task-update-status",
         "version-create",
@@ -210,6 +212,7 @@
         "task-create",
         "task-resolve",
         "task-list",
+        "task-get",
         "task-update",
         "task-update-status",
         "version-create",

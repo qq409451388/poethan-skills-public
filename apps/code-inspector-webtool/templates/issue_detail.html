@@ -65,16 +65,24 @@
       {% if issue.assignment %}
       <h3 class="executor-heading">已选定的执行者</h3>
       <div class="issue-executors">
-        <div class="issue-executor issue-executor-assigned">
+        <div class="issue-executor {% if issue.assignment_status == 'VALID' %}issue-executor-assigned{% else %}issue-executor-stale{% endif %}">
           <span><strong>{{ issue.assignment.agent }}</strong> · {{ issue.assignment.model }} · reasoning {{ issue.assignment.reasoning }}<br><small class="mono">{{ issue.assignment.profileId }}</small></span>
-          <span class="badge badge-green">level {{ issue.assignment.level }}</span>
+          <span class="badge {% if issue.assignment_status == 'VALID' %}badge-green{% else %}badge-red{% endif %}">
+            {% if issue.assignment_status == 'VALID' %}有效{% else %}已失效{% endif %} · level {{ issue.assignment.level }}
+          </span>
         </div>
       </div>
+      {% if issue.assignment_status == 'STALE' %}
+      <div class="executor-stale-warning" role="alert">
+        <strong>当前执行配置已失效，请重新选择。</strong>
+        <p>原因：{{ issue.assignment_invalid_reason|assignment_reason }}（历史分配记录不会被删除，也不会自动改选其它执行者）。</p>
+      </div>
+      {% endif %}
       {% endif %}
 
       <h3 class="executor-heading">候选执行配置</h3>
       {% if issue.recommended_executors %}
-      <p class="section-sub">按 <span class="mono">level &gt;= difficulty</span> 从本机「模型路由配置」<strong>实时</strong>计算，只是候选，不代表强制调度结果。</p>
+      <p class="section-sub">按 <span class="mono">level &gt;= difficulty</span> 从本机「模型路由配置」<strong>实时</strong>计算，只是候选，不代表强制调度结果；修改 Routing 不会自动改动上面的已选定执行者。</p>
       <div class="issue-executors">
         {% for executor in issue.recommended_executors %}
         <div class="issue-executor">
@@ -89,7 +97,7 @@
 
       {% if assignment_profiles %}
       <form method="post" action="{{ url_for('issue_set_assignment', issue_key=issue.issue_key) }}" class="executor-assign-form">
-        <label for="assignment-profile">指定执行者（写入 assignment，不影响候选推荐）</label>
+        <label for="assignment-profile">指定执行者（只列出 <span class="mono">enabled</span> 且 <span class="mono">level &gt;= difficulty</span> 的合法候选）</label>
         <select name="profile_id" id="assignment-profile">
           <option value="">— 清除分配 —</option>
           {% for profile in assignment_profiles %}
@@ -98,6 +106,8 @@
         </select>
         <button class="btn btn-small">保存分配</button>
       </form>
+      {% elif issue.assignment_status == 'STALE' %}
+      <p class="panel-note">当前没有满足 <span class="mono">level &gt;= {{ issue.difficulty }}</span> 的启用执行配置，无法重新选择；请先在 <a href="{{ url_for('routing_config') }}">模型路由配置</a> 调整。</p>
       {% endif %}
     </section>
     {% endif %}

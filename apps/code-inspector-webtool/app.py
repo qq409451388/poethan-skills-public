@@ -200,6 +200,21 @@ def label(value: str | None) -> str:
     return LABELS.get(value or "", value or "—")
 
 
+ASSIGNMENT_REASON_LABELS = {
+    "router_disabled": "Model Router 未启用或配置无效，无法核对该执行配置",
+    "profile_missing": "该执行配置已被删除，或 Routing 配置已被整体替换",
+    "profile_disabled": "该执行配置已被禁用",
+    "profile_changed": "该执行配置的 Agent / Model / Reasoning 已被修改",
+    "profile_level_below_difficulty": "该执行配置的等级已低于当前 difficulty",
+    "profile_level_reduced": "该执行配置的等级被下调",
+}
+
+
+@app.template_filter("assignment_reason")
+def assignment_reason(value: str | None) -> str:
+    return ASSIGNMENT_REASON_LABELS.get(value or "", value or "未提供")
+
+
 @app.template_filter("runtime_label")
 def runtime_label(value: str | None) -> str:
     return RUNTIME_LABELS.get(value or "", LABELS.get(value or "", value or "—"))
@@ -993,6 +1008,9 @@ def issue_detail(issue_key: str):
     ai_summary = issue_ai_summary(issue_key, runtime_threads, runtime_events)
     # 推荐按当前 Routing 配置动态计算，避免展示持久化下来的过期快照。
     issue["recommended_executors"] = routing.recommended_for(issue.get("difficulty"))
+    issue["assignment_status"], issue["assignment_invalid_reason"] = routing.assignment_state(
+        issue.get("assignment"), issue.get("difficulty"),
+    )
     stage, status_explanation = STATUS_PRESENTATION.get(issue["status"], (1, issue["status"]))
     return render_template(
         "issue_detail.html", issue=issue, activities=history_activities, activity_groups=grouped,
@@ -1010,7 +1028,7 @@ def issue_detail(issue_key: str):
         task_statuses=TASK_STATUSES,
         runtime_threads=runtime_threads, runtime_events=runtime_events,
         ai_summary=ai_summary,
-        assignment_profiles=routing.enabled_profiles(),
+        assignment_profiles=routing.candidate_profiles(issue.get("difficulty")),
     )
 
 
