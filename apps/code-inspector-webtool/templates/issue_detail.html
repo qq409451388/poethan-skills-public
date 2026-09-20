@@ -256,8 +256,9 @@
 
     {% if issue.difficulty is not none %}
     <details class="panel difficulty-panel collapsible-panel" data-live-region="issue-difficulty">
-      <summary><span><strong>任务困难程度</strong><small>由 Inspector 给出的抽象难度，不含任何具体模型判断。</small></span><span class="badge badge-blue">difficulty = {{ issue.difficulty }}</span></summary>
+      <summary><span><strong>任务困难程度</strong><small>由 Inspector 给出的抽象难度，不含任何具体模型判断。</small></span><span class="badge badge-blue">difficulty = {{ issue.difficulty }}{% if level_roles.get(issue.difficulty) %} · {{ level_roles[issue.difficulty] }}{% endif %}</span></summary>
       <div class="collapsible-panel-body">
+      {% if level_roles.get(issue.difficulty) %}<p class="form-note">难度 {{ issue.difficulty }} 的角色参照为 <strong>{{ level_roles[issue.difficulty] }}</strong>，仅用于人工校准滑杆语义，不代表 Inspector 的判级口径，也不参与执行者筛选。</p>{% endif %}
       {% if issue.difficulty_reason %}<ul class="value-list">{% for reason in issue.difficulty_reason %}<li>{{ reason }}</li>{% endfor %}</ul>{% endif %}
 
       {% if issue.assignment %}

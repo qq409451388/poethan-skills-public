@@ -2553,6 +2553,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             )
             issue = {
                 "title": "重复提交缺少幂等保护", "dimension": "data_security", "severity": "high",
+                "difficulty": 3,
                 "remediation_benefit": "high", "remediation_cost": "medium",
                 "disposition": "current_iteration", "confidence": "high", "description": "描述",
                 "facts": "事实", "rationale": "依据",
@@ -2773,6 +2774,8 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 self.assertIn(f'data-copy-text="{issue_key}"', issue_html)
                 self.assertIn(f'aria-label="复制 Issue 号 {issue_key}"', issue_html)
                 self.assertIn("关键证据", issue_html)
+                self.assertIn("difficulty = 3 · 中级开发", issue_html)
+                self.assertIn("难度 3 的角色参照为", issue_html)
                 self.assertIn('class="tab active" data-tab-target="all"', issue_html)
                 self.assertIn('class="tab-pane active" data-tab-pane="all"', issue_html)
                 self.assertIn("讨论 1", issue_html)

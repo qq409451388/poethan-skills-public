@@ -999,6 +999,7 @@ def issue_detail(issue_key: str):
         runtime_threads=runtime_threads, runtime_events=runtime_events,
         ai_summary=ai_summary,
         assignment_profiles=routing.candidate_profiles(issue.get("difficulty")),
+        level_roles=routing.LEVEL_ROLES,
     )
 
 
@@ -1582,7 +1583,10 @@ def _routing_page_context(status: dict, seed_preview: dict | None = None, **extr
     try:
         capabilities_payload = routing.capabilities_json()
     except Exception:  # noqa: BLE001
-        capabilities_payload = '{"capabilities": {}, "fallbackReasonings": []}'
+        capabilities_payload = json.dumps(
+            {"capabilities": {}, "fallbackReasonings": [], "levelRoles": routing.LEVEL_ROLES},
+            ensure_ascii=False,
+        )
     config_path = routing.routing_config_path()
     try:
         groups = routing.profile_groups(status)
@@ -1596,6 +1600,7 @@ def _routing_page_context(status: dict, seed_preview: dict | None = None, **extr
         "discovery_error": discovery_error,
         "seed_preview": seed_preview,
         "capabilities_payload": capabilities_payload,
+        "level_roles": routing.LEVEL_ROLES,
         "config_exists": config_path.exists(),
         "profile_groups": groups,
         **extra,

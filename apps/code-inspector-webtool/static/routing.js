@@ -15,6 +15,7 @@
   }
   const capabilities = payload.capabilities || {};
   const fallbackReasonings = payload.fallbackReasonings || [];
+  const levelRoles = payload.levelRoles || {};
 
   const emptyNote = document.getElementById('routing-empty-note');
 
@@ -52,8 +53,10 @@
   function syncSlider(row) {
     const range = row.querySelector('[data-level-range]');
     const output = row.querySelector('[data-level-output]');
+    const role = row.querySelector('[data-level-role]');
     if (!range) return;
     if (output) output.textContent = range.value;
+    if (role) role.textContent = levelRoles[range.value] || '';
     const min = Number(range.min) || 1;
     const max = Number(range.max) || 5;
     const percent = ((Number(range.value) - min) / Math.max(max - min, 1)) * 100;

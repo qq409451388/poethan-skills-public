@@ -186,7 +186,7 @@
         "将人工问题整理为可快速决策的事实、选项、风险和推荐",
         "执行最终验证并确认问题",
         "审核问题候选",
-        "为每个 Issue 输出抽象 difficulty（1 起正整数）和可选解释要点，供本机 Model Router 计算推荐执行配置"
+        "为每个 Issue 输出抽象 difficulty（1–5 的整数，5 为上限）和可选解释要点，供本机 Model Router 计算推荐执行配置"
       ],
       "prohibited": [
         "implementation-submit",
@@ -203,7 +203,8 @@
         "以普通不确定性或省事为由升级 Human",
         "modify-business-code",
         "direct-sql",
-        "在 difficulty 或 Issue 中写入具体模型名称与模型能力映射"
+        "在 difficulty 或 Issue 中写入具体模型名称与模型能力映射",
+        "在 difficulty_reason 或 Issue 正文写入执行者等级、职称或“该派谁做”"
       ]
     },
     "human": {

@@ -21,7 +21,7 @@
 
 ## Developer 执行模型推荐（可选）
 
-Inspector 只输出抽象的 `difficulty`（1 起正整数，越高要求越高），不感知任何具体模型名称。是否把它换算成“哪些 Dev 执行配置可以完成这个任务”，由本机级配置文件决定：
+Inspector 只输出抽象的 `difficulty`（1–5 的整数，5 为上限，越高要求越高），不感知任何具体模型名称或执行者等级。是否把它换算成“哪些 Dev 执行配置可以完成这个任务”，由本机级配置文件决定：
 
 ```text
 ~/.agent-review/config/agent-routing.yml      # 你的执行配置
@@ -41,7 +41,7 @@ profiles:
   enabled: true
 ```
 
-每条记录都是一个 **Dev 执行配置**：Agent、Model、Reasoning、等级。`role` 不是可配置维度——执行配置只代表 Developer 能力，旧配置里的 `INSPECTOR` 条目在读入时会被丢弃。筛选语义是 `enabled = true` 且 `level >= difficulty`，`level` 取离散值 `1..5`，与 `difficulty` 同一尺度；结果只是候选，不改变 Issue 状态机，也不代表强制调度结果。
+每条记录都是一个 **Dev 执行配置**：Agent、Model、Reasoning、等级。`role` 不是可配置维度——执行配置只代表 Developer 能力，旧配置里的 `INSPECTOR` 条目在读入时会被丢弃。筛选语义是 `enabled = true` 且 `level >= difficulty`，`level` 取离散值 `1..5`，与 `difficulty` 同一尺度；结果只是候选，不改变 Issue 状态机，也不代表强制调度结果。WebApp 配置页把 `1..5` 标注为 `实习生 / 初级开发 / 中级开发 / 高级开发 / 架构师`，仅用于人工校准滑杆语义，既不进入 Inspector 的判级口径，也不参与筛选。
 
 ### Model 与 Reasoning 的能力来源
 

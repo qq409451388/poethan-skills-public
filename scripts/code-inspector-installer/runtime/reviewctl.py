@@ -318,7 +318,7 @@ _ISSUE_ITEM_SCHEMA = {
         "local_terms": {"type": "object"},
         "evidence": {"type": "array", "items": _CODE_REFERENCE_ITEM},
         "dedupe_key": {"type": "string", "minLength": 1},
-        "difficulty": {"type": "integer", "minimum": 1},
+        "difficulty": {"type": "integer", "minimum": 1, "maximum": 5},
         "difficulty_reason": {"type": "array", "items": {"type": "string"}},
         "remediation_benefit": {"type": "string", "enum": BENEFITS},
         "remediation_cost": {"type": "string", "enum": COSTS},

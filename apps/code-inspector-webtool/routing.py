@@ -260,13 +260,26 @@ def profiles_from_form(form) -> list[dict[str, Any]]:
     return profiles
 
 
+# 等级 → 角色称谓：纯展示，帮助人工校准滑杆语义。
+# 不进入 Inspector 的 difficulty_guide（模型侧只描述任务难度，不感知执行者），
+# 也不参与 Router 的 `enabled and level >= difficulty` 筛选。
+LEVEL_ROLES = {
+    1: "实习生",
+    2: "初级开发",
+    3: "中级开发",
+    4: "高级开发",
+    5: "架构师",
+}
+
+
 def capabilities_json() -> str:
-    """供前端按 Model 联动 Reasoning 使用的能力表。"""
+    """供前端按 Model 联动 Reasoning 使用的能力表，附带等级角色称谓。"""
     module = load_routing_module()
     return json.dumps(
         {
             "capabilities": load_capabilities(),
             "fallbackReasonings": list(module.FALLBACK_REASONING),
+            "levelRoles": LEVEL_ROLES,
         },
         ensure_ascii=False,
     )

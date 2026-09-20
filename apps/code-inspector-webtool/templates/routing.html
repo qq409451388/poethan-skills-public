@@ -99,6 +99,10 @@
 <section class="panel" data-live-region="routing-table">
   <div class="section-head">
     <div><h2>Dev 执行配置</h2><p class="section-sub">按 Agent 分组，每个 Agent 可以配置多个 Model；Reasoning 只能选择该 Model 支持的档位。</p></div>
+    <p class="routing-level-legend">
+      等级参照：{% for level, role in level_roles.items() %}<span class="badge badge-neutral">{{ level }} {{ role }}</span>{% endfor %}
+      <small>仅用于校准滑杆语义，不代表 Inspector 的判级口径。</small>
+    </p>
   </div>
   <form method="post" action="{{ url_for('routing_save') }}" id="routing-rows-form">
     <input type="hidden" name="mode" value="rows">
@@ -130,6 +134,7 @@
                 <td class="routing-level-cell">
                   <input type="range" name="p{{ row.index }}_level" value="{{ row.profile.level }}" min="{{ (status.levelScale or [1,2,3,4,5])[0] }}" max="{{ (status.levelScale or [1,2,3,4,5])[-1] }}" step="1" data-level-range aria-label="level">
                   <output data-level-output>{{ row.profile.level }}</output>
+                  <span class="routing-level-role" data-level-role>{{ level_roles.get(row.profile.level, '') }}</span>
                 </td>
                 <td class="routing-enabled-cell"><input type="checkbox" name="p{{ row.index }}_enabled" value="1" {% if row.profile.enabled %}checked{% endif %} aria-label="enabled"></td>
                 <td><button type="button" class="btn btn-small btn-danger-outline" data-remove-row>删除</button></td>
@@ -179,6 +184,7 @@
     <td class="routing-level-cell">
       <input type="range" data-field="level" min="1" max="5" step="1" value="3" data-level-range aria-label="level">
       <output data-level-output>3</output>
+      <span class="routing-level-role" data-level-role></span>
     </td>
     <td class="routing-enabled-cell"><input type="checkbox" data-field="enabled" value="1" checked aria-label="enabled"></td>
     <td><button type="button" class="btn btn-small btn-danger-outline" data-remove-row>删除</button></td>

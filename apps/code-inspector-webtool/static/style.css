@@ -569,7 +569,7 @@ tbody tr:last-child td { border-bottom: 0; }
 /* 等级滑杆：离散 1..5，填充比例由 --routing-level-percent 控制 */
 .routing-level-cell { min-width: 168px; }
 .routing-level-cell input[type="range"] {
-  width: 132px; height: 22px; margin: 0; padding: 0; vertical-align: middle;
+  display: block; width: 132px; height: 22px; margin: 0; padding: 0; vertical-align: middle;
   background: transparent; cursor: pointer; -webkit-appearance: none; appearance: none;
 }
 .routing-level-cell input[type="range"]::-webkit-slider-runnable-track {
@@ -587,8 +587,12 @@ tbody tr:last-child td { border-bottom: 0; }
   width: 14px; height: 14px; border: 0; border-radius: 50%;
   background: #fff; box-shadow: 0 0 0 2px var(--blue);
 }
-.routing-level-cell output { display: inline-block; min-width: 46px; margin-left: 9px; color: var(--blue); font-weight: 750; font-size: 12px; vertical-align: middle; }
+.routing-level-cell output { display: inline-block; min-width: 46px; color: var(--blue); font-weight: 750; font-size: 12px; vertical-align: middle; }
 .routing-level-cell output::before { content: "Lv "; color: var(--muted); font-weight: 600; }
+/* 等级角色称谓：纯展示，帮助人工校准滑杆语义 */
+.routing-level-cell .routing-level-role { display: inline-block; margin-left: 6px; color: var(--muted); font-weight: 600; font-size: 12px; vertical-align: middle; }
+.routing-level-legend { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; margin: 0; max-width: 430px; }
+.routing-level-legend small { flex-basis: 100%; color: var(--muted); }
 #routing-new-agent { width: auto; min-width: 130px; }
 .routing-page .routing-actions form { display: inline-flex; }
 
