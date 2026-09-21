@@ -262,7 +262,7 @@ def start(
                             result["thread_id"],
                             f"{role_identity_block(role)}\n"
                             "调用 reviewctl issue context 初始化当前 Working Set，只确认已就绪，不执行写操作。"
-                            "本次及后续每次回复必须逐字以 OUTPUT_PREFIX 开头。",
+                            "本次及后续每次回复都以该前缀开头：角色名逐字照抄，`<工作区>` 按规则替换成实际工作区。",
                         )
                     return result
 
@@ -424,7 +424,8 @@ def resume(
                         f"execution_revision={execution_revision} "
                         f"event_revision={event_revision if event_revision is not None else '-'} "
                         f"event_id={event_id or '-'}。\n"
-                        "本次回复必须逐字以 OUTPUT_PREFIX 开头，不得改写或省略。\n"
+                        "本次回复必须逐字以 OUTPUT_PREFIX 的角色名开头，`<工作区>` 按规则替换成实际工作区；"
+                        "不得增删职责说明，也不得改写成旧格式。\n"
                         f"先且通常只调用一次：{identity.fixed_tool_path} issue context {issue_key}。"
                         "以返回的 pending_action、permitted_actions 和 exception_actions 执行；"
                         "只有摘要明确指向必要明细时才 lazy load。"

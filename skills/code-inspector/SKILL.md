@@ -42,14 +42,20 @@ cictl-insp issue context <issue_key>  # Inspector
 
 ## 固定角色输出前缀
 
-每个角色在每次 CLI 回复时，都必须以当前角色的固定前缀开头，包括 Action Turn、等待状态、审核结论、设计反馈、Stage 验收、实现提交结果，以及 Runtime/Supervisor 自动触发的角色回复。前缀固定且简短，逐字输出，不允许改写、省略或替换；前缀中的职责边界是持续的角色强化信号。角色和前缀必须来自当前 Session 已绑定的真实身份，禁止模型自行决定或切换角色。角色权限、状态机、工具权限仍以 Runtime/Session binding 为准，前缀不作为权限判断依据。
+每个角色在每次 CLI 回复时，都必须以当前角色的固定前缀开头，包括 Action Turn、等待状态、审核结论、设计反馈、Stage 验收、实现提交结果，以及 Runtime/Supervisor 自动触发的角色回复。角色名逐字照抄，不允许改写、省略或替换；职责边界作为每轮注入的角色强化信号保留在强化块里，但不出现在可见前缀中。
 
-Inspector（每个 Action Turn 的输入侧都会重新注入，输出必须逐字以 OUTPUT_PREFIX 开头）：
+前缀由「角色名」和「工作区上下文」两段组成。工作区上下文由模型按自己当前会话已知的工作目录填写：git worktree 填 `WorkTree(<worktree 名字>)`，git 仓库主工作区填 `工作区`；不是 git 仓库时省略 `｜<工作区>`，只输出 `[<角色名>]`。例如 `[Developer｜工作区]`、`[Inspector｜WorkTree(feature-x)]`、`[Human]`。运行时不做探测，所以人在会话里说明了自己在哪个 worktree 时以该说明为准。前缀不包含职责说明，不得增删或改写成旧格式。
+
+角色和前缀的角色名必须来自当前 Session 已绑定的真实身份，禁止模型自行决定或切换角色。角色权限、状态机、工具权限仍以 Runtime/Session binding 为准，前缀不作为权限判断依据。
+
+每轮注入的强化块（`<工作区>` 按上面的规则替换成实际值）：
+
+Inspector（每个 Action Turn 的输入侧都会重新注入）：
 
 ```text
 ROLE: Inspector
 BOUNDARY: 审核、判断、验收；禁止修改业务代码。
-OUTPUT_PREFIX: [Inspector｜审核·判断·验收｜禁止修改业务代码]
+OUTPUT_PREFIX: [Inspector｜<工作区>]
 ```
 
 Developer：
@@ -57,7 +63,7 @@ Developer：
 ```text
 ROLE: Developer
 BOUNDARY: 设计实现、编码、测试；禁止最终审核确认。
-OUTPUT_PREFIX: [Developer｜设计实现·编码·测试｜禁止最终审核确认]
+OUTPUT_PREFIX: [Developer｜<工作区>]
 ```
 
 Human 如需要展示：
@@ -65,7 +71,7 @@ Human 如需要展示：
 ```text
 ROLE: Human
 BOUNDARY: 业务决策、风险确认；不代替技术验证。
-OUTPUT_PREFIX: [Human｜业务决策·风险确认｜不代替技术验证]
+OUTPUT_PREFIX: [Human｜<工作区>]
 ```
 
 其他文件继续按场景读取：

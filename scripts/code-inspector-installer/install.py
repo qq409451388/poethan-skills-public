@@ -37,32 +37,35 @@ def _load_reviewctl_registry() -> dict[str, list[str]]:
         mapping.setdefault(command.legacy, []).append(f"reviewctl {command.domain} {command.action}")
     return mapping
 
-# 固定角色输出前缀：用于降低长上下文、Compact、多轮 Resume 后的角色漂移。
-# 前缀必须逐字使用，不允许模型改写；只作角色强化信号，不作为权限判断依据。
-ROLE_OUTPUT_PREFIXES: dict[str, dict[str, str]] = {
-    "inspector": {
-        "name": "Inspector",
-        "boundary": "审核、判断、验收；禁止修改业务代码",
-        "prefix": "[Inspector｜审核·判断·验收｜禁止修改业务代码]",
-    },
-    "developer": {
-        "name": "Developer",
-        "boundary": "设计实现、编码、测试；禁止最终审核确认",
-        "prefix": "[Developer｜设计实现·编码·测试｜禁止最终审核确认]",
-    },
-    "human": {
-        "name": "Human",
-        "boundary": "业务决策、风险确认；不代替技术验证",
-        "prefix": "[Human｜业务决策·风险确认｜不代替技术验证]",
-    },
+# 固定角色身份：用于降低长上下文、Compact、多轮 Resume 后的角色漂移。
+# 角色名必须逐字使用，不允许模型改写；只作角色强化信号，不作为权限判断依据。
+# 与 skills/code-inspector/scripts/codex_thread_runtime.py 的 ROLE_IDENTITIES
+# 必须逐字相同（两份物理上不同步，由测试断言兜住漂移）。
+ROLE_IDENTITIES: dict[str, dict[str, str]] = {
+    "inspector": {"name": "Inspector", "boundary": "审核、判断、验收；禁止修改业务代码"},
+    "developer": {"name": "Developer", "boundary": "设计实现、编码、测试；禁止最终审核确认"},
+    "human": {"name": "Human", "boundary": "业务决策、风险确认；不代替技术验证"},
 }
+
+# 与 codex_thread_runtime.WORKSPACE_CONTEXT_RULE 保持一致。
+WORKSPACE_CONTEXT_RULE = (
+    "OUTPUT_PREFIX 里的 `<工作区>` 按你当前会话已知的工作目录填写："
+    "git worktree 填 `WorkTree(<worktree 名字>)`，git 仓库主工作区填 `工作区`；"
+    "不是 git 仓库时省略 `｜<工作区>`，只输出 `[<角色名>]`。"
+    "角色名逐字固定，不得增删职责说明或改写成旧格式。"
+)
 
 
 def role_prefix_policy(role: str) -> dict[str, str]:
-    policy = ROLE_OUTPUT_PREFIXES.get(role)
+    policy = ROLE_IDENTITIES.get(role)
     if policy is None:
         raise ValueError(f"角色缺少固定输出前缀定义: {role}")
     return policy
+
+
+def role_output_prefix(role: str) -> str:
+    """前缀格式模板；`<工作区>` 留给模型按实际所在目录补全。"""
+    return f"[{role_prefix_policy(role)['name']}｜<工作区>]"
 
 
 def role_identity_block(role: str) -> str:
@@ -70,7 +73,8 @@ def role_identity_block(role: str) -> str:
     return (
         f"ROLE: {policy['name']}\n"
         f"BOUNDARY: {policy['boundary']}。\n"
-        f"OUTPUT_PREFIX: {policy['prefix']}"
+        f"OUTPUT_PREFIX: {role_output_prefix(role)}\n"
+        f"{WORKSPACE_CONTEXT_RULE}"
     )
 
 def expand_path(value: str, base_dir: Path | None = None) -> Path:
@@ -513,7 +517,9 @@ def generated_skill_text(platform: str, identities: list[dict[str, Any]], target
         "## 固定角色输出前缀\n\n"
         "每个角色在每次 CLI 回复时，都必须以当前角色的固定前缀开头，包括 Action Turn、等待状态、"
         "审核结论、设计反馈、Stage 验收、实现提交结果，以及 Runtime/Supervisor 自动触发的角色回复。"
-        "前缀固定且简短，逐字输出，不允许改写、省略或替换；前缀中的职责边界是持续的角色强化信号。"
+        "前缀固定且简短，逐字输出，不允许改写、省略或替换；职责边界作为每轮注入的角色强化信号保留在"
+        "强化块里，但不出现在可见前缀中。"
+        f"{WORKSPACE_CONTEXT_RULE}"
         "角色和前缀必须来自当前 Session 已绑定的真实身份，禁止模型自行决定或切换角色。"
         "角色权限、状态机、工具权限仍以 Runtime/Session binding 为准，前缀不作为权限判断依据。\n\n"
         "## 人类可读文案\n\n"

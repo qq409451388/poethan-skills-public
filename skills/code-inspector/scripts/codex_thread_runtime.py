@@ -20,36 +20,43 @@ class CodexRuntimeError(RuntimeError):
 
 REVIEW_COMMAND_RE = re.compile(r"review-db(?:-[A-Za-z0-9_-]+)?\.py[\"']?\s+([a-z][a-z0-9-]+)")
 
-# 固定角色输出前缀：与安装器 ROLE_OUTPUT_PREFIXES 保持一致。
-# 前缀逐字固定，不允许模型改写；只作角色强化信号，不作为权限判断依据。
-ROLE_OUTPUT_PREFIXES: dict[str, dict[str, str]] = {
-    "inspector": {
-        "name": "Inspector",
-        "boundary": "审核、判断、验收；禁止修改业务代码",
-        "prefix": "[Inspector｜审核·判断·验收｜禁止修改业务代码]",
-    },
-    "developer": {
-        "name": "Developer",
-        "boundary": "设计实现、编码、测试；禁止最终审核确认",
-        "prefix": "[Developer｜设计实现·编码·测试｜禁止最终审核确认]",
-    },
-    "human": {
-        "name": "Human",
-        "boundary": "业务决策、风险确认；不代替技术验证",
-        "prefix": "[Human｜业务决策·风险确认｜不代替技术验证]",
-    },
+# 固定角色身份：与安装器 ROLE_IDENTITIES 保持一致（两份表由测试断言逐字相同）。
+# 角色名逐字固定，不允许模型改写；只作角色强化信号，不作为权限判断依据。
+ROLE_IDENTITIES: dict[str, dict[str, str]] = {
+    "inspector": {"name": "Inspector", "boundary": "审核、判断、验收；禁止修改业务代码"},
+    "developer": {"name": "Developer", "boundary": "设计实现、编码、测试；禁止最终审核确认"},
+    "human": {"name": "Human", "boundary": "业务决策、风险确认；不代替技术验证"},
 }
+
+# 工作区上下文由模型按自己已知的工作目录判断，运行时不做探测。
+# 运行时探测听不见人在会话里说的「我在哪个 worktree」，还会引入一个与模型判断
+# 打架的第二事实来源，因此这里只给规则，不给字面前缀值。
+WORKSPACE_CONTEXT_RULE = (
+    "OUTPUT_PREFIX 里的 `<工作区>` 按你当前会话已知的工作目录填写："
+    "git worktree 填 `WorkTree(<worktree 名字>)`，git 仓库主工作区填 `工作区`；"
+    "不是 git 仓库时省略 `｜<工作区>`，只输出 `[<角色名>]`。"
+    "角色名逐字固定，不得增删职责说明或改写成旧格式。"
+)
+
+
+def role_output_prefix(role: str) -> str:
+    """前缀格式模板；`<工作区>` 留给模型按实际所在目录补全。"""
+    policy = ROLE_IDENTITIES.get(role)
+    if policy is None:
+        raise ValueError(f"ROLE_PREFIX_UNDEFINED:{role}")
+    return f"[{policy['name']}｜<工作区>]"
 
 
 def role_identity_block(role: str) -> str:
     """按 session 绑定的真实角色生成每轮注入的短角色块。"""
-    policy = ROLE_OUTPUT_PREFIXES.get(role)
+    policy = ROLE_IDENTITIES.get(role)
     if policy is None:
         raise ValueError(f"ROLE_PREFIX_UNDEFINED:{role}")
     return (
         f"ROLE: {policy['name']}\n"
         f"BOUNDARY: {policy['boundary']}。\n"
-        f"OUTPUT_PREFIX: {policy['prefix']}"
+        f"OUTPUT_PREFIX: {role_output_prefix(role)}\n"
+        f"{WORKSPACE_CONTEXT_RULE}"
     )
 
 
@@ -204,7 +211,9 @@ class CodexThreadRuntime:
             f"Code Inspector 固定身份：operator={operator_id}, platform={agent_platform}, role={role}, issue={issue_key}。\n"
             f"{role_identity_block(role)}\n"
             "每次 CLI 回复（包括 Action Turn、等待状态、审核结论、设计反馈、Stage 验收和实现提交结果）"
-            "必须逐字以 OUTPUT_PREFIX 开头，不允许改写；角色和前缀来自本固定身份，不得自行切换。"
+            "都必须以该前缀开头：角色名逐字照抄，`<工作区>` 按上面的规则替换成你的实际工作区；"
+            "前缀不包含职责说明，不得增删或改写成旧格式。"
+            "角色和前缀来自本固定身份，不得自行切换。"
             "角色权限、状态机和工具权限以 Runtime/Session binding 为准。\n"
             f"固定 Review 工具：{fixed_tool_path}\n"
             "只处理该 Issue 且不得切换身份。Review DB 是状态真相；每个 ACTION Turn 先调用一次 "
