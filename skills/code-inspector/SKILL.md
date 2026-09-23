@@ -78,6 +78,6 @@ OUTPUT_PREFIX: [Human｜<工作区>]
 - 审核等级：`references/review-levels.yaml`
 - 用户明确要求持续观察或停止观察：`references/watch-mode.md`
 - 多 Issue 调度、Issue Thread 或 Managed Compact：`references/thread-runtime.md`
-- 用户明确要求导出报告：`references/report-schema.yaml`
+- Inspector 创建 Issue、修正 difficulty 或用户明确要求导出报告：`references/report-schema.yaml`（判级时读取其中的 `difficulty_guide`）
 
 不要因为流程进入等待状态而读取或启动 Watch Mode。

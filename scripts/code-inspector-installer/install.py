@@ -549,8 +549,9 @@ def generated_skill_text(platform: str, identities: list[dict[str, Any]], target
         "FastMode 必须读取 `references/fastmode.md`，首次读取固定执行 "
         f"`{inspector_tool} issue context <issue_key>`。\n\n"
         "只有用户明确要求持续观察或停止观察时才读取 `references/watch-mode.md`；"
-        f"Watcher 入口为 `python \"{watch_path}\"`。审核等级和报告导出分别按需读取 "
-        "`references/review-levels.yaml`、`references/report-schema.yaml`。"
+        f"Watcher 入口为 `python \"{watch_path}\"`。审核等级按需读取 "
+        "`references/review-levels.yaml`；Inspector 创建 Issue、修正 difficulty 或导出报告时读取 "
+        "`references/report-schema.yaml` 的对应规则。"
     )
     return (
         "---\nname: code-inspector\ndescription: 已安装的 Code Inspector 角色 Skill。仅在用户明确开启代码检查模式后，按启动时选定的逻辑身份执行。\n---\n\n"
