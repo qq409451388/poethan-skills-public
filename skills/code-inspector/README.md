@@ -33,11 +33,11 @@ Inspector 只输出抽象的 `difficulty`（1–5 的整数，5 为上限，越�
 ```yaml
 version: 2
 profiles:
-- id: codex-gpt-5.6-sol-high
+- id: codex-gpt-6-astra
   agent: codex
-  model: gpt-5.6-sol
+  model: gpt-6-astra
   reasoning: high
-  level: 3
+  level: 5
   enabled: true
 ```
 
@@ -51,10 +51,10 @@ profiles:
 agents:
 - agent: codex
   models:
-  - model: gpt-5.6-sol
-    supportedReasonings: [minimal, low, medium, high]
-  - model: gpt-5.1-codex-mini
-    supportedReasonings: [low, medium, high]
+  - model: gpt-6-astra
+    supportedReasonings: [low, medium, high, xhigh, max, ultra]
+  - model: gpt-6-luna
+    supportedReasonings: [low, medium, high, xhigh, max]
 ```
 
 同一个 Agent 可以维护多个 Model，每个 Model 有**自己**的 Reasoning 范围；不假设都支持 `high`/`xhigh`。WebApp 的下拉与后端校验读同一份数据，因此不会出现“后端允许但页面无法表达”的档位。未收录的模型不会被拒绝，而是退回通用档位集合。

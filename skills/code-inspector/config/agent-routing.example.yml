@@ -17,18 +17,18 @@
 version: 2
 
 profiles:
-- id: codex-gpt-5.6-sol-high
+- id: codex-gpt-6-astra
   agent: codex
-  model: gpt-5.6-sol
+  model: gpt-6-astra
   reasoning: high
-  level: 3
+  level: 5
   enabled: true
 
-- id: codex-gpt-5.1-codex-mini
+- id: codex-gpt-6-sol
   agent: codex
-  model: gpt-5.1-codex-mini
-  reasoning: medium
-  level: 2
+  model: gpt-6-sol
+  reasoning: high
+  level: 4
   enabled: true
 
 - id: claude-opus-5-1m

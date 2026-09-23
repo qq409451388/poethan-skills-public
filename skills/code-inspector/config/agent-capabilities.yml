@@ -8,35 +8,59 @@
 # 保证前后端可表达的集合完全一致。
 #
 # 这里只维护「本机可能用到」的常见组合，可以按需增删。未列入的模型不会导致配置
-# 失败：后端与页面会退回下面的通用档位集合（none/minimal/low/medium/high/xhigh）。
+# 失败：后端与页面会退回通用档位集合；正式选用前应将模型加入这里，明确其档位。
 
 version: 1
 
 agents:
 - agent: codex
   models:
+  - model: gpt-6-astra
+    supportedReasonings:
+    - low
+    - medium
+    - high
+    - xhigh
+    - max
+    - ultra
+  - model: gpt-6-sol
+    supportedReasonings:
+    - low
+    - medium
+    - high
+    - xhigh
+    - max
+    - ultra
+  - model: gpt-6-luna
+    supportedReasonings:
+    - low
+    - medium
+    - high
+    - xhigh
+    - max
   - model: gpt-5.6-sol
     supportedReasonings:
-    - minimal
     - low
     - medium
     - high
-  - model: gpt-5.6
-    supportedReasonings:
-    - minimal
-    - low
-    - medium
-    - high
-  - model: gpt-5.1-codex
+    - xhigh
+    - max
+    - ultra
+  - model: gpt-5.6-terra
     supportedReasonings:
     - low
     - medium
     - high
-  - model: gpt-5.1-codex-mini
+    - xhigh
+    - max
+    - ultra
+  - model: gpt-5.6-luna
     supportedReasonings:
     - low
     - medium
     - high
+    - xhigh
+    - max
 
 - agent: claude
   models:
