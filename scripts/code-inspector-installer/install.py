@@ -323,6 +323,7 @@ def write_cictl_launcher(home: Path, role: str, alias: str, windows: bool | None
 
 def link_runtime(home: Path, skill_config: dict[str, Any], force: bool, skill_source: Path | None = None) -> None:
     install_reviewctl(home, force)
+    write_reviewctl_adapter(home, "web-human")
     # Codex 的两个角色使用固定 PATH 命令；身份仍由安装器绑定，不取自环境变量。
     write_cictl_launcher(home, "developer", "codex-dev")
     write_cictl_launcher(home, "inspector", "codex-insp")
@@ -670,6 +671,7 @@ def install_role_skills(
                 "fixed_tool_path": str(fixed_tool),
             }
         print(f"[skills] {target} ({platform}: {', '.join(i['alias'] for i in identities)})", file=sys.stderr)
+    bindings["web-human"] = {"alias": "web-human", "agent": "webapp", "role": "human"}
     (home / "config" / "agent-bindings.json").write_text(
         json.dumps(bindings, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
@@ -845,6 +847,7 @@ def main() -> int:
                 "migrations_current": migration_ok,
                 "runtime_reviewctl": (home / "bin" / "reviewctl.py").exists(),
                 "reviewctl_launcher": reviewctl_launcher_path(home).exists(),
+                "web_human_adapter": reviewctl_adapter_path(home, "web-human").exists(),
                 "runtime_review_db": (home / "bin" / "review-db.py").exists(),
                 "runtime_agent_routing": (home / "bin" / "agent_routing.py").exists(),
                 "runtime_agent_discovery": (home / "bin" / "agent_discovery.py").exists(),

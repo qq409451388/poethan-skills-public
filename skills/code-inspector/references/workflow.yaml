@@ -53,7 +53,7 @@ task_transitions:
 task_status_authority:
   inspector: 必须遵守 task_transitions；终态不能自行重新打开。
   human: 可通过 task-update-status 将 Task 调整为任一合法 task_status，包括纠正或重新打开终态任务；所有变更仍保留领域校验与审计。
-  rationale: Human 对任务是否继续、暂停、关闭或取消具有最高解释权，但该权限不改变 Issue 的专用原子工作流约束。
+  rationale: Human 对任务及问题状态具有最高管理权限，Agent 仍遵守各自工作流约束。
 
 task_close_cascade:
   trigger: task-update-status --status CLOSED
@@ -157,11 +157,11 @@ runtime_events:
   no_agent_dispatch: [ON_HOLD, BLOCKED, HUMAN_CONFIRMATION_REQUIRED, CONFIRMED, CANCELLED]
   manual_watch: 独立能力；不消费、不替代 Runtime Event Queue，仍要求用户显式开启。
 
-# Human 可人工覆盖到任一普通合法状态；HUMAN_CONFIRMATION_REQUIRED 使用专用入口，
-# CONFIRMED 对所有角色仍要求当前 implementation attempt 已有 VERIFICATION_PASSED。
+# Human 可人工覆盖到任一合法状态；Agent 仍遵守专用入口和验证前置条件。
 human_issue_override_statuses: &human_issue_override_statuses
   [PROPOSED, DESIGN_REQUIRED, DESIGN_PENDING_REVIEW, IN_PROGRESS, ON_HOLD, BLOCKED,
-   INSPECTOR_CONFIRMATION_REQUIRED, IMPLEMENTED_PENDING_REVIEW, REDESIGN_REQUIRED, CONFIRMED, CANCELLED]
+   INSPECTOR_CONFIRMATION_REQUIRED, IMPLEMENTED_PENDING_REVIEW, REDESIGN_REQUIRED,
+   HUMAN_CONFIRMATION_REQUIRED, CONFIRMED, CANCELLED]
 
 # 领域状态图。Inspector/Developer 的设计边与 Human confirmation 边必须使用对应原子命令。
 transitions:
@@ -205,15 +205,15 @@ transitions:
   HUMAN_CONFIRMATION_REQUIRED:
     inspector: []
     developer: []
-    human: [DESIGN_REQUIRED, IN_PROGRESS, ON_HOLD, BLOCKED, CANCELLED]
+    human: *human_issue_override_statuses
   CONFIRMED: {inspector: [], developer: [], human: *human_issue_override_statuses}
   CANCELLED: {inspector: [], developer: [], human: *human_issue_override_statuses}
 
 issue_status_authority:
   inspector_and_developer: 必须遵守 transitions、设计原子命令、实现提交与验证前置条件。
-  human: 可通过 issue-update-status 覆盖到任一普通合法状态，包括 REDESIGN_REQUIRED -> IMPLEMENTED_PENDING_REVIEW 或重开终态；变更会记录 STATUS_CHANGED 与审计。
-  reserved_exception: HUMAN_CONFIRMATION_REQUIRED 仍禁止通用状态修改；只有 Inspector human-escalate 可进入，只有 Human human-confirmation-resolve 可离开。
-  final_confirmation_exception: 任一角色转 CONFIRMED 前必须为当前 implementation attempt 留有 VERIFICATION_PASSED，Human 也不能跳过最终技术验证证据。
+  human: 可通过 issue-update-status 覆盖到任一合法状态，包括 HUMAN_CONFIRMATION_REQUIRED、CONFIRMED 和重开终态；变更会记录 STATUS_CHANGED 与审计。
+  agent_escalation: Inspector 进入 HUMAN_CONFIRMATION_REQUIRED 仍使用 human-escalate；Developer 不得发起升级。
+  agent_final_confirmation: Inspector 转 CONFIRMED 前必须为当前 implementation attempt 留有 VERIFICATION_PASSED。
 
 design_workflow:
   principle: >-
@@ -469,14 +469,14 @@ implementation_review:
     threshold: 2
     runtime_auto_transition: false
     inspector_requirement: 连续两次实现失败后必须判断是实现错误还是设计错误；不得机械重复提交循环。
-  human_override: Human 可用 issue-update-status 人工纠正任一普通状态，不受上述 Agent 前置条件限制；必须通过 STATUS_CHANGED 和审计保留可追踪性。
+  human_override: Human 可用 issue-update-status 人工指定任一合法状态，不受上述 Agent 前置条件限制；必须通过 STATUS_CHANGED 和审计保留可追踪性。
 
 human_escalation:
   principle: Human escalation 是极低频异常路径；正常设计、实现、验证与确认由 Inspector 和 Developer 自主闭环。
   distinction:
     INSPECTOR_CONFIRMATION_REQUIRED: Developer 请求 Inspector 做正常技术边界判断，不通知 Human。
     HUMAN_CONFIRMATION_REQUIRED: Inspector 确认两个 Agent 无法获得关键决策事实，或继续自动决策存在重大不可逆数据风险。
-  only_entry:
+  agent_entry:
     atomic_command: human-escalate
     role: inspector
     activity: HUMAN_CONFIRMATION_REQUESTED
@@ -515,8 +515,8 @@ confirmation_protocol:
     required_activity: INSPECTOR_CONFIRMATION_PROVIDED
     next_status: [IN_PROGRESS, ON_HOLD, BLOCKED, CANCELLED]
   final_confirmation:
-    all_roles_precondition: 当前 implementation attempt 的 VERIFICATION_PASSED
-    human_override_limit: Human 可纠正状态，但不能绕过最终验证活动直接 CONFIRMED。
+    inspector_precondition: 当前 implementation attempt 的 VERIFICATION_PASSED
+    human_override: Human 可通过 issue-update-status 直接设为 CONFIRMED。
 
 activity_types:
   design: [DESIGN_REQUESTED, DESIGN_SUBMITTED, DESIGN_APPROVED, DESIGN_REJECTED]

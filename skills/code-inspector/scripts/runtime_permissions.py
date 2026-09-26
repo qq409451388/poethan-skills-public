@@ -13,11 +13,11 @@ from typing import Any
 ALLOWED_STATUS_BY_AGENT = {
     "inspector": {"IN_PROGRESS", "ON_HOLD", "BLOCKED", "REDESIGN_REQUIRED", "CONFIRMED", "CANCELLED"},
     "developer": {"IN_PROGRESS", "ON_HOLD", "BLOCKED", "INSPECTOR_CONFIRMATION_REQUIRED", "IMPLEMENTED_PENDING_REVIEW"},
-    # Human 可以纠正普通状态；Human 确认状态仍只能通过专用原子命令进入和离开。
+    # Human 可以人工指定任一合法 Issue 状态。
     "human": {
         "PROPOSED", "DESIGN_REQUIRED", "DESIGN_PENDING_REVIEW", "IN_PROGRESS", "ON_HOLD",
         "BLOCKED", "INSPECTOR_CONFIRMATION_REQUIRED", "IMPLEMENTED_PENDING_REVIEW",
-        "REDESIGN_REQUIRED", "CONFIRMED", "CANCELLED",
+        "REDESIGN_REQUIRED", "HUMAN_CONFIRMATION_REQUIRED", "CONFIRMED", "CANCELLED",
     },
 }
 
@@ -82,8 +82,8 @@ ACTION_ROLES = {
 
 def status_targets(status: str, role: str) -> set[str]:
     """返回 Runtime 通用状态命令当前真正接受的目标状态。"""
-    if role == "human" and status != "HUMAN_CONFIRMATION_REQUIRED":
-        return ALLOWED_STATUS_BY_AGENT[role] - {"HUMAN_CONFIRMATION_REQUIRED"}
+    if role == "human":
+        return set(ALLOWED_STATUS_BY_AGENT[role])
     return set(ALLOWED_TRANSITIONS.get(status, {}).get(role, set()))
 
 

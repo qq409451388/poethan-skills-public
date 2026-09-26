@@ -439,6 +439,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             self.assertTrue((codex_skill / "references").is_dir())
             self.assertTrue((codex_skill / "scripts" / "watch.py").is_file())
             self.assertTrue((home / ".agent-review" / "bin" / "review-db.py").is_file())
+            self.assertTrue((home / ".agent-review" / "internal" / "reviewctl-adapters" / "reviewctl-web-human.py").is_file())
             self.assertTrue((home / ".agent-review" / "bin" / "code-inspector-supervisor.py").is_file())
             self.assertTrue((home / ".agent-review" / "bin" / "runtime_identity.py").is_file())
             self.assertTrue((home / ".agent-review" / "bin" / "session_scope.py").is_file())
@@ -447,6 +448,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             if os.name != "nt":
                 self.assertTrue(os.access(home / ".agent-review" / "bin" / "code-inspector-supervisor.py", os.X_OK))
             bindings = json.loads((home / ".agent-review" / "config" / "agent-bindings.json").read_text())
+            self.assertEqual(bindings["web-human"]["role"], "human")
             installed_runtime = json.loads((home / ".agent-review" / "config" / "runtime.json").read_text())
             self.assertEqual(installed_runtime["thread_runtime"]["isolation"]["granularity"], "issue_operator")
             self.assertFalse(installed_runtime["thread_runtime"]["multi_thread"]["enabled"])
@@ -2359,10 +2361,6 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 "--status", "HUMAN_CONFIRMATION_REQUIRED",
             )
             fails(
-                "human", "issue-update-status", "--issue-key", "RI-HUMAN",
-                "--status", "HUMAN_CONFIRMATION_REQUIRED",
-            )
-            fails(
                 "developer", "human-escalate", "--issue-key", "RI-HUMAN",
                 "--reason", "越权", "--question", "怎么做？",
             )
@@ -2518,19 +2516,25 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 (human_pending_review["status"], human_pending_review["attempt_no"]),
                 ("IMPLEMENTED_PENDING_REVIEW", 1),
             )
-            human_confirmed = fails(
-                "human", "issue-update-status", "--issue-key", "RI-HUMAN-OVERRIDE",
-                "--status", "CONFIRMED", "--content", "Human 也不能绕过最终验证",
-            )
-            self.assertIn("VERIFICATION_PASSED", human_confirmed.stderr)
-            db(
-                "human", "activity-append", "--issue-key", "RI-HUMAN-OVERRIDE",
-                "--activity-type", "VERIFICATION_PASSED", "--content", "Human 人工验证通过",
-            )
             self.assertEqual(db(
                 "human", "issue-update-status", "--issue-key", "RI-HUMAN-OVERRIDE",
-                "--status", "CONFIRMED", "--content", "保留验证证据后确认",
+                "--status", "CONFIRMED", "--content", "人工直接确认",
             )["status"], "CONFIRMED")
+            self.assertEqual(db(
+                "human", "issue-update-status", "--issue-key", "RI-HUMAN-OVERRIDE",
+                "--status", "HUMAN_CONFIRMATION_REQUIRED", "--content", "人工要求确认",
+            )["status"], "HUMAN_CONFIRMATION_REQUIRED")
+            self.assertEqual(db(
+                "human", "issue-update-status-batch", "--updates", json.dumps([{
+                    "issue_key": "RI-HUMAN-OVERRIDE", "status": "CONFIRMED", "content": "批量命令人工直接确认",
+                }], ensure_ascii=False),
+            )["updated"][0]["status"], "CONFIRMED")
+            self.assertEqual(db(
+                "human", "issue-update-status", "--issue-key", "RI-HUMAN-OVERRIDE",
+                "--status", "IN_PROGRESS", "--content", "人工重新打开",
+            )["status"], "IN_PROGRESS")
+            override_activities = db("developer", "activity-list", "--issue-key", "RI-HUMAN-OVERRIDE")
+            self.assertEqual(override_activities[-1]["activity_type"], "STATUS_CHANGED")
 
     def test_webtool_human_workspace_routes_and_domain_writes(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -2785,7 +2789,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 self.assertIn("重复提交会创建两笔订单", issue_html)
                 self.assertIn("回归项", issue_html)
                 self.assertIn('<code class="language-python">', issue_html)
-                self.assertIn('提交人 <b class="mono">human</b> · Human', issue_html)
+                self.assertIn('提交人 <b class="mono">web-human</b> · Human', issue_html)
                 self.assertIn('提交人 <b class="mono">trae-inspector</b> · Inspector', issue_html)
 
                 candidates = client.get("/candidates")
@@ -2918,11 +2922,11 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                     data={
                         "plan_no": "1", "decision": "approved", "content": "兼容回归符合标准",
                         "review_result": json.dumps({
-                            "findings": {"BLOCKER": [], "MUST": [], "SHOULD": [], "NIT": []},
+                            "findings": [],
                             "historical_regression": {},
                             "current_acceptance": [
-                                {"criterion": "旧数据可读", "status": "PASS", "evidence": ["compat: passed"]},
-                                {"criterion": "回归通过", "status": "PASS", "evidence": ["regression: passed"]},
+                                {"id": "AC-1", "status": "PASS", "evidence": ["compat: passed"]},
+                                {"id": "AC-2", "status": "PASS", "evidence": ["regression: passed"]},
                             ],
                         }, ensure_ascii=False),
                         "baseline": json.dumps({
@@ -2959,6 +2963,26 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 self.assertEqual(
                     db("inspector", "issue-get", "--issue-key", "RI-WEB-DESIGN")["status"],
                     "IMPLEMENTED_PENDING_REVIEW",
+                )
+                manual_confirmation = client.post(
+                    "/issues/RI-WEB-DESIGN/status",
+                    data={"status": "CONFIRMED", "content": "人工直接确认，无需补验证活动"},
+                    follow_redirects=False,
+                )
+                self.assertEqual(manual_confirmation.status_code, 302)
+                self.assertEqual(
+                    db("inspector", "issue-get", "--issue-key", "RI-WEB-DESIGN")["status"],
+                    "CONFIRMED",
+                )
+                self.assertNotIn("VERIFICATION_PASSED", {
+                    activity["activity_type"] for activity in db(
+                        "inspector", "activity-list", "--issue-key", "RI-WEB-DESIGN"
+                    )
+                })
+                client.post(
+                    "/issues/RI-WEB-DESIGN/status",
+                    data={"status": "IMPLEMENTED_PENDING_REVIEW", "content": "人工重新打开"},
+                    follow_redirects=False,
                 )
 
                 human_issue = {**issue, "issue_key": "RI-WEB-HUMAN", "title": "需要业务事实源决策"}

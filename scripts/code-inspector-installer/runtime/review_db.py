@@ -1452,7 +1452,7 @@ def apply_status_update(
     ).fetchone()
     if not row:
         raise KeyError(f"问题不存在: {issue_key}")
-    human_override = args.agent == "human" and row["status"] != "HUMAN_CONFIRMATION_REQUIRED"
+    human_override = args.agent == "human"
     if status not in status_targets(row["status"], args.agent):
         raise RuntimeError(f"不允许状态流转: {row['status']} -> {status} ({args.agent})")
     if (
@@ -1480,8 +1480,8 @@ def apply_status_update(
         ).fetchone()
         if not confirmation:
             raise RuntimeError("审核端结束待审核确认前必须追加 INSPECTOR_CONFIRMATION_PROVIDED 活动")
-    # Human 可以纠正普通状态，但最终技术确认仍不能绕过 VERIFICATION_PASSED。
-    if status == "CONFIRMED":
+    # Agent 确认问题仍需验证证据；Human 可直接人工指定确认状态。
+    if status == "CONFIRMED" and not human_override:
         verified = conn.execute(
             """SELECT 1 FROM issue_activity
                WHERE issue_id = ? AND attempt_no = ? AND activity_type = 'VERIFICATION_PASSED'

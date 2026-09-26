@@ -1,6 +1,6 @@
 """Web 工具的领域命令适配层。
 
-页面只读查询可直接使用 SQLite；所有写操作统一调用安装后的 review-db.py，
+页面只读查询可直接使用 SQLite；所有写操作统一调用安装后的 reviewctl WebApp 身份入口，
 避免在 Web 层复制状态流转、审计和权限规则。
 """
 from __future__ import annotations
@@ -18,23 +18,25 @@ def review_home() -> Path:
     )))
 
 
-def run_human_command(command: str, *args: str, cwd: Path | None = None) -> dict:
-    tool = review_home() / "bin" / "review-db.py"
+def run_human_command(domain: str, action: str, *args: str, payload=None, cwd: Path | None = None) -> dict:
+    tool = review_home() / "internal" / "reviewctl-adapters" / "reviewctl-web-human.py"
     if not tool.exists():
-        raise RuntimeError(f"未找到数据库工具：{tool}。请先安装 Code Inspector。")
+        raise RuntimeError(f"未找到 WebApp 命令入口：{tool}。请重新安装 Code Inspector。")
     result = subprocess.run(
-        [sys.executable, str(tool), "--agent", "human", command, *args],
+        [sys.executable, str(tool), domain, action, *args],
         text=True,
         capture_output=True,
+        input=json.dumps(payload, ensure_ascii=False) if payload is not None else None,
         env={**os.environ, "AGENT_REVIEW_HOME": str(review_home())},
         cwd=cwd,
     )
     if result.returncode != 0:
         try:
-            message = json.loads(result.stderr).get("error", result.stderr)
-        except json.JSONDecodeError:
-            message = result.stderr.strip()
-        raise RuntimeError(message or "领域命令执行失败")
+            errors = json.loads(result.stdout).get("errors", [])
+            message = "；".join(item["message"] for item in errors)
+        except (json.JSONDecodeError, KeyError, TypeError):
+            message = ""
+        raise RuntimeError(message or result.stderr.strip() or "领域命令执行失败")
     return json.loads(result.stdout)
 
 

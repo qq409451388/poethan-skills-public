@@ -1,6 +1,6 @@
 """Code Inspector 本机 Human 工作台。
 
-SQLite 只用于页面查询；所有写操作必须经过安装后的 review-db.py human 命令。
+SQLite 只用于页面查询；所有写操作必须经过安装后的 reviewctl WebApp 身份入口。
 """
 from __future__ import annotations
 
@@ -588,7 +588,7 @@ def task_create():
         for field in ("review_level", "review_scope", "baseline_ref", "remark"):
             if value := request.form.get(field):
                 args.extend([f"--{field.replace('_', '-')}", value])
-        result = run_human_command("task-create", *args, cwd=project_path.resolve())
+        result = run_human_command("task", "create", *args, cwd=project_path.resolve())
         return redirect_back("task_detail", task_key=result["task_key"], msg="检查任务已创建")
     except Exception as exc:  # noqa: BLE001
         return feedback_redirect(target, err=str(exc))
@@ -769,14 +769,14 @@ def task_detail(task_key: str):
 
 @app.route("/tasks/<task_key>/edit", methods=["POST"])
 def task_update(task_key: str):
-    args = ["--task-key", task_key]
+    args = [task_key]
     for field in ("title", "objective", "remark", "close_reason"):
         value = request.form.get(field)
         if value is not None:
             args.extend([f"--{field.replace('_', '-')}", value])
     target = safe_return_to(url_for("task_detail", task_key=task_key))
     try:
-        run_human_command("task-update", *args)
+        run_human_command("task", "edit", *args)
         return feedback_redirect(target, msg="任务信息已保存")
     except Exception as exc:  # noqa: BLE001
         traceback.print_exc()
@@ -785,13 +785,13 @@ def task_update(task_key: str):
 
 @app.route("/tasks/<task_key>/status", methods=["POST"])
 def task_update_status(task_key: str):
-    args = ["--task-key", task_key, "--status", request.form.get("status", "")]
+    args = [task_key, request.form.get("status", "")]
     for field in ("remark", "close_reason"):
         if value := request.form.get(field):
             args.extend([f"--{field.replace('_', '-')}", value])
     target = safe_return_to(url_for("task_detail", task_key=task_key))
     try:
-        run_human_command("task-update-status", *args)
+        run_human_command("task", "status", *args)
         return feedback_redirect(target, msg="任务状态已更新")
     except Exception as exc:  # noqa: BLE001
         return feedback_redirect(target, err=str(exc))
@@ -1281,12 +1281,12 @@ def runtime_pause_thread(issue_key: str, operator_id: str):
 @app.route("/issues/<issue_key>/assignment", methods=["POST"])
 def issue_set_assignment(issue_key: str):
     """记录真正选定的执行配置；推荐只是候选，assignment 才是调度结果。"""
-    args = ["--issue-key", issue_key]
+    args = [issue_key]
     profile_id = request.form.get("profile_id", "").strip()
     if profile_id:
         args.extend(["--profile-id", profile_id])
     try:
-        run_human_command("issue-set-assignment", *args)
+        run_human_command("issue", "assign", *args)
         return redirect_back("issue_detail", issue_key=issue_key, msg="执行者分配已保存")
     except Exception as exc:  # noqa: BLE001
         return redirect_back("issue_detail", issue_key=issue_key, err=str(exc))
@@ -1294,12 +1294,12 @@ def issue_set_assignment(issue_key: str):
 
 @app.route("/issues/<issue_key>/assessment", methods=["POST"])
 def issue_update_assessment(issue_key: str):
-    args = ["--issue-key", issue_key]
+    args = [issue_key]
     for field in ("dimension", "severity"):
         if value := request.form.get(field):
             args.extend([f"--{field.replace('_', '-')}", value])
     try:
-        run_human_command("issue-update-assessment", *args)
+        run_human_command("issue", "rate", *args)
         return redirect_back("issue_detail", issue_key=issue_key, msg="问题评级已保存")
     except Exception as exc:  # noqa: BLE001
         return redirect_back("issue_detail", issue_key=issue_key, err=str(exc))
@@ -1307,14 +1307,14 @@ def issue_update_assessment(issue_key: str):
 
 @app.route("/issues/<issue_key>/body", methods=["POST"])
 def issue_update_body(issue_key: str):
-    args = ["--issue-key", issue_key]
+    body = {}
     for field in ("title", "summary", "expected_outcome", "technical_note"):
         if (value := request.form.get(field)) is not None:
-            args.extend([f"--{field.replace('_', '-')}", value])
-    if (local_terms := request.form.get("local_terms")) is not None:
-        args.extend(["--local-terms", local_terms])
+            body[field] = value
     try:
-        run_human_command("issue-update-body", *args)
+        if (local_terms := request.form.get("local_terms")) is not None:
+            body["local_terms"] = json.loads(local_terms)
+        run_human_command("issue", "edit", issue_key, "-", payload=body)
         return redirect_back("issue_detail", issue_key=issue_key, msg="问题内容已保存")
     except Exception as exc:  # noqa: BLE001
         return redirect_back("issue_detail", issue_key=issue_key, err=str(exc))
@@ -1324,7 +1324,7 @@ def issue_update_body(issue_key: str):
 def issue_update_status(issue_key: str):
     try:
         run_human_command(
-            "issue-update-status", "--issue-key", issue_key, "--status", request.form.get("status", ""),
+            "issue", "status", issue_key, request.form.get("status", ""),
             "--content", request.form.get("content", ""),
         )
         return redirect_back("issue_detail", issue_key=issue_key, msg="问题状态已更新")
@@ -1340,12 +1340,12 @@ def issue_human_action(issue_key: str):
         if action == "confirm":
             verification_content = content or "Human 已复核本次实现与验证结果，验证通过。"
             run_human_command(
-                "activity-append", "--issue-key", issue_key, "--activity-type", "VERIFICATION_PASSED",
+                "activity", "add", issue_key, "--activity-type", "VERIFICATION_PASSED",
                 "--content", verification_content,
             )
             try:
                 run_human_command(
-                    "issue-update-status", "--issue-key", issue_key, "--status", "CONFIRMED",
+                    "issue", "status", issue_key, "CONFIRMED",
                     "--content", content or "Human 验证通过并确认问题。",
                 )
             except Exception as exc:  # noqa: BLE001
@@ -1355,13 +1355,13 @@ def issue_human_action(issue_key: str):
             if not content:
                 raise ValueError("请填写审核确认结论")
             run_human_command(
-                "activity-append", "--issue-key", issue_key,
+                "activity", "add", issue_key,
                 "--activity-type", "INSPECTOR_CONFIRMATION_PROVIDED", "--content", content,
             )
             target_status = request.form.get("target_status", "IN_PROGRESS")
             try:
                 run_human_command(
-                    "issue-update-status", "--issue-key", issue_key, "--status", target_status,
+                    "issue", "status", issue_key, target_status,
                     "--content", content,
                 )
             except Exception as exc:  # noqa: BLE001
@@ -1371,12 +1371,12 @@ def issue_human_action(issue_key: str):
             if not content:
                 raise ValueError("请填写实现失败原因、必须修改点和验证标准")
             run_human_command(
-                "activity-append", "--issue-key", issue_key,
+                "activity", "add", issue_key,
                 "--activity-type", "VERIFICATION_FAILED", "--content", content,
             )
             try:
                 run_human_command(
-                    "issue-update-status", "--issue-key", issue_key, "--status", "IN_PROGRESS",
+                    "issue", "status", issue_key, "IN_PROGRESS",
                     "--content", content,
                 )
             except Exception as exc:  # noqa: BLE001
@@ -1388,7 +1388,7 @@ def issue_human_action(issue_key: str):
             if not target_status:
                 raise ValueError("未知的 Human 操作")
             run_human_command(
-                "issue-update-status", "--issue-key", issue_key, "--status", target_status,
+                "issue", "status", issue_key, target_status,
                 "--content", content,
             )
             message = f"问题已更新为{label(target_status)}"
@@ -1402,7 +1402,7 @@ def issue_human_action(issue_key: str):
 def issue_design_request(issue_key: str):
     try:
         run_human_command(
-            "design-request", "--issue-key", issue_key,
+            "design", "request", issue_key,
             "--content", request.form.get("content", ""),
         )
         return redirect_back("issue_detail", issue_key=issue_key, msg="已要求先完成设计方案")
@@ -1414,10 +1414,9 @@ def issue_design_request(issue_key: str):
 def issue_design_submit(issue_key: str):
     try:
         run_human_command(
-            "design-submit", "--issue-key", issue_key,
+            "design", "submit", issue_key,
             "--summary", request.form.get("summary", ""),
             "--content", request.form.get("content", ""),
-            "--scope-changes", "[]",
         )
         return redirect_back("issue_detail", issue_key=issue_key, msg="设计方案已提交审核")
     except Exception as exc:  # noqa: BLE001
@@ -1427,21 +1426,21 @@ def issue_design_submit(issue_key: str):
 @app.route("/issues/<issue_key>/design-review", methods=["POST"])
 def issue_design_review(issue_key: str):
     try:
-        args = [
-            "design-review", "--issue-key", issue_key,
-            "--decision", request.form.get("decision", ""),
-            "--design-activity-id", request.form.get("design_activity_id", ""),
-            "--content", request.form.get("content", ""),
-        ]
-        if request.form.get("decision") == "approved":
-            args.extend([
-                "--execution-mode", request.form.get("execution_mode", ""),
-                "--confirmation", "not-needed",
-            ])
+        decision = request.form.get("decision", "")
+        payload = {"content": request.form.get("content", "")}
+        if decision == "approved":
+            payload.update({
+                "execution_mode": request.form.get("execution_mode", ""),
+                "confirmation": "not-needed",
+            })
             if raw_stages := request.form.get("stages", "").strip():
-                json.loads(raw_stages)
-                args.extend(["--stages", raw_stages])
-        run_human_command(*args)
+                payload["stages"] = json.loads(raw_stages)
+        elif decision != "rejected":
+            raise ValueError("未知的设计审核结论")
+        run_human_command(
+            "design", "approve" if decision == "approved" else "reject",
+            issue_key, request.form.get("design_activity_id", ""), "-", payload=payload,
+        )
         return redirect_back("issue_detail", issue_key=issue_key, msg="设计审核结论已记录")
     except Exception as exc:  # noqa: BLE001
         return redirect_back("issue_detail", issue_key=issue_key, err=str(exc))
@@ -1449,19 +1448,19 @@ def issue_design_review(issue_key: str):
 
 @app.route("/issues/<issue_key>/stages/<int:stage_no>/review", methods=["POST"])
 def issue_stage_review(issue_key: str, stage_no: int):
-    args = [
-        "--issue-key", issue_key, "--stage-no", str(stage_no),
-        "--decision", request.form.get("decision", ""),
-        "--content", request.form.get("content", ""),
-        "--review-result", request.form.get("review_result", "{}"),
-        "--baseline", request.form.get("baseline", "{}"),
-    ]
-    if summary := request.form.get("summary", "").strip():
-        args.extend(["--summary", summary])
-    if plan_no := request.form.get("plan_no"):
-        args.extend(["--plan-no", plan_no])
     try:
-        run_human_command("stage-review", *args)
+        review = json.loads(request.form.get("review_result", "{}"))
+        if baseline := request.form.get("baseline", "").strip():
+            review["baseline"] = json.loads(baseline)
+        if comment := request.form.get("content", "").strip():
+            review["comment"] = comment
+        decision = request.form.get("decision", "")
+        if decision not in {"approved", "rejected", "redesign"}:
+            raise ValueError("未知的 Stage 审核结论")
+        run_human_command(
+            "stage", "redesign" if decision == "redesign" else "review",
+            issue_key, str(stage_no), "-", payload=review,
+        )
         return redirect_back("issue_detail", issue_key=issue_key, msg="Stage 验收结论已记录")
     except Exception as exc:  # noqa: BLE001
         return redirect_back("issue_detail", issue_key=issue_key, err=str(exc))
@@ -1471,7 +1470,7 @@ def issue_stage_review(issue_key: str, stage_no: int):
 def issue_human_confirmation_resolve(issue_key: str):
     try:
         run_human_command(
-            "human-confirmation-resolve", "--issue-key", issue_key,
+            "human", "resolve", issue_key,
             "--decision", request.form.get("decision", ""),
             "--content", request.form.get("content", ""),
             "--next-status", request.form.get("next_status", "DESIGN_REQUIRED"),
@@ -1485,7 +1484,7 @@ def issue_human_confirmation_resolve(issue_key: str):
 def issue_add_activity(issue_key: str):
     try:
         run_human_command(
-            "discussion-append", "--issue-key", issue_key,
+            "discussion", "add", issue_key,
             "--topic", request.form.get("topic", "GENERAL"),
             "--content", request.form.get("content", ""),
         )
@@ -1528,11 +1527,13 @@ def candidate_update_status(candidate_key: str):
     target = safe_return_to(url_for("candidate_list"))
     if status in {"ACCEPTED", "REJECTED"} and not content:
         return feedback_redirect(target, err="接受或拒绝候选问题时必须填写审核结论")
+    if status not in {"ACCEPTED", "REJECTED"}:
+        return feedback_redirect(target, err="未知的候选问题审核状态")
     try:
-        args = ["--candidate-key", candidate_key, "--status", status]
+        args = [candidate_key]
         if content:
             args.extend(["--content", content])
-        run_human_command("candidate-update-status", *args)
+        run_human_command("candidate", "accept" if status == "ACCEPTED" else "reject", *args)
         return feedback_redirect(target, msg=f"候选问题已更新为{label(status)}")
     except Exception as exc:  # noqa: BLE001
         return feedback_redirect(target, err=str(exc))

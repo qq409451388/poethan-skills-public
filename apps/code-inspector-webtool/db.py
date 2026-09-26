@@ -4,7 +4,7 @@
 `scripts/code-inspector-installer/runtime/review_db.py` 保持一致的配置来源。
 
 本模块只负责读连接与简单查询封装；写操作统一通过 `commands.py`
-调用 `review-db.py --agent human` 的领域命令。
+调用 `reviewctl` 的 WebApp Human 身份入口。
 """
 from __future__ import annotations
 

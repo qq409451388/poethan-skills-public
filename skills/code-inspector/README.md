@@ -188,9 +188,9 @@ $code-inspector stop
 
 Task 有两类：`REVIEW` 是一次边界明确的检查治理目标，继续沿用项目、等级、目标、范围和基线 identity；`CONTINUOUS` 是可持续数月的治理主题，identity 不包含 `baseline_ref`，代码基线变化仍复用同一 Task。类型创建后不可修改。`CONTINUOUS` 的全部 Issue 关闭后 Task 仍保持活动，只有 Inspector/Human 显式关闭或取消才结束。Task 显式转为 `CLOSED` 时，尚未终结的 Issue 会在同一事务中转为 `CANCELLED`；已确认或已取消的 Issue 不变。Task 的其他状态变更不会同步 Issue。
 
-Inspector 修改 Task 状态时遵守标准状态机。Human 具有 Task 状态最高管理权限，可纠正状态或重新打开 `CLOSED / CANCELLED` 任务；操作仍通过 `task-update-status` 记录审计，不改变 Issue 级专用流程约束。
+Inspector 修改 Task 状态时遵守标准状态机。Human 可将 Task 设为任一合法状态，包括重新打开 `CLOSED / CANCELLED` 任务；操作仍通过 `task-update-status` 记录审计。
 
-同样，Human 可通过 `issue-update-status` 覆盖任一普通 Issue 状态，例如从 `REDESIGN_REQUIRED` 直接指定为 `IMPLEMENTED_PENDING_REVIEW` 或重新打开终态。该操作用于人工纠错和最高解释，不改变 Inspector/Developer 的标准规则。`HUMAN_CONFIRMATION_REQUIRED` 仍是保留异常通道，禁止用通用状态命令进入或离开；最终 `CONFIRMED` 对所有角色都要求当前 implementation attempt 已有 `VERIFICATION_PASSED`。
+同样，Human 可通过 `issue-update-status` 将 Issue 设为任一合法状态，包括进入或离开 `HUMAN_CONFIRMATION_REQUIRED`、直接 `CONFIRMED` 或重新打开终态。操作记录 `STATUS_CHANGED` 与审计；Inspector/Developer 仍遵守原有状态机和验证前置条件。
 
 “继续审核、扫描项目、专项检查”属于 `scan`，无论 Task 类型都必须执行 coverage closure、跨模块回查、补扫和完整去重。“把这个线上 Bug 记入长期任务”属于 `report`，只需核实证据、确认成立、去重并创建 Candidate/Issue，不要求重新扫描整个项目。
 
@@ -225,7 +225,7 @@ COMPLEX     Inspector(五段式含架构方向) → Developer(方案) → Inspec
 
 `INSPECTOR_CONFIRMATION_REQUIRED` 是 Developer 向 Inspector 请求技术边界的正常协作状态，不会通知 Human。`HUMAN_CONFIRMATION_REQUIRED` 是异常升级：只有 Inspector 在穷尽可得证据后，确认缺少只能由 Human 提供的关键业务事实，或存在重大且不可逆的数据安全风险时，才能用 `human-escalate` 进入。普通技术分歧、架构选择、方案驳回、实现或测试失败不得升级。
 
-Human 使用 `human-confirmation-resolve` 记录业务边界或风险决定，恢复到 `DESIGN_REQUIRED`、`IN_PROGRESS`、`ON_HOLD`、`BLOCKED` 或 `CANCELLED`。Human 不能借此直接确认 Issue；后续设计、实现、验证和 `CONFIRMED` 仍由 Inspector 与 Developer 完成。未来若启用 Orchestrator，Resolver 应在该状态返回 `HUMAN / needs_human` 并暂停 Task 自动调度；本仓库当前升级不修改 Orchestrator。
+Human 可使用 `human-confirmation-resolve` 原子记录业务边界或风险决定，并恢复到 `DESIGN_REQUIRED`、`IN_PROGRESS`、`ON_HOLD`、`BLOCKED` 或 `CANCELLED`；也可用通用状态命令直接指定任一合法状态。未来若启用 Orchestrator，Resolver 应在该状态返回 `HUMAN / needs_human` 并暂停 Task 自动调度；本仓库当前升级不修改 Orchestrator。
 
 ## Git 更新后的行为
 

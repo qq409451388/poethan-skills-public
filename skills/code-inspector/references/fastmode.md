@@ -29,7 +29,7 @@ $code-inspector fastmode RI-XXX [RI-YYY ...]
 - Developer Session、Developer Thread、Developer Event、`IMPLEMENTATION_SUBMITTED` 和 `implementation-submit` 都不是前置条件；不得伪造这些记录。
 - 不启动 Watch、Multi-Thread、Developer Agent 或 Runtime 调度，不创建 Developer Activity。
 - 只检查当前代码、Git Diff/Commit、测试、Issue 原始问题、历史讨论和历史验证。Scope 外的新问题沿用 Candidate 机制，不得加入本次 FastMode。
-- Inspector 只负责检查与记录，不修改业务代码，不替 Developer 提交实现，不自动设置 `CONFIRMED`、`CANCELLED` 或其他终态。Human 负责开发沟通和最终状态；已有 `CONFIRMED` 安全 Gate 不得绕过。
+- Inspector 只负责检查与记录，不修改业务代码，不替 Developer 提交实现，不自动设置 `CONFIRMED`、`CANCELLED` 或其他终态。Human 负责开发沟通和最终状态，可人工指定任一合法状态；Inspector 的 `CONFIRMED` 验证前置条件保持有效。
 
 ## 记录结果
 

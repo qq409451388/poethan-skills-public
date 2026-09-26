@@ -145,7 +145,7 @@ commands:
     roles: [inspector, developer, human]
     required: [--issue-key, --status]
     optional: [--content]
-    note: developer 请求 INSPECTOR_CONFIRMATION_REQUIRED 时 --content 必填；Inspector/Developer 受 workflow.yaml 和原子前置条件约束。Human 具有普通 Issue 状态最高管理权限，可跨状态覆盖并记录 STATUS_CHANGED/审计；但 HUMAN_CONFIRMATION_REQUIRED 仍只能由专用命令进入/离开，CONFIRMED 对所有角色都要求当前 implementation attempt 已有 VERIFICATION_PASSED。
+    note: developer 请求 INSPECTOR_CONFIRMATION_REQUIRED 时 --content 必填；Inspector/Developer 受 workflow.yaml 和原子前置条件约束。Human 可设任一合法 Issue 状态，包括 HUMAN_CONFIRMATION_REQUIRED 和 CONFIRMED；变更记录 STATUS_CHANGED 与审计。
   issue-update-status-batch:
     roles: [inspector, developer, human]
     required: [--updates]
@@ -329,7 +329,7 @@ commands:
     enum: {next-status: [DESIGN_REQUIRED, IN_PROGRESS, ON_HOLD, BLOCKED, CANCELLED]}
     allowed_from: [HUMAN_CONFIRMATION_REQUIRED]
     effects: [追加 HUMAN_CONFIRMATION_PROVIDED, 离开 HUMAN_CONFIRMATION_REQUIRED]
-    note: 该专用决策命令不直接转 CONFIRMED；正常恢复后仍由 Inspector 技术闭环。Human 可另用 issue-update-status 覆盖普通状态，但任何角色 CONFIRMED 前仍必须为当前 implementation attempt 留有 VERIFICATION_PASSED。
+    note: 该专用决策命令仅支持列出的恢复状态；Human 可另用 issue-update-status 指定任一合法状态，包括直接 CONFIRMED。Inspector 确认仍需要当前 implementation attempt 的 VERIFICATION_PASSED。
   fast-review-record:
     roles: [inspector]
     purpose: FastMode 专用原子写入口；不依赖 Developer Session、IMPLEMENTATION_SUBMITTED、pending_action 或 Runtime Event。

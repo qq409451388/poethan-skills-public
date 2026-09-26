@@ -261,13 +261,11 @@
         "监督异常流程",
         "对 Agent 无法获得的业务事实、事实归属或重大不可逆数据风险作最终决定",
         "通过 human-confirmation-resolve 恢复自动工作流",
-        "以最高解释权覆盖任一普通 Task 或 Issue 状态",
+        "以最高管理权限设置任一合法 Task 或 Issue 状态",
         "必要时进行人工管理与纠错"
       ],
       "prohibited": [
         "human-escalate",
-        "主动进入 HUMAN_CONFIRMATION_REQUIRED",
-        "用人工决定替代 Inspector 的设计审核、代码验证或最终技术确认",
         "direct-sql"
       ]
     }

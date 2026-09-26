@@ -6,9 +6,9 @@
 
 Task 分为一次性治理目标 `REVIEW` 和跨基线长期治理主题 `CONTINUOUS`。`scan` 在两类 Task 中都必须完成跨模块数据流、coverage closure、补扫和去重；向 `CONTINUOUS` 报告单个线上问题的 `report` 只核实证据、判定成立和去重，不触发全项目扫描。默认聊天只输出简短摘要，完整报告仅在用户明确要求时导出。
 
-Task 与普通 Issue 状态由 Inspector/Developer 按标准状态机维护；Human 具有最高管理解释权，可通过 `reviewctl task status` 或 `reviewctl issue status` 设置任一合法普通状态，包括纠正、重开终态或直接指定待实现审核状态。Task 只有显式转为 `CLOSED` 时才同步结束 Issue：尚未终结的 Issue 原子转为 `CANCELLED`，已 `CONFIRMED/CANCELLED` 的 Issue 保持不动；其他 Task 状态变更不传播到 Issue。
+Task 与 Issue 状态由 Inspector/Developer 按标准状态机维护；Human 可通过 `reviewctl task status` 或 `reviewctl issue status` 设置任一合法状态，包括人工确认状态、直接确认和重开终态。Task 只有显式转为 `CLOSED` 时才同步结束 Issue：尚未终结的 Issue 原子转为 `CANCELLED`，已 `CONFIRMED/CANCELLED` 的 Issue 保持不动；其他 Task 状态变更不传播到 Issue。
 
-两个不能绕过的安全边界是：`HUMAN_CONFIRMATION_REQUIRED` 只能由 Inspector 的 `reviewctl human ask` 进入并由 Human 的 `reviewctl human resolve` 离开；任何角色转 `CONFIRMED` 前都必须为当前 implementation attempt 留有 `VERIFICATION_PASSED`。
+Inspector/Developer 仍遵守状态前置条件：Agent 进入 `HUMAN_CONFIRMATION_REQUIRED` 使用 `reviewctl human ask`；Agent 转 `CONFIRMED` 前须为当前 implementation attempt 留有 `VERIFICATION_PASSED`。Human 的通用状态命令不受这些前置条件限制，但仍记录状态变更与审计。
 
 ## 设计与 Stage
 
@@ -48,7 +48,7 @@ Human 只作为极低频最终兜底，不是第三个普通 Reviewer。Develope
 
 允许升级的原因仅限：关键业务事实或外部约束确实无法由 Agent 获得且直接决定实现方向，或继续自主决策存在重大、不可逆的数据损坏风险。Agent 意见不一致、普通架构取舍、方案质量差、实现或测试失败均不是升级理由，应继续使用证据、方案讨论、设计驳回或 `REDESIGN_REQUIRED` 自主解决。
 
-升级内容必须整理为原因、已验证事实、未知事实、选项与影响、推荐选项以及 Human 只需回答的问题，不得倾倒长日志、完整代码或 Agent 对话。`HUMAN_CONFIRMATION_REQUIRED` 会暂停自动流转；Human 只能用 `reviewctl human resolve` 给出边界/风险决定并恢复流程，不能直接 `CONFIRMED`。恢复后 Inspector 仍负责设计审核、实现审核、验证和最终技术闭环。
+升级内容必须整理为原因、已验证事实、未知事实、选项与影响、推荐选项以及 Human 只需回答的问题，不得倾倒长日志、完整代码或 Agent 对话。`HUMAN_CONFIRMATION_REQUIRED` 会暂停自动流转；Human 可用 `reviewctl human resolve` 原子记录决定并恢复流程，也可通过通用状态命令直接指定任一合法状态。Agent 恢复后仍负责其设计、实现和验证工作。
 
 ## 内容、讨论与历史
 

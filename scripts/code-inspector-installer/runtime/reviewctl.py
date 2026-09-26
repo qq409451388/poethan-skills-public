@@ -1236,6 +1236,11 @@ def _o(name: str, kind: str = "str", legacy: str = "", choices=None, multiple=Fa
 
 COMMANDS: list[Command] = [
     # ---- task ----
+    Command("task", "create", "task-create", "创建治理任务",
+            options=[_o("title", required=True), _o("objective", required=True),
+                     _o("task-key"), _o("review-level", choices=("L1", "L2", "L3")),
+                     _o("review-scope"), _o("task-type", choices=("REVIEW", "CONTINUOUS")),
+                     _o("baseline-ref"), _o("started-at"), _o("remark")]),
     Command("task", "list", "task-list", "列出治理任务",
             options=[_o("status", choices=tuple(TASK_STATUS_VALUES)), _o("project-name"),
                      _o("task-type", choices=("REVIEW", "CONTINUOUS")), _o("include-closed", kind="bool")]),
