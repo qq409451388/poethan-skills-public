@@ -12,6 +12,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -38,8 +39,9 @@ def append_log(path: Path, message: str) -> None:
 
 
 def run_tool(tool: Path, arguments: list[str]) -> Any:
+    command = [sys.executable, str(tool)] if tool.suffix == ".py" else [str(tool)]
     result = subprocess.run(
-        [sys.executable, str(tool), *arguments],
+        [*command, *arguments],
         text=True,
         capture_output=True,
         timeout=90,
@@ -67,13 +69,12 @@ def process_exists(pid: int) -> bool:
 def query(args: argparse.Namespace) -> tuple[bool, str | None, int | None]:
     expected = set(args.expect)
     if args.kind == "issue-status":
-        item = run_tool(args.tool, ["watch-probe", "--kind", args.kind, "--target", args.target])
+        item = run_tool(args.tool, ["watch", "issue", args.target])
         status = str(item.get("status", ""))
         return status in expected, status or None, None
 
     if args.kind == "stage-status":
-        command = ["watch-probe", "--kind", args.kind, "--target", args.target,
-                   "--stage-no", str(args.stage)]
+        command = ["watch", "stage", args.target, str(args.stage)]
         if args.plan is not None:
             command.extend(["--plan-no", str(args.plan)])
         item = run_tool(args.tool, command)
@@ -82,10 +83,10 @@ def query(args: argparse.Namespace) -> tuple[bool, str | None, int | None]:
         return status in expected, status or None, stage
 
     if args.kind == "activity":
-        command = ["watch-probe", "--kind", args.kind, "--target", args.target,
+        command = ["watch", "activity", args.target,
                    "--after-activity-id", str(args.after_activity_id)]
         for activity_type in args.expect:
-            command.extend(["--activity-type", activity_type])
+            command.extend(["--type", activity_type])
         item = run_tool(args.tool, command)
         if not item.get("matched"):
             return False, None, None
@@ -95,7 +96,7 @@ def query(args: argparse.Namespace) -> tuple[bool, str | None, int | None]:
         return True, activity_type, stage
 
     if args.kind == "task-status":
-        item = run_tool(args.tool, ["watch-probe", "--kind", args.kind, "--target", args.target])
+        item = run_tool(args.tool, ["watch", "task", args.target])
         status = str(item.get("status", ""))
         return status in expected, status or None, None
 
@@ -118,23 +119,35 @@ def emit_action(args: argparse.Namespace, reason: str, stage: int | None = None)
 
 
 def parser() -> argparse.ArgumentParser:
-    result = argparse.ArgumentParser(description="Silently watch one Code Inspector target")
+    invocation = f"python {Path(__file__).resolve()}"
+    result = argparse.ArgumentParser(
+        description="静默观察一个 Code Inspector 目标；命中条件后输出一次 ACTION_REQUIRED 并退出。",
+        epilog=(
+            "示例（按当前角色选择 cictl-dev 或 cictl-insp）：\n"
+            f"  {invocation} --kind task-status --target RT-D8D75313 --tool cictl-dev --expect CLOSED\n"
+            f"  {invocation} --kind stage-status --target RI-1 --stage 2 --tool cictl-insp --expect PENDING_REVIEW\n"
+            f"  {invocation} --kind activity --target RI-1 --tool cictl-dev --after-activity-id 42 --expect STAGE_REJECTED\n"
+            "先用当前角色命令查询目标和最新 Activity id；仅在用户明确要求持续观察时启动。"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     result.add_argument(
         "--kind",
         required=True,
         choices=("issue-status", "stage-status", "activity", "task-status", "process"),
+        help="观察类型：Issue/Stage/Task 状态、新 Activity，或 PID 退出",
     )
-    result.add_argument("--target", required=True)
-    result.add_argument("--role")
-    result.add_argument("--tool", type=Path)
-    result.add_argument("--expect", action="append", default=[])
-    result.add_argument("--stage", type=int)
-    result.add_argument("--plan", type=int)
-    result.add_argument("--after-activity-id", type=int, default=0)
-    result.add_argument("--pid", type=int)
-    result.add_argument("--interval", type=float, default=120.0)
-    result.add_argument("--max-errors", type=int, default=3)
-    result.add_argument("--log-file", type=Path)
+    result.add_argument("--target", required=True, help="精确的 Task key、Issue key，或进程标识")
+    result.add_argument("--role", help="唤醒事件中的角色标签；不用于切换 CLI 身份")
+    result.add_argument("--tool", type=Path, help="当前角色命令 cictl-dev/cictl-insp，或其可执行文件路径；状态观察必填")
+    result.add_argument("--expect", action="append", default=[], help="期望的状态或 Activity 类型；可重复；状态观察必填")
+    result.add_argument("--stage", type=int, help="Stage 编号；stage-status 必填")
+    result.add_argument("--plan", type=int, help="指定 Stage Plan 编号；stage-status 可选")
+    result.add_argument("--after-activity-id", type=int, help="启动前最新 Activity id；activity 必填，只匹配之后的新事件")
+    result.add_argument("--pid", type=int, help="进程 PID；process 必填，结束时唤醒")
+    result.add_argument("--interval", type=float, default=120.0, help="轮询间隔秒数（默认 120）")
+    result.add_argument("--max-errors", type=int, default=3, help="连续查询失败多少次后唤醒（默认 3）")
+    result.add_argument("--log-file", type=Path, help="查询错误日志路径（默认系统临时目录）")
     return result
 
 
@@ -153,13 +166,20 @@ def validate(args: argparse.Namespace) -> None:
             raise ValueError("process watch does not accept --expect")
         return
 
-    if args.tool is None or not args.tool.is_file():
-        raise ValueError("state watch requires an existing --tool path")
+    if args.tool is None:
+        raise ValueError("state watch requires --tool cictl-dev or cictl-insp")
+    if not args.tool.is_file():
+        resolved = shutil.which(str(args.tool))
+        if resolved is None:
+            raise ValueError(f"role command not found: {args.tool}")
+        args.tool = Path(resolved)
     if not args.expect:
         raise ValueError("state watch requires at least one --expect value")
     args.expect = [safe_token(value, "expect") for value in args.expect]
     if args.kind == "stage-status" and (args.stage is None or args.stage < 1):
         raise ValueError("stage-status watch requires a positive --stage")
+    if args.kind == "activity" and args.after_activity_id is None:
+        raise ValueError("activity watch requires --after-activity-id from the latest Activity")
     if args.kind == "activity" and args.after_activity_id < 0:
         raise ValueError("after-activity-id cannot be negative")
 

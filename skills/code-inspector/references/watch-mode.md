@@ -8,7 +8,7 @@ Watch Mode 是用户显式创建的、单目标、一次性、低输出观察。
 
 ```text
 watch_target   = 唯一的 Issue、Task、Stage 或进程
-query_method   = role tool 的 watch-probe，或 Shell 进程退出
+query_method   = 当前角色的 cictl-dev/cictl-insp watch 子命令，或 Shell 进程退出
 expected_event = 哪个状态或哪个新 Activity/进程事件需要当前 Agent 行动
 role           = 当前锁定角色（存在时）
 continuation   = one-shot | until-target-terminal
@@ -33,19 +33,26 @@ Watch 不授权切换角色。若用户要求唤醒后由 Inspector 审核，但
 
 ## 启动与静默等待
 
-安装后的 watcher 位于 `scripts/watch.py`。校验通过后，用当前角色的固定工具路径启动它，并保留 Shell execution session id：
+安装后的 watcher 位于 `scripts/watch.py`。`--tool` 填当前角色命令 `cictl-dev` 或 `cictl-insp`（也可填 `command -v` 查到的完整路径），不要填内部 `reviewctl.py`。`--kind task-status` 的 `--target` 必须是精确 Task key；其他状态和 Activity 观察使用 Issue key。校验通过后启动并保留 Shell execution session id：
 
 ```text
 python <skill>/scripts/watch.py \
   --kind stage-status \
-  --tool <skill>/tools/reviewctl-<alias>.py \
+  --tool cictl-insp \
   --target RI-00497003 \
   --stage 2 \
   --expect PENDING_REVIEW \
   --role inspector
 ```
 
-Watcher 默认每 120 秒通过固定角色工具的 `reviewctl watch` 探针查询一次。该探针只返回最小状态且不写读取审计，避免长期轮询造成审计表膨胀；Watcher 不得直接访问数据库。状态未命中时 stdout/stderr 均保持空；查询 JSON、Stage、Activity、Diff 和日志不得进入对话。查询错误写入系统临时目录；连续三次查询失败只发出 `WATCH_QUERY_FAILED` 最小事件，由 Agent 重新诊断。
+例如观察 Task `RT-D8D75313` 关闭：
+
+```text
+python <skill>/scripts/watch.py --kind task-status --target RT-D8D75313 \
+  --tool cictl-dev --expect CLOSED --role developer
+```
+
+`--kind activity` 必须传启动前最新 Activity id 给 `--after-activity-id`，只匹配之后的新事件；`--expect` 可重复。可用 `python <skill>/scripts/watch.py --help` 查看各参数和示例。Watcher 默认每 120 秒通过固定角色命令的 `watch issue|stage|activity|task` 探针查询一次。该探针只返回最小状态且不写读取审计，避免长期轮询造成审计表膨胀；Watcher 不得直接访问数据库。状态未命中时 stdout/stderr 均保持空；查询 JSON、Stage、Activity、Diff 和日志不得进入对话。查询错误写入系统临时目录；连续三次查询失败只发出 `WATCH_QUERY_FAILED` 最小事件，由 Agent 重新诊断。
 
 Watch Mode 禁止创建或维持宿主 Goal，纯等待阶段不得使用 Goal automatic continuation。启动后只向用户简短说明目标、唤醒条件和 120 秒静默轮询，然后由一个长生命周期 Shell command 在同一进程内部完成全部 sleep、查询和条件判断。未命中时该 command 不输出、不结束，也不创建新的 Goal turn。不要把 watcher 放入会周期性恢复模型的 Goal 或循环 Agent 调用中。
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import subprocess
 import sys
 import time
@@ -12,13 +13,18 @@ from pathlib import Path
 
 
 def probe(spec: dict) -> dict | None:
-    command = [sys.executable, spec["tool"], "watch-probe", "--kind", spec["kind"], "--target", spec["issue"]]
+    tool = Path(spec["tool"])
+    command = [sys.executable, str(tool)] if tool.suffix == ".py" else [str(tool)]
+    action = {"issue-status": "issue", "stage-status": "stage", "activity": "activity"}[spec["kind"]]
+    command.extend(["watch", action, spec["issue"]])
     if spec["kind"] == "stage-status":
-        command.extend(["--stage-no", str(spec["stage"])])
+        command.append(str(spec["stage"]))
+        if spec.get("plan") is not None:
+            command.extend(["--plan-no", str(spec["plan"])])
     if spec["kind"] == "activity":
         command.extend(["--after-activity-id", str(spec["after_activity_id"])])
         for value in spec["expect"]:
-            command.extend(["--activity-type", value])
+            command.extend(["--type", value])
     result = subprocess.run(command, text=True, capture_output=True, timeout=90)
     if result.returncode != 0:
         raise RuntimeError("WATCH_QUERY_FAILED")
@@ -40,8 +46,18 @@ def validate(specs: list[dict]) -> None:
         if key in seen:
             raise ValueError("同一 issue+role 只能有一个 Watch Specification")
         seen.add(key)
-        if not Path(spec["tool"]).is_file():
-            raise ValueError(f"tool 不存在: {spec['tool']}")
+        tool = Path(spec["tool"])
+        if not tool.is_file():
+            resolved = shutil.which(str(tool))
+            if resolved is None:
+                raise ValueError(f"tool 不存在: {spec['tool']}")
+            spec["tool"] = resolved
+        if spec["kind"] not in {"issue-status", "stage-status", "activity"}:
+            raise ValueError(f"不支持的观察类型: {spec['kind']}")
+        if spec["kind"] == "stage-status" and not spec.get("stage"):
+            raise ValueError("stage-status 缺少 stage")
+        if spec["kind"] == "activity" and "after_activity_id" not in spec:
+            raise ValueError("activity 缺少 after_activity_id")
 
 
 def main() -> int:
