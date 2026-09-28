@@ -491,7 +491,8 @@ def generated_skill_text(platform: str, identities: list[dict[str, Any]], target
     for item in identities:
         role = item["role"]
         policy = item["role_policy"]
-        tool = cictl_command_name(role) if platform == "codex" else f'python "{target / "tools" / f"reviewctl-{item["alias"]}.py"}"'
+        runtime_script = target / "tools" / f"reviewctl-{item['alias']}.py"
+        tool = cictl_command_name(role) if platform == "codex" else f'python "{runtime_script}"'
         default_label = "（默认身份）" if item.get("default") else ""
         rows.append(
             f"## {item['alias']} · {role} · {policy['session_selector']}{default_label}\n\n"
