@@ -703,10 +703,11 @@ def task_detail(task_key: str):
     issue_status = request.args.get("issue_status", "")
     severity = request.args.get("severity", "")
     dimension = request.args.get("dimension", "")
-    show_completed = (
-        request.args.get("show_completed") == "1"
+    include_closed = (
+        # 兼容旧版持续治理列表链接；新开关参数优先。
+        request.args.get("include_closed", request.args.get("show_completed")) == "1"
         or tab in {"completed", "confirmed"}
-        or issue_status in COMPLETED_ISSUE_STATUSES
+        or issue_status in NON_OPEN_ISSUE_STATUSES
     )
     filters, params = ["WHERE i.task_id = ?"], [task["id"]]
     tab_statuses = {
@@ -729,9 +730,9 @@ def task_detail(task_key: str):
     if dimension:
         filters.append("AND i.dimension = ?")
         params.append(dimension)
-    if task["task_type"] == "CONTINUOUS" and not show_completed:
-        filters.append(f"AND i.status NOT IN ({','.join('?' for _ in COMPLETED_ISSUE_STATUSES)})")
-        params.extend(COMPLETED_ISSUE_STATUSES)
+    if not include_closed:
+        filters.append(f"AND i.status NOT IN ({','.join('?' for _ in NON_OPEN_ISSUE_STATUSES)})")
+        params.extend(NON_OPEN_ISSUE_STATUSES)
     issues = [issue_with_json(row) for row in query_all(
         f"""SELECT i.* FROM review_issue i {' '.join(filters)}
             ORDER BY CASE i.severity WHEN 'critical' THEN 4 WHEN 'high' THEN 3 WHEN 'medium' THEN 2 ELSE 1 END DESC,
@@ -754,15 +755,14 @@ def task_detail(task_key: str):
     summary = {key: int(counts.get(key) or 0) for key in ("total", "open", "priority", "mine", "review", "blocked", "completed")}
     summary["listed_total"] = (
         summary["total"]
-        if task["task_type"] != "CONTINUOUS" or show_completed
-        else summary["total"] - summary["completed"]
+        if include_closed else summary["open"]
     )
     return render_template(
         "task_detail.html", task=task, issues=issues, versions=versions, summary=summary,
         statuses=TASK_STATUSES, issue_statuses=ISSUE_STATUSES, severities=SEVERITIES, dimensions=DIMENSIONS,
         filters={
             "tab": tab, "issue_status": issue_status, "severity": severity, "dimension": dimension,
-            "show_completed": show_completed,
+            "include_closed": include_closed,
         },
     )
 

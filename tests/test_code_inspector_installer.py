@@ -2682,9 +2682,8 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 self.assertIn("创建后不可修改", continuous_detail)
                 self.assertIn("持续治理中的未完成问题", continuous_detail)
                 self.assertNotIn("持续治理中已完成的问题", continuous_detail)
-                self.assertIn("仅待办", continuous_detail)
-                self.assertIn("data-only-pending-switch checked", continuous_detail)
-                self.assertIn('name="show_completed" value="0"', continuous_detail)
+                self.assertIn("包含已关闭issue", continuous_detail)
+                self.assertIn('name="include_closed" value="1" >', continuous_detail)
                 self.assertIn('<form method="get" class="toolbar" data-preserve-scroll>', continuous_detail)
                 self.assertIn('class="filter-tab active" data-preserve-scroll', continuous_detail)
                 self.assertIn("全部 <strong>1</strong>", continuous_detail)
@@ -2695,8 +2694,66 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 self.assertIn("持续治理中的未完成问题", continuous_with_completed)
                 self.assertIn("持续治理中已完成的问题", continuous_with_completed)
                 self.assertIn("全部 <strong>2</strong>", continuous_with_completed)
-                self.assertIn('name="show_completed" value="1"', continuous_with_completed)
-                self.assertNotIn("data-only-pending-switch checked", continuous_with_completed)
+                self.assertIn('name="include_closed" value="1" checked', continuous_with_completed)
+
+                cancelled_title = "持续治理中已取消的问题"
+                cancelled_created = db(
+                    "inspector", "issue-create-batch", "--task-key", continuous_web_task["task_key"],
+                    "--reason", "验证关闭 Issue 筛选", "--issues",
+                    json.dumps([{**issue, "title": cancelled_title}], ensure_ascii=False),
+                )
+                db(
+                    "human", "issue-update-status", "--issue-key", cancelled_created["created"][0],
+                    "--status", "CANCELLED", "--content", "取消治理",
+                )
+                review_filter_task = db(
+                    "inspector", "task-resolve", "--title", "Issue 关闭筛选检查",
+                    "--objective", "验证普通检查任务的关闭筛选", "--review-level", "L2",
+                    "--review-scope", "closed-issue-filter",
+                )
+                review_titles = ("普通检查未完成问题", "普通检查已确认问题", "普通检查已取消问题")
+                review_created = db(
+                    "inspector", "issue-create-batch", "--task-key", review_filter_task["task_key"],
+                    "--reason", "验证普通检查列表筛选", "--issues",
+                    json.dumps([{**issue, "title": title} for title in review_titles], ensure_ascii=False),
+                )
+                for key, status in zip(review_created["created"][1:], ("CONFIRMED", "CANCELLED")):
+                    db("human", "issue-update-status", "--issue-key", key, "--status", status, "--content", "结束问题")
+
+                for filter_task, titles in (
+                    (continuous_web_task, (active_continuous_issue["title"], completed_continuous_issue["title"], cancelled_title)),
+                    (review_filter_task, review_titles),
+                ):
+                    path = f"/tasks/{filter_task['task_key']}"
+                    with self.subTest(task_type=filter_task["task_type"]):
+                        default_html = client.get(path).get_data(as_text=True)
+                        self.assertIn(titles[0], default_html)
+                        self.assertNotIn(titles[1], default_html)
+                        self.assertNotIn(titles[2], default_html)
+                        self.assertIn("全部 <strong>1</strong>", default_html)
+                        included_html = client.get(f"{path}?include_closed=1").get_data(as_text=True)
+                        for title in titles:
+                            self.assertIn(title, included_html)
+                        self.assertIn("全部 <strong>3</strong>", included_html)
+                        self.assertIn('name="include_closed" value="1" checked', included_html)
+                        self.assertIn("tab=mine&amp;include_closed=1", included_html)
+                        reset_html = client.get(f"{path}?include_closed=0&show_completed=1").get_data(as_text=True)
+                        self.assertNotIn(titles[1], reset_html)
+                        self.assertNotIn(titles[2], reset_html)
+                        for status, title in zip(("CONFIRMED", "CANCELLED"), titles[1:]):
+                            filtered_html = client.get(f"{path}?issue_status={status}").get_data(as_text=True)
+                            self.assertIn(title, filtered_html)
+                            self.assertNotIn(titles[0], filtered_html)
+                        for tab in ("completed", "confirmed"):
+                            completed_html = client.get(f"{path}?tab={tab}").get_data(as_text=True)
+                            self.assertIn(titles[1], completed_html)
+                            self.assertNotIn(titles[0], completed_html)
+                            self.assertNotIn(titles[2], completed_html)
+                        combined_html = client.get(
+                            f"{path}?include_closed=1&severity=low&dimension=data_security"
+                        ).get_data(as_text=True)
+                        for title in titles:
+                            self.assertNotIn(title, combined_html)
                 self.assertEqual(client.get("/issues", follow_redirects=False).status_code, 302)
                 detail = client.get(f"/tasks/{task['task_key']}")
                 self.assertEqual(detail.status_code, 200)
@@ -3245,8 +3302,6 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 self.assertIn("window.setInterval(readChanges, 1000)", refresh_script)
                 self.assertIn("code-inspector-filter-scroll", refresh_script)
                 self.assertIn("window.scrollTo(0, saved.top)", refresh_script)
-                self.assertIn("data-only-pending-switch", refresh_script)
-                self.assertIn("form.requestSubmit()", refresh_script)
                 self.assertIn("navigator.clipboard?.writeText", refresh_script)
                 self.assertIn("document.execCommand('copy')", refresh_script)
 

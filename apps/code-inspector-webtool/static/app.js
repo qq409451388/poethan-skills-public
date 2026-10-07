@@ -148,21 +148,6 @@ document.querySelectorAll('form[method="post" i]').forEach((form) => {
   form.prepend(input);
 });
 
-// “仅待办”切换后立即应用；切回待办时清除可能冲突的完成态精确筛选。
-document.querySelectorAll('[data-only-pending-switch]').forEach((toggle) => {
-  toggle.addEventListener('change', () => {
-    const form = toggle.closest('form');
-    if (!form) return;
-    const completedInput = form.querySelector('[data-show-completed-input]');
-    if (completedInput) completedInput.value = toggle.checked ? '0' : '1';
-    const tabInput = form.elements.namedItem('tab');
-    if (tabInput) tabInput.value = 'all';
-    const statusInput = form.elements.namedItem('issue_status');
-    if (statusInput) statusInput.value = '';
-    form.requestSubmit();
-  });
-});
-
 // GET 筛选会重新加载页面；仅在本次筛选跳转中恢复提交前的滚动位置。
 (() => {
   const triggers = document.querySelectorAll('[data-preserve-scroll]');
