@@ -1,0 +1,4 @@
+interface:
+  display_name: "代码检查"
+  short_description: "按开发与审核职责边界管理代码检查和整改闭环。"
+  default_prompt: "启动 Code Inspector：$poethan-code-inspector start dev|insp 进入完整工作流；$poethan-code-inspector fastmode RI-XXX [RI-YYY ...] 进入 Inspector 快速人工审核并锁定 Issue Scope。"

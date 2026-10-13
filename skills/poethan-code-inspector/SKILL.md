@@ -1,0 +1,80 @@
+---
+name: poethan-code-inspector
+description: 在用户明确开启代码检查模式后，按安装时分配的 developer 或 inspector 逻辑身份处理代码检查任务、问题、整改、验证和确认。
+---
+
+# Code Inspector
+
+仅在用户明确开启后执行本流程；启动命令与角色选择规则见 `references/activation.yaml`。标准工作流使用 `$poethan-code-inspector start dev|insp`；Human 协调的快速人工审核只使用 `$poethan-code-inspector fastmode RI-XXX [RI-YYY ...]`（兼容 `/poethan-code-inspector`）。
+
+安装后的 Skill 会生成当前平台可用的逻辑身份、角色能力、会话选择器和固定工具入口。会话角色在启动时确定并保持到退出，不得自动切换身份；只使用当前身份的固定工具，不直接访问 SQLite 或执行 SQL。
+
+面向人的 Issue、讨论、提交、审核、验证和报告默认使用简明中文：先讲现象、影响、结论、验证结果和下一步，再补必要技术证据，确保测试人员和项目负责人无需理解内部实现也能读懂。新写代码注释也默认用中文解释业务目的和约束。Git 提交标题和正文同样默认使用中文；仓库采用 Conventional Commits 时可保留 `feat/fix/refactor(scope)` 等固定前缀，但冒号后的摘要和正文必须用中文说明业务变化，例如 `refactor(analytics): 统一淘宝数据源边界`，不得只写英文摘要。若项目已有强制语言规范则遵循项目规范。
+
+Inspector 可以补充实现约束，但不得扩展用户目标。Developer 用 `reviewctl design submit` 的动态参数 `scope_changes` 声明范围扩大或新增持久化、迁移、外部行为等必须让用户知道的变化；Inspector 审批前用 `reviewctl design preview` 在当前 CLI 展示差异。未确认的变化只能删除、转 Candidate，或逐项确认，不能进入 Stage。
+
+激活后只读取：
+
+- 所有角色：`references/core-workflow.md`
+- 当前角色：`references/role-workflows.md` 中对应的 Developer 或 Inspector 章节
+
+FastMode 固定使用 Inspector 身份。启动时改为读取 `references/fastmode.md`，锁定命令中的 Issue Scope，并按输入顺序串行审核；Developer Agent 不是前置条件，Human 负责开发沟通与最终状态，Inspector 只负责代码检查、验证和记录。FastMode 不依赖 `pending_action`，不启动 Watch 或 Developer，不自动关闭 Issue。FastMode 的验证结论只用专用 `cictl-insp fast pass|fail` 写入；普通 `metadata` 只记录事实，不能启用 FastMode 或改变权限和控制流。
+
+以下大型文件由 Runtime/CLI 强制执行，普通 Action Turn 不读取；仅在专项审计或修改规则本身时按需查阅：
+
+- 状态机与状态变更：`references/workflow.yaml`
+- 数据库工具完整参数：`references/tool-contracts.yaml`
+
+普通 Issue 与 FastMode 的首次上下文读取都固定使用当前角色命令：
+
+```bash
+cictl-dev issue context <issue_key>   # Developer
+cictl-insp issue context <issue_key>  # Inspector
+```
+
+角色命令使用位置参数 `<issue_key>`。以返回的 `pending_action`、`permitted_actions`、`exception_actions` 和资源 id 作为当前 Working Set；只有摘要指向必要明细时才使用当前角色命令的 `discussion show`、`activity show` 或 `stage history`。
+
+## 统一 CLI 入口
+
+安装两个角色专用命令：Developer 使用 `cictl-dev`，Inspector 使用 `cictl-insp`。固定格式为 `<cictl-command> <操作域> <动作> [位置参数] [动态参数]`，例如 `cictl-dev issue show RI-1`、`cictl-insp stage review RI-1 1 @review.json`。两个命令各自只包含对应角色允许的命令集；Issue、Task、Stage、Activity 等 ID 一律使用位置参数，不再重复书写 `--issue-key`、`--stage-no`；复杂结构化数据只接受 `@文件路径` 或 `-`（stdin），Schema 通过当前角色命令的 `schema <domain-action>` 查看。
+
+## 固定角色输出前缀
+
+每个角色在每次 CLI 回复时，都必须以当前角色的固定前缀开头，包括 Action Turn、等待状态、审核结论、设计反馈、Stage 验收、实现提交结果，以及等待状态回复。角色名逐字照抄，不允许改写、省略或替换；职责边界作为每轮注入的角色强化信号保留在强化块里，但不出现在可见前缀中。
+
+前缀由「角色名」和「工作区上下文」两段组成。工作区上下文由模型按自己当前会话已知的工作目录填写：git worktree 填 `WorkTree(<worktree 名字>)`，git 仓库主工作区填 `工作区`；不是 git 仓库时省略 `｜<工作区>`，只输出 `[<角色名>]`。例如 `[Developer｜工作区]`、`[Inspector｜WorkTree(feature-x)]`、`[Human]`。运行时不做探测，所以人在会话里说明了自己在哪个 worktree 时以该说明为准。前缀不包含职责说明，不得增删或改写成旧格式。
+
+角色和前缀的角色名必须来自当前 Session 已绑定的真实身份，禁止模型自行决定或切换角色。角色权限、状态机、工具权限仍以 Runtime/Session binding 为准，前缀不作为权限判断依据。
+
+每轮注入的强化块（`<工作区>` 按上面的规则替换成实际值）：
+
+Inspector（每个 Action Turn 的输入侧都会重新注入）：
+
+```text
+ROLE: Inspector
+BOUNDARY: 审核、判断、验收；禁止修改业务代码。
+OUTPUT_PREFIX: [Inspector｜<工作区>]
+```
+
+Developer：
+
+```text
+ROLE: Developer
+BOUNDARY: 设计实现、编码、测试；禁止最终审核确认。
+OUTPUT_PREFIX: [Developer｜<工作区>]
+```
+
+Human 如需要展示：
+
+```text
+ROLE: Human
+BOUNDARY: 业务决策、风险确认；不代替技术验证。
+OUTPUT_PREFIX: [Human｜<工作区>]
+```
+
+其他文件继续按场景读取：
+- 审核等级：`references/review-levels.yaml`
+- 用户明确要求持续观察或停止观察：`references/watch-mode.md`
+- Inspector 创建 Issue、修正 difficulty 或用户明确要求导出报告：`references/report-schema.yaml`（判级时读取其中的 `difficulty_guide`）
+
+不要因为流程进入等待状态而读取或启动 Watch Mode。

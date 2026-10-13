@@ -1,0 +1,86 @@
+version: 1.1.0
+
+levels:
+  L1:
+    name: 核心审查
+    description: 适用于小改动、局部修复和低复杂度需求
+    dimensions:
+      - functional_correctness
+      - data_security
+      - performance
+    focus:
+      functional_correctness:
+        - 业务逻辑错误
+        - 空值与边界条件
+        - 状态流转错误
+        - 异常分支遗漏
+      data_security:
+        - 事务失效
+        - 数据覆盖
+        - 幂等与重复提交
+        - 权限与租户隔离
+        - 注入与敏感信息泄露
+      performance:
+        - 循环查库
+        - 循环远程调用
+        - 无限制查询
+        - 明显大对象和慢操作
+
+  L2:
+    name: 标准审查
+    description: 适用于大多数需求开发和中等规模修改
+    includes:
+      - L1
+    dimensions:
+      - stability_concurrency
+      - code_quality
+      - architecture_extensibility
+    focus:
+      stability_concurrency:
+        - 超时与重试
+        - 幂等与资源释放
+        - 线程安全
+        - 锁与线程池
+        - 异步上下文
+        - 消息重复与丢失
+        - 中间件消息生命周期：TTL、retention、MAXLEN、删除、截断、compaction、归档或容量上限
+        - 区分 ACK、offset 推进、PEL 清理或状态确认与消息实体删除，不能假设确认后数据自动消失
+        - 对比生产、消费和清理速率，检查 Stream、队列、事件表、缓存和对象存储的无界增长趋势
+        - 跨生产端、消费端、重试恢复端和清理端检查生命周期责任是否闭环
+      code_quality:
+        - 重复代码
+        - 复杂度与嵌套
+        - 异常吞噬
+        - 命名与硬编码
+        - 无效代码
+      architecture_extensibility:
+        - 局部职责是否合理
+        - 新代码是否破坏既有抽象
+        - 是否产生明显耦合
+        - 扩展新类型是否依赖持续增加条件分支
+
+  L3:
+    name: 全量审查
+    description: 适用于定期治理、核心模块审计和系统重构前评估
+    includes:
+      - L2
+    dimensions:
+      - architecture_extensibility
+      - test_observability
+    focus:
+      architecture_extensibility:
+        - 模块职责与边界
+        - 依赖方向与循环依赖
+        - 跨模块操作内部数据
+        - 业务与基础设施耦合
+        - 公共模块膨胀
+        - 扩展点与接口稳定性
+        - 技术债扩散趋势
+      test_observability:
+        - 单元测试可写性
+        - 外部依赖隔离
+        - 日志质量
+        - 指标与告警
+        - 队列积压、消息体量、存储增长、最老消息年龄和清理失败监控
+        - 链路追踪
+        - 故障定位能力

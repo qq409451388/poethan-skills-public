@@ -21,7 +21,7 @@ from commands import review_home
 # apps/code-inspector-webtool/routing.py → 仓库根目录
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RUNTIME_SOURCE = REPO_ROOT / "scripts" / "code-inspector-installer" / "runtime"
-SKILL_CONFIG_SOURCE = REPO_ROOT / "skills" / "code-inspector" / "config"
+SKILL_CONFIG_SOURCE = REPO_ROOT / "skills" / "poethan-code-inspector" / "config"
 
 CAPABILITY_FILENAME = "agent-capabilities.yml"
 EXAMPLE_FILENAME = "agent-routing.example.yml"

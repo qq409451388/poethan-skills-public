@@ -23,7 +23,7 @@ try:
         status_targets,
     )
 except ModuleNotFoundError:  # 仓库内直接执行时，模块尚未复制到安装目录。
-    sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "skills" / "code-inspector" / "scripts"))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "skills" / "poethan-code-inspector" / "scripts"))
     from issue_projection import current_projection
     from runtime_permissions import (
         ALLOWED_STATUS_BY_AGENT,

@@ -1,0 +1,492 @@
+version: 5.0.0
+
+public_entrypoint: reviewctl
+format: reviewctl <操作域> <动作> [位置参数] [动态参数]
+dynamic_arguments:
+  rule: 复杂结构化数据只接受 @文件路径 或 -（stdin），不再要求内联 JSON。
+  schema_lookup: reviewctl schema <domain-action>
+identity:
+  rule: 角色和 operator 从激活上下文（安装器私有适配器 + agent-bindings.json）解析；禁止公开的 --agent 参数；无激活身份只能查看 help/schema。
+  audit_identity: agent_audit_log.agent_id、版本 created_by 和活动 operator_id 使用逻辑 alias。
+internal_compat_layer:
+  command: review-db.py
+  note: 旧 review-db 子命令保留为内部兼容层；Skill 文档与安装说明只暴露 reviewctl。
+domain_action_map:
+  task: {list: task-list, show: task-get, ensure: task-resolve, edit: task-update, status: task-update-status}
+  issue: {list: issue-list, pending: issue-list-pending-review, show: issue-get, context: issue-context-get, create: issue-create, create-many: issue-create-batch, edit: issue-update-body, rate: issue-update-assessment, rate-many: issue-update-assessment-batch, status: issue-update-status, status-many: issue-update-status-batch, difficulty: issue-set-difficulty, assign: issue-set-assignment}
+  design: {request: design-request, submit: design-submit, preview: design-preview, confirm: design-choice-record, approve: "design-review(decision=approved)", reject: "design-review(decision=rejected)"}
+  stage: {list: stage-list, show: stage-get, history: stage-history-get, prepare: stage-prepare, submit: stage-submit, review-template: 只读模板生成, review: "stage-review（decision/content/summary/plan_no 自动推导，验收项使用 AC-n 稳定 ID）", redesign: "stage-review(decision=redesign)"}
+  discussion: {list: discussion-list, show: discussion-get, add: discussion-append, edit: discussion-amend}
+  activity: {list: activity-list, recent: activity-list-recent, show: activity-get, revisions: activity-revision-list, add: activity-append, edit: activity-amend}
+  decision: {list: decision-list, add: decision-record}
+  candidate: {list: candidate-list, submit: candidate-submit, accept: "candidate-update-status(ACCEPTED)", reject: "candidate-update-status(REJECTED)"}
+  human: {ask: human-escalate, resolve: human-confirmation-resolve}
+  fast: {pass: "fast-review-record(pass)", fail: "fast-review-record(fail)"}
+  impl: {submit: implementation-submit}
+  watch: {issue: "watch-probe(issue-status)", stage: "watch-probe(stage-status)", activity: "watch-probe(activity)", task: "watch-probe(task-status)"}
+
+commands:
+  task-create:
+    roles: [inspector, human]
+    required: [--title, --objective]
+    optional: [--task-key, --task-type, --review-level, --review-scope, --baseline-ref, --started-at, --remark]
+    defaults: {task-type: REVIEW}
+  task-resolve:
+    roles: [inspector, human]
+    purpose: 按 task 类型的稳定 identity 复用活动 task；不存在时创建。显式 task_key 优先。
+    required: [--title, --objective, --review-level, --review-scope]
+    optional: [--task-key, --task-type, --baseline-ref, --remark]
+    defaults: {task-type: REVIEW}
+    identity_note: REVIEW 保留原 baseline identity；CONTINUOUS identity 忽略 baseline_ref，并复用 PENDING/IN_PROGRESS/ON_HOLD/BLOCKED 的同一治理任务。
+  task-list:
+    roles: [inspector, developer, human]
+    optional: [--status, --project-name, --task-type, --include-closed]
+    default: 仅返回 PENDING、IN_PROGRESS、ON_HOLD、BLOCKED。
+  task-get:
+    roles: [inspector, developer, human]
+    required: [--task-key]
+    note: 按 task_key 返回单个任务；不存在时失败，不以 task-list 过滤模拟。
+  task-update:
+    roles: [inspector, human]
+    required: [--task-key]
+    optional_one_or_more: [--title, --objective, --remark, --close-reason]
+    note: task_type 创建后不可修改，命令不接受 --task-type。
+  task-update-status:
+    roles: [inspector, human]
+    required: [--task-key, --status]
+    optional: [--started-at, --finished-at, --close-reason, --remark]
+    note: inspector 遵守标准 task_transitions；human 可设置任一合法 Task 状态并可重新打开终态任务。仅转为 CLOSED 时，命令在同一事务中把所有非 CONFIRMED/CANCELLED Issue 转为 CANCELLED、废弃 active Stage Plan 并写入 STATUS_CHANGED；其他 Task 状态变更不同步 Issue。
+    returns: [task_key, status, cancelled_issue_count]
+  version-create:
+    roles: [inspector, human]
+    required: [--task-key, --reason]
+    note: 通常使用 issue-create-batch 自动创建版本；仅在确有独立新问题且需分步操作时使用。
+  issue-create:
+    roles: [inspector, human]
+    required: [--task-key, --title, --dimension, --severity, --summary]
+    optional: [--issue-key, --parent-issue-id, --expected-outcome, --technical-note, --local-terms, --evidence, --dedupe-key, --difficulty, --difficulty-reason]
+    compatibility_optional: [--remediation-benefit, --remediation-cost, --disposition, --confidence, --description, --facts, --rationale, --trigger-conditions, --potential-impact, --impact-scope, --estimated-change]
+    json_arguments: [--local-terms, --evidence, --trigger-conditions, --potential-impact, --impact-scope, --estimated-change, --difficulty-reason]
+    defaults: {remediation-benefit: medium, remediation-cost: medium, disposition: current_iteration, confidence: high}
+    content_rule: summary 直说现象、影响和关键原因；按需使用轻量 Markdown，不保存推理过程或长日志。description 可作为旧调用的 summary 兼容输入。
+    evidence_location: 优先 file_path 加 class_name/method_name/符号或 code_excerpt；line_start/line_end 只是快照提示。
+    difficulty: 可选正整数，只描述任务本身的抽象困难程度；不写具体模型名称，也不做模型能力判断。缺少时不产生推荐执行配置。
+    recommended_executors: 读取时由本机 Model Router 按 level>=difficulty 动态计算；Router 未配置时为空列表，命令照常成功。
+  issue-set-difficulty:
+    roles: [inspector, human]
+    required: [--issue-key, --difficulty]
+    optional: [--difficulty-reason]
+    json_arguments: [--difficulty-reason]
+    note: 修正已创建 Issue 的困难程度并立即重算推荐执行配置；不改变 Issue 状态机。省略 --difficulty-reason 时保留原解释。
+  issue-set-assignment:
+    roles: [inspector, human]
+    required: [--issue-key]
+    optional: [--profile-id]
+    note: 记录真正选定的 Dev 执行配置；省略 --profile-id 表示清除分配。只接受 enabled 且 level >= 当前 difficulty 的合法候选。推荐（recommendedExecutors）只是候选，assignment 才是调度结果，两者生命周期不同：Routing 变化只让 assignment 变为 STALE，不会自动改选，也不会删除历史分配。读取时 issue-get / issue-context-get 返回 assignmentStatus（VALID / STALE / NONE）与 assignmentInvalidReason。
+  issue-create-batch:
+    roles: [inspector, human]
+    required: [--task-key, --reason, --issues]
+    json_arguments: [--issues]
+    item_required: [title, dimension, severity, summary]
+    note: 一轮扫描的首选落库命令；自动去重，并且只在存在新 issue 时创建版本（version-create 已降为内部能力，由本命令自动调用）。
+  issue-list:
+    roles: [inspector, developer, human]
+    optional: [--task-key, --status, --severity, --dimension, --updated-after, --limit, --fields]
+    constraints: {updated-after: ISO-8601 inclusive lower bound to avoid same-second misses, limit: 1..1000, fields: comma-separated allowlisted fields}
+    default_fields: [issue_key, title, summary, dimension, severity, difficulty, status, current_attempt_no, updated_at, last_discussion_at]
+    fields_note: 可选择任意 issue-get 返回字段；JSON 字段沿用 evidence_json 等现有响应名。
+    returns_activity_summary: [last_activity_at, last_discussion_at]
+  issue-list-pending-review:
+    roles: [inspector, developer, human]
+    purpose: 快速返回 IMPLEMENTED_PENDING_REVIEW 问题。
+    optional: [--task-key, --updated-after, --limit, --fields]
+  issue-get:
+    roles: [inspector, developer, human]
+    required: [--issue-key]
+    optional: [--view]
+    defaults: {view: compact}
+    view_values: [compact, full]
+    compact_fields: [issue_key, task_key, project_name, title, summary, expected_outcome, technical_note, local_terms_json, dimension, severity, difficulty, status, evidence_json, current_attempt_no, updated_at, last_activity_at, last_discussion_at]
+    note: full 仅用于兼容旧字段或专项审计，普通处理不要读取完整旧正文。
+  issue-context-get:
+    roles: [inspector, developer, human]
+    required: [--issue-key]
+    purpose: 一次返回当前角色处理 Issue 所需的有界 Working Set。
+    returns: [projection_revision, issue, current_stage, effective_decisions, latest_activities, latest_discussions, protected_constraints, pending_action, permitted_actions, exception_actions, resources, lazy_load]
+    issue_governance_fields: [task_key, project_name, review_level, review_scope, baseline_ref, evidence, local_terms]
+    bounded_issue_fields:
+      evidence: 最多 12 项；单项过长时保留代码定位字段及不超过 400 字的摘要，并返回 evidence_count/evidence_truncated。
+      local_terms: 最多 30 项；术语名最多 80 字，解释最多 240 字，并返回 local_terms_count/local_terms_truncated。
+    snapshot_semantics: Projection、Issue、Stage、Activity、Decision 与 Discussion 来自同一个显式 SQLite read snapshot；审计在快照释放后单独写入。
+    permission_semantics: pending_action 只表达当前应做什么；permitted_actions 与 exception_actions 是 Runtime 权限模块计算的当前可执行写动作，human-escalate 等低频通道只出现在 exception_actions；按需读取命令单列在 lazy_load。
+    discussion_window: 最近 8 条 id/topic/time/summary；正文仍通过 discussion-get 延迟读取。
+    revision_semantics: Issue 自身的单调 Working Set 版本；V017 触发器覆盖 Context 内全部 Issue/Task 投影字段，以及 Activity、Discussion、Decision、Stage 的变更。
+    excludes: [完整讨论正文, 完整 Activity 正文, 全部历史 baseline, 大段重复测试证据]
+    usage_rule: 普通 Action Turn 首先且通常只调用本命令；摘要指向必要明细时才 lazy load。
+  issue-update-assessment:
+    roles: [inspector, human]
+    required: [--issue-key]
+    optional_one_or_more: [--dimension, --severity, --remediation-benefit, --remediation-cost, --disposition, --confidence]
+    default_usage: 普通人工界面只维护 dimension 和 severity；其余字段仅为旧调用兼容。
+  issue-update-assessment-batch:
+    roles: [inspector, human]
+    required: [--updates]
+    json_arguments: [--updates]
+    item_required: [issue_key]
+    item_optional_one_or_more: [dimension, severity, remediation_benefit, remediation_cost, disposition, confidence]
+    note: 整批在同一事务中更新；任一项失败则全部回滚；同一批次不得重复 issue_key。
+  issue-update-body:
+    roles: [inspector, human]
+    required: [--issue-key]
+    optional_one_or_more: [--title, --summary, --expected-outcome, --technical-note, --local-terms]
+    compatibility_optional: [--description, --facts, --rationale]
+    json_arguments: [--local-terms]
+  issue-update-status:
+    roles: [inspector, developer, human]
+    required: [--issue-key, --status]
+    optional: [--content]
+    note: developer 请求 INSPECTOR_CONFIRMATION_REQUIRED 时 --content 必填；Inspector/Developer 受 workflow.yaml 和原子前置条件约束。Human 可设任一合法 Issue 状态，包括 HUMAN_CONFIRMATION_REQUIRED 和 CONFIRMED；变更记录 STATUS_CHANGED 与审计。
+  issue-update-status-batch:
+    roles: [inspector, developer, human]
+    required: [--updates]
+    json_arguments: [--updates]
+    item_required: [issue_key, status]
+    item_optional: [content]
+    note: 整批在同一事务中更新；任一项失败则全部回滚；同一批次不得重复 issue_key。
+  implementation-submit:
+    roles: [developer, human]
+    purpose: 原子追加 IMPLEMENTATION_SUBMITTED 证据并转为 IMPLEMENTED_PENDING_REVIEW。
+    required: [--issue-key, --content]
+    optional: [--status-content, --code-reference, --metadata]
+    json_arguments: [--code-reference, --metadata]
+    note: 实现证据与状态变更使用同一新 attempt 和同一事务；设计阶段及 REDESIGN_REQUIRED 禁止提交；存在 active Stage Plan 时必须全部 APPROVED；任一步失败则全部回滚。
+  design-request:
+    roles: [inspector, human]
+    purpose: 原子追加 DESIGN_REQUESTED 并将问题转为 DESIGN_REQUIRED。
+    required: [--issue-key, --content]
+    allowed_from: [PROPOSED, IN_PROGRESS, REDESIGN_REQUIRED]
+    content_required: true
+    content_rule: >-
+      正文为自由文本，按 workflow.yaml design_depth 分级组织：
+      NORMAL 至少覆盖 root_cause、boundaries、design_questions、acceptance；
+      COMPLEX 还必须包含明确到架构层的 architecture_direction（归属层级、source of truth、
+      push/pull、生命周期归属、允许/禁止的路径、必须幂等的路径、明确不应继续扩展的旧方案），
+      禁止只写“注意兼容”“考虑并发”“避免破坏现有逻辑”“请给出合理方案”等无实际指导的话；
+      不指定具体类、方法和代码结构。SIMPLE 问题不发起 design-request。
+    redesign_rule: >-
+      从 REDESIGN_REQUIRED 调用时是修订版架构指导：Inspector 必须重新检查 Root Cause、
+      Architecture Direction、Boundaries、Acceptance 哪些需要修正并写明修订结论；
+      该调用会解除对 Developer design-submit 的重设计门槛。
+  design-submit:
+    roles: [developer, human]
+    purpose: 原子追加 DESIGN_SUBMITTED 并将问题转为 DESIGN_PENDING_REVIEW。
+    public_format: reviewctl design submit <issue_key> [@design.json] --summary <summary> --content <content>
+    required: [issue_key, --summary, --content]
+    dynamic_optional: [scope_changes, code_reference]
+    allowed_from: [DESIGN_REQUIRED, REDESIGN_REQUIRED]
+    attempt_effect: none
+    redesign_gate: >-
+      REDESIGN_REQUIRED 状态下，Inspector 提交新的 design-request 之前 Runtime 拒绝本命令；
+      Developer 不得在架构指导修订前抢先重交方案。
+    summary_rule: --summary 用 1 至 3 句日常中文说明改哪里、大概怎么改、有什么影响；最多 180 字，不写代码块。完整技术方案继续放 --content。
+    scope_changes_schema: [{id: SC-简短标识, summary: 白话描述, impacts: [影响类型]}]
+    scope_rule: 声明范围扩大或新增持久化、迁移、外部行为等需确认变化；省略时命令按空数组处理。旁支问题不得偷偷并入当前方案。
+  design-preview:
+    roles: [inspector, developer, human]
+    required: [--issue-key, --design-activity-id]
+    returns: [user_goal, design_summary, scope_changes, approval_ready]
+    note: Inspector 审批前必须把该短对比展示在当前 CLI；不返回完整设计正文。
+  design-review:
+    roles: [inspector, human]
+    purpose: 绑定当前设计提交并原子记录审核结论；staged 批准同时创建并激活 Stage Plan。
+    required: [--issue-key, --decision, --design-activity-id, --content]
+    quality_checks: >-
+      审批时 Inspector 应检查：是否遵守 Architecture Direction、是否解决 Root Cause 而非局部打补丁、
+      是否突破 Boundaries、是否回答全部 Design Questions、Acceptance 是否可验证、
+      是否出现无必要复杂化、是否引入 scope change。具体实现方式与自身偏好不同不构成驳回理由。
+    conditional_required: {approved: [--execution-mode, --confirmation], staged: [--stages（无升级前 active plan 时）], confirmation_recorded: [--confirmation-ids]}
+    enum: {decision: [approved, rejected]}
+    enum_execution_mode: [direct, staged]
+    enum_confirmation: [not-needed, recorded]
+    allowed_from: [DESIGN_PENDING_REVIEW]
+    constraints:
+      - design-activity-id 必须属于当前 Issue 最新的 DESIGN_SUBMITTED
+      - recorded 必须完整覆盖当前设计的全部 scope change id
+      - not-needed 仅允许 scope_changes 为空
+      - direct 禁止 active plan 和 --stages
+      - staged 原子创建 Stage Plan；升级前已有 active plan 时复用且禁止重复传 --stages
+    effects:
+      approved_direct: [追加 DESIGN_APPROVED, 转为 IN_PROGRESS]
+      approved_staged: [插入 PLANNED Stage, 追加 STAGE_PLAN_CREATED, 追加 DESIGN_APPROVED, 转为 IN_PROGRESS, Stage 1 转为 IN_PROGRESS]
+      rejected: [追加 DESIGN_REJECTED, 转为 DESIGN_REQUIRED]
+  design-choice-record:
+    roles: [inspector]
+    purpose: 用户在当前 Inspector CLI 回答后，把白话问题、原回答和最终决定绑定到当前设计；Issue 仅作回看记录。
+    required: [--issue-key, --design-activity-id, --question, --answer, --summary, --impacts, --change-ids]
+    json_arguments: [--impacts, --change-ids]
+    impact_values: [new_persistence, data_migration, external_behavior, new_dependency, scope_expansion, multiple_solutions]
+    constraints:
+      - 只能绑定当前 Issue 最新的 DESIGN_SUBMITTED，且状态必须为 DESIGN_PENDING_REVIEW
+      - change-ids 必须来自当前设计的 scope_changes，impacts 必须与这些变化完全一致
+      - question 和 summary 不超过 300 字，必须使用用户能直接理解的日常中文
+      - 不能要求用户打开 Web、阅读 Issue 或理解未解释的技术术语
+      - 设计提交在确认后修订时，确认自动失效
+    effects: [写入 CLI_DESIGN_CONFIRMATION 决策, 保存问题与回答, 返回 confirmation decision id]
+  stage-list:
+    roles: [inspector, developer, human]
+    required: [--issue-key]
+    optional: [--plan-no]
+    purpose: 返回 Stage Plan 历史及完整阶段字段。
+  stage-get:
+    roles: [inspector, developer, human]
+    required: [--issue-key, --stage-no]
+    optional: [--plan-no]
+    defaults: {plan-no: 最新计划}
+    returns: [当前 Stage 摘要, 有界的历史有效约束摘要, 最近 Stage id/status/title, 历史数量与截断标记]
+    constraint_order: 新 Stage 优先；相同约束保留最新来源。显式 effective/superseded 约束语义尚未定义。
+    excludes: [全部历史 baseline, 大段测试证据, 全量 review findings]
+  stage-history-get:
+    roles: [inspector, developer, human]
+    required: [--issue-key, --stage-no]
+    optional: [--plan-no]
+    purpose: 按 Stage 延迟读取完整 baseline、测试证据和审核字段。
+  stage-prepare:
+    roles: [developer, human]
+    purpose: Developer 修改代码前声明当前 Stage 的预计影响范围、修改原因与必须保护的历史行为。
+    required: [--issue-key, --stage-no, --change-scope, --change-reason]
+    optional: [--protected-behaviors]
+    json_arguments: [--change-scope, --protected-behaviors]
+    allowed_issue_status: IN_PROGRESS
+    allowed_stage_status: IN_PROGRESS
+    effects: [保存开发前声明, 追加 STAGE_SCOPE_DECLARED]
+    public_format: reviewctl stage prepare <issue_key> <stage_no> @scope.json
+    constraints: [Stage 2+ 必须存在历史 PASSED baseline, 省略 protected_behaviors 时自动继承历史 baseline 的 verified_behaviors]
+  stage-submit:
+    roles: [developer, human]
+    purpose: 原子提交当前 Stage 的实现证据并转为 PENDING_REVIEW。
+    required: [--issue-key, --stage-no, --content, --commit-sha]
+    public_format: reviewctl stage submit <issue_key> <stage_no> @evidence.json --content <content> --commit-sha <sha>
+    governance_v2_required: [test_evidence, 已执行 stage prepare]
+    automatic: [从 commit_sha 关联 code_reference 与 diff_summary, 关联上一轮 BLOCKER/MUST finding id]
+    dynamic_optional: [code_reference, resolved_findings]
+    allowed_issue_status: IN_PROGRESS
+    allowed_stage_status: IN_PROGRESS
+    effects: [保存 commit、Diff、当前与历史测试证据, 追加 STAGE_SUBMITTED, Stage 转 PENDING_REVIEW]
+    resubmission_rule: 若上轮存在 BLOCKER/MUST，resolved-findings 必须逐项包含其 finding id；SHOULD/NIT 不要求修复。
+    attempt_effect: none
+  stage-review:
+    roles: [inspector, human]
+    purpose: 原子验收当前 PENDING_REVIEW Stage；redesign 是兼容 UI 人工接管的显式整案失效扩展。
+    public_format: reviewctl stage review <issue_key> <stage_no> @review.json
+    required: [issue_key, stage_no, current_acceptance]
+    governance_v2_required: [approved 时 baseline]
+    automatic: [decision, content, summary, plan_no]
+    content_rule: --content 保存完整验收结论，可包含 Inspection Result、四级 findings、历史回归、当前验收和最终决定。
+    summary_rule: --summary 保存最多 180 字、3 行的正式决策摘要；省略时 Runtime 从 --content 生成，不因完整结论较长而拒绝调用。
+    enum: {decision: [auto, approved, rejected, redesign]}
+    allowed_issue_status: IN_PROGRESS
+    allowed_stage_status: PENDING_REVIEW
+    effects:
+      approved: [追加 STAGE_APPROVED, 当前 Stage 转 APPROVED, 自动激活下一个 PLANNED Stage]
+      rejected: [追加 STAGE_REJECTED, 当前 Stage 回 IN_PROGRESS]
+      redesign: [追加 STAGE_REJECTED, 未完成 Stage 转 SUPERSEDED, 追加 STAGE_PLAN_SUPERSEDED, Issue 转 REDESIGN_REQUIRED]
+    review_result_schema:
+      findings:
+        required_keys: [BLOCKER, MUST, SHOULD, NIT]
+        item_required: [id, summary]
+        blocking_item_required: [evidence, risk]
+      historical_regression: "以已批准 stage_no 为 key；每项包含 status=PASS|FAIL 与 evidence"
+      current_acceptance: "按原顺序逐项复制 acceptance criterion；每项包含 status=PASS|FAIL 与 evidence"
+    baseline_schema:
+      required_keys: [verified_behaviors, input_output_contracts, business_semantics, tests]
+      non_empty: [verified_behaviors, tests]
+      reviewctl_note: reviewctl stage review 由 findings、当前验收和历史回归自动计算 decision 并确定性生成 content/summary；只有整案失效使用 reviewctl stage redesign。
+    convergence:
+      - governance v2 推荐 decision=auto，由 Runtime 按 Gate 计算 approved/rejected；整案失效仍显式 redesign
+      - 历史回归 FAIL 必须记录 BLOCKER
+      - 第二轮起新增 BLOCKER/MUST 必须有 why_not_found_earlier、evidence、risk
+      - 第二轮起新增 SHOULD/NIT 只允许由本轮修复新引入，且必须有 introduced_by_fix=true 与 evidence
+      - BLOCKER/MUST 为 0 且当前验收和历史回归全 PASS 时，decision 必须 approved
+      - SHOULD/NIT 只作为 Backlog，不能支持 rejected
+    returns: [inspection_result, final_decision, review_round, blocking_counts, next_stage_no]
+  human-escalate:
+    roles: [inspector]
+    purpose: 在 Agent 无法取得关键业务事实或存在重大不可逆数据风险时，原子请求 Human 最终边界或安全决策。
+    required: [--issue-key, --reason, --question]
+    optional: [--options, --evidence, --recommended-option]
+    json_arguments: [--options, --evidence]
+    effects: [追加 HUMAN_CONFIRMATION_REQUESTED, 转为 HUMAN_CONFIRMATION_REQUIRED]
+    content_rules:
+      required_summary: [为什么必须人工决定, 已验证事实, 无法确认的事实, 可选方案及影响, Inspector 推荐方案, Human 只需回答的问题]
+      forbidden_payload: [未经整理的长日志, 完整代码, Agent 对话记录]
+    note: 这是 Inspector-only 的异常升级入口；Human 与 Developer 均不得发起。普通技术不确定性必须先由 Agent 通过证据、独立方案讨论、设计驳回或重新设计解决。
+  human-confirmation-resolve:
+    roles: [human]
+    purpose: 原子记录 Human 的业务边界或风险决定，并恢复 Agent 工作流。
+    required: [--issue-key, --decision, --content]
+    optional: [--next-status]
+    defaults: {next-status: DESIGN_REQUIRED}
+    enum: {next-status: [DESIGN_REQUIRED, IN_PROGRESS, ON_HOLD, BLOCKED, CANCELLED]}
+    allowed_from: [HUMAN_CONFIRMATION_REQUIRED]
+    effects: [追加 HUMAN_CONFIRMATION_PROVIDED, 离开 HUMAN_CONFIRMATION_REQUIRED]
+    note: 该专用决策命令仅支持列出的恢复状态；Human 可另用 issue-update-status 指定任一合法状态，包括直接 CONFIRMED。Inspector 确认仍需要当前 implementation attempt 的 VERIFICATION_PASSED。
+  fast-review-record:
+    roles: [inspector]
+    purpose: FastMode 专用原子写入口；不依赖 Developer Session、IMPLEMENTATION_SUBMITTED、pending_action 或 Runtime Event。
+    required: [--issue-key, --decision, --content]
+    optional: [--evidence]
+    enum: {decision: [pass, fail]}
+    effects:
+      pass: [追加 VERIFICATION_PASSED, 写入 VERIFICATION APPROVED decision]
+      fail: [追加 VERIFICATION_FAILED, 写入 VERIFICATION REJECTED decision]
+      evidence_present: [先追加 VERIFICATION_EVIDENCE_ADDED]
+    metadata: 命令内部固定写入 workflow_mode=FASTMODE，仅用于审计展示，不参与权限或控制流判断。
+    forbidden_effects: [修改 Issue 状态, 自动 CONFIRMED, 自动 CANCELLED]
+  activity-append:
+    roles: [inspector, developer, human]
+    required: [--issue-key, --activity-type, --content]
+    optional: [--attempt-no, --result-status, --code-reference, --metadata, --summary]
+    json_arguments: [--code-reference, --metadata]
+    forbidden_atomic_types: [DESIGN_REQUESTED, DESIGN_SUBMITTED, DESIGN_APPROVED, DESIGN_REJECTED, STAGE_PLAN_CREATED, STAGE_SCOPE_DECLARED, STAGE_SUBMITTED, STAGE_APPROVED, STAGE_REJECTED, STAGE_PLAN_SUPERSEDED, HUMAN_CONFIRMATION_REQUESTED, HUMAN_CONFIRMATION_PROVIDED]
+    forbidden_discussion_types: [COMMENT_ADDED, DESIGN_GUIDANCE]
+    note: 讨论一律使用 discussion-append；审核、验证等结论会同步建立 issue_decision，核心工作流活动必须由对应原子命令生成。正式结论类型可用 --summary 提供短摘要；省略时 Runtime 从 --content 生成，完整内容仍保留在 Activity。metadata 只记录业务事实，不能改变权限、模式或控制流；FastMode 结论必须使用 fast-review-record。普通 VERIFICATION_FAILED 按标准 Workflow 记录验证失败。
+    content_format:
+      short: 单行纯文本，不添加 Markdown 装饰。
+      multiline: 多个独立说明可直接换行；无需强制使用列表。
+      markdown: 仅在包含代码、命令、真正的项目列表或复杂层级时使用；代码必须使用 fenced code block。
+      principle: 以清晰可读为准，不为格式而格式。
+  activity-amend:
+    roles: [inspector, developer]
+    purpose: 修订当前逻辑身份尚未被工作流消费的提交文案或补充证据。
+    required: [--issue-key, --activity-id, --content]
+    optional: [--reason]
+    ownership: operator_type 和 operator_id 必须同时匹配当前角色入口；不能修改同角色的其他 alias 或其他角色记录。
+    mutable_fields: [content]
+    immutable_fields: [issue_id, attempt_no, activity_type, operator_type, operator_id, result_status, code_reference_json, metadata_json, created_at]
+    effects: [保存旧正文到 issue_activity_revision, 覆盖主活动当前正文, 增加 amendment_count, 设置 amended_at, 更新 Issue updated_at, 写入审计]
+    amendable_types: [EVIDENCE_ADDED, DESIGN_SUBMITTED, REDESIGN_SUBMITTED, STAGE_SUBMITTED, IMPLEMENTATION_SUBMITTED, VERIFICATION_EVIDENCE_ADDED]
+    consumption_lock: DESIGN_SUBMITTED/REDESIGN_SUBMITTED 只在 DESIGN_PENDING_REVIEW 可修订；STAGE_SUBMITTED 只在对应 Stage PENDING_REVIEW 且仍为当前投影时可修订；IMPLEMENTATION_SUBMITTED 只在 IMPLEMENTED_PENDING_REVIEW 可修订。
+    forbidden_final_types: [DESIGN_APPROVED, DESIGN_REJECTED, STAGE_APPROVED, STAGE_REJECTED, REVIEW_APPROVED, REVIEW_REJECTED, VERIFICATION_PASSED, VERIFICATION_FAILED, INSPECTOR_CONFIRMATION_PROVIDED, HUMAN_CONFIRMATION_PROVIDED]
+    usage_rule: 修正已有提交必须 amend，不得 append 一条更正或“以此为准”的替代活动。
+  activity-revision-list:
+    roles: [inspector, developer, human]
+    required: [--issue-key, --activity-id]
+    purpose: 按 revision_no 查看指定活动被替换的正文；仅用于审计，不应把旧版本重新当作当前判断依据。
+  activity-list:
+    roles: [inspector, developer, human]
+    required: [--issue-key]
+  activity-get:
+    roles: [inspector, developer, human]
+    required: [activity-id]
+    purpose: 按 id 读取单条活动的完整正文、metadata 和 code reference；只在精简列表中的活动需要进一步处理时调用。
+    returns: [完整 Activity 字段, issue_key, task_key]
+  watch-probe:
+    roles: [inspector, developer, human]
+    purpose: Watcher 专用的最小只读状态探针；不写 agent_audit_log，不得用于正常上下文读取。
+    required: [--kind, --target]
+    kinds: [issue-status, stage-status, activity, task-status]
+    conditional:
+      stage-status: [--stage-no]
+      activity: [--after-activity-id, --activity-type]
+    optional: [--plan-no, --activity-type]
+    output: 只返回目标状态或首个匹配的新 Activity，不返回 Issue、Stage 或 Activity 正文。
+  activity-list-recent:
+    roles: [inspector, developer, human]
+    purpose: 跨 issue 查询近期活动摘要，避免逐条遍历 issue；需要正文或结构化证据时再调用 activity-get。
+    optional: [--task-key, --activity-type, --since, --limit]
+    defaults: {limit: 100}
+    constraints: {limit: 1..1000, since: ISO-8601}
+    returns: [id, issue_key, type, attempt, time, summary]
+    excludes: [content, metadata, code_reference]
+    examples:
+      - activity-list-recent --task-key RT-TEST --activity-type VERIFICATION_PASSED
+      - activity-list-recent --since 2026-07-22T09:00:00+08:00 --limit 200
+      - activity-get 123
+  discussion-append:
+    roles: [inspector, developer, human]
+    required: [--issue-key, --content]
+    optional: [--topic]
+    defaults: {topic: GENERAL}
+    topic_values: [GENERAL, DESIGN, IMPLEMENTATION, VERIFICATION]
+    purpose: 追加尚未定论的协作消息，不写入处理历史。
+  discussion-amend:
+    roles: [inspector, developer, human]
+    required: [--issue-key, --discussion-id, --content]
+    optional: [--reason]
+    ownership: 只能修订 operator_type 和 operator_id 都匹配当前入口的消息。
+    effects: [保存旧正文到 issue_discussion_revision, 覆盖当前正文, 更新 amendment_count 和 amended_at]
+  discussion-list:
+    roles: [inspector, developer, human]
+    required: [--issue-key]
+    optional: [--topic, --since, --cursor, --limit]
+    defaults: {limit: 20, order: newest-first}
+    constraints: {limit: 1..100, cursor: 读取 id 小于 cursor 的更早讨论}
+    returns: [id, time, topic, summary]
+    excludes: [content, revision history, operator detail]
+  discussion-get:
+    roles: [inspector, developer, human]
+    required: [--issue-key, --discussion-id]
+    purpose: 按 id 延迟读取单条讨论完整正文。
+  decision-record:
+    roles: [inspector]
+    required: [--issue-key, --decision-type, --outcome, --content]
+    optional: [--scope-key, --source-discussion-ids, --metadata]
+    json_arguments: [--source-discussion-ids, --metadata]
+    purpose: 把讨论达成的一致整理为短小正式结论。
+    content_rule: 正式结论最多 180 字、最多 3 行且不含代码块；只写最终决定和主要影响，推理与技术细节留在来源讨论。
+    supersession: 同一 issue、decision-type、scope-key 的旧有效结论自动转为 effective=0，并指向新结论。
+  decision-list:
+    roles: [inspector, developer, human]
+    required: [--issue-key]
+    optional: [--include-superseded]
+    default: 只返回 effective=1 的当前结论。
+  candidate-submit:
+    roles: [developer, human]
+    purpose: 将新发现提交到独立候选审核队列，不创建正式 issue。
+    required: [--task-key, --title, --description, --facts, --rationale]
+    optional: [--candidate-key, --evidence, --suggested-dimension, --suggested-severity, --suggested-confidence]
+    json_arguments: [--evidence]
+  candidate-list:
+    roles: [inspector, developer, human]
+    optional: [--task-key, --status, --updated-after, --limit]
+    default: 仅返回 SUBMITTED 和 UNDER_REVIEW；limit 为 100。
+    constraints: {updated-after: ISO-8601 inclusive lower bound, limit: 1..1000}
+  candidate-update-status:
+    roles: [inspector, human]
+    required: [--candidate-key, --status]
+    optional: [--content]
+    note: ACCEPTED 或 REJECTED 时 --content 必填；接受候选不自动创建正式 issue。
+
+enum_values:
+  task_type: [REVIEW, CONTINUOUS]
+  stage_status: [PLANNED, IN_PROGRESS, PENDING_REVIEW, APPROVED, SUPERSEDED]
+  dimension: [functional_correctness, data_security, stability_concurrency, performance, architecture_extensibility, code_quality, test_observability]
+  severity: [critical, high, medium, low]
+  remediation_benefit: [high, medium, low]
+  remediation_cost: [low, medium, high, extreme]
+  disposition: [immediate_fix, current_iteration, near_term_iteration, special_governance, opportunistic_fix, observe, defer, business_confirmation]
+  confidence: [high, medium, low]
+
+response:
+  success: stdout JSON
+  failure: stderr JSON with non-zero exit code
+
+restrictions:
+  raw_sql: forbidden
+  delete_history: forbidden
+  direct_sqlite_access: forbidden
+  forged_alias_or_role: forbidden
+
+workflow_statuses:
+  task: [PENDING, IN_PROGRESS, ON_HOLD, BLOCKED, CLOSED, CANCELLED]
+  issue: [PROPOSED, DESIGN_REQUIRED, DESIGN_PENDING_REVIEW, IN_PROGRESS, ON_HOLD, BLOCKED, INSPECTOR_CONFIRMATION_REQUIRED, HUMAN_CONFIRMATION_REQUIRED, IMPLEMENTED_PENDING_REVIEW, REDESIGN_REQUIRED, CONFIRMED, CANCELLED]
+  candidate: [SUBMITTED, UNDER_REVIEW, ACCEPTED, REJECTED]
+  stage: [PLANNED, IN_PROGRESS, PENDING_REVIEW, APPROVED, SUPERSEDED]
+  task_type: [REVIEW, CONTINUOUS]
+
+activity_types:
+  design: [DESIGN_REQUESTED, DESIGN_SUBMITTED, DESIGN_APPROVED, DESIGN_REJECTED]
+  legacy_discussion: [COMMENT_ADDED, DESIGN_GUIDANCE]
+  stage: [STAGE_PLAN_CREATED, STAGE_SCOPE_DECLARED, STAGE_SUBMITTED, STAGE_APPROVED, STAGE_REJECTED, STAGE_PLAN_SUPERSEDED]
+  human_confirmation: [HUMAN_CONFIRMATION_REQUESTED, HUMAN_CONFIRMATION_PROVIDED]
+  legacy_compatible: [REVIEW_APPROVED, REVIEW_REJECTED, REDESIGN_SUBMITTED]

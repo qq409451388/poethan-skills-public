@@ -14,7 +14,7 @@ runtime:
 
 skills:
   required:
-    - code-inspector
+    - poethan-code-inspector
 
 agents:
   inspector:

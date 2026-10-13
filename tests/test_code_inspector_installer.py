@@ -22,7 +22,7 @@ assert INSTALLER_SPEC and INSTALLER_SPEC.loader
 INSTALLER_MODULE = importlib.util.module_from_spec(INSTALLER_SPEC)
 INSTALLER_SPEC.loader.exec_module(INSTALLER_MODULE)
 
-RUNTIME_SCRIPT_DIR = ROOT / "skills" / "code-inspector" / "scripts"
+RUNTIME_SCRIPT_DIR = ROOT / "skills" / "poethan-code-inspector" / "scripts"
 sys.path.insert(0, str(RUNTIME_SCRIPT_DIR))
 REVIEW_DB_SPEC = importlib.util.spec_from_file_location(
     "code_inspector_runtime_review_db",
@@ -125,7 +125,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             root = Path(temp)
             review_home = root / ".agent-review"
             database = review_home / "data" / "review.db"
-            source = ROOT / "skills" / "code-inspector"
+            source = ROOT / "skills" / "poethan-code-inspector"
             skill_config = INSTALLER_MODULE.load_skill_config(source)
             tools_config = {
                 "tools": {
@@ -155,11 +155,11 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             )
 
             copied_tool = (
-                root / ".codex" / "skills" / "code-inspector"
+                root / ".codex" / "skills" / "poethan-code-inspector"
                 / "tools" / "review-db-codex-dev.py"
             )
             self.assertFalse(copied_tool.is_symlink())
-            installed_skill = root / ".codex" / "skills" / "code-inspector"
+            installed_skill = root / ".codex" / "skills" / "poethan-code-inspector"
             self.assertFalse(any(path.is_symlink() for path in installed_skill.rglob("*")))
             result = subprocess.run(
                 [sys.executable, str(copied_tool), "task-list"],
@@ -345,9 +345,9 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             second = self.run_cmd(home, str(INSTALLER), "install")
             self.assertEqual(first["status"], "ok")
             self.assertEqual(second["status"], "ok")
-            codex_skill = home / ".codex" / "skills" / "code-inspector"
-            trae_skill = home / ".trae-cn" / "skills" / "code-inspector"
-            dsh_skill = home / ".dsh" / "skills" / "code-inspector"
+            codex_skill = home / ".codex" / "skills" / "poethan-code-inspector"
+            trae_skill = home / ".trae-cn" / "skills" / "poethan-code-inspector"
+            dsh_skill = home / ".dsh" / "skills" / "poethan-code-inspector"
             self.assertTrue((codex_skill / ".code-inspector-generated").exists())
             self.assertTrue((trae_skill / ".code-inspector-generated").exists())
             self.assertTrue((dsh_skill / ".code-inspector-generated").exists())
@@ -391,12 +391,12 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             self.assertIn("固定工具：`python ", trae_skill_text)
             self.assertIn("固定工具：`python ", dsh_skill_text)
             self.assertNotIn(str(codex_skill / "tools" / "review-db-codex-dev.py"), codex_skill_text)
-            self.assertIn("$code-inspector start dev", dsh_skill_text)
-            self.assertIn("$code-inspector start insp", dsh_skill_text)
-            self.assertIn("$code-inspector fastmode RI-XXX [RI-YYY ...]", dsh_skill_text)
-            self.assertIn("$code-inspector start dev", codex_skill_text)
-            self.assertIn("$code-inspector start insp", codex_skill_text)
-            self.assertIn("$code-inspector fastmode RI-XXX [RI-YYY ...]", codex_skill_text)
+            self.assertIn("$poethan-code-inspector start dev", dsh_skill_text)
+            self.assertIn("$poethan-code-inspector start insp", dsh_skill_text)
+            self.assertIn("$poethan-code-inspector fastmode RI-XXX [RI-YYY ...]", dsh_skill_text)
+            self.assertIn("$poethan-code-inspector start dev", codex_skill_text)
+            self.assertIn("$poethan-code-inspector start insp", codex_skill_text)
+            self.assertIn("$poethan-code-inspector fastmode RI-XXX [RI-YYY ...]", codex_skill_text)
             self.assertIn("FastMode 固定使用 Inspector 身份", codex_skill_text)
             self.assertIn("Developer Agent 不是前置条件", codex_skill_text)
             self.assertIn("cictl-insp fast pass|fail <issue_key> --content <result_summary>", codex_skill_text)
@@ -405,10 +405,10 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             self.assertIn("references/core-workflow.md", codex_skill_text)
             self.assertIn("references/role-workflows.md", codex_skill_text)
             fixed_context_syntax = "当前角色命令"
-            source_skill_text = (ROOT / "skills" / "code-inspector" / "SKILL.md").read_text(encoding="utf-8")
+            source_skill_text = (ROOT / "skills" / "poethan-code-inspector" / "SKILL.md").read_text(encoding="utf-8")
             self.assertIn(fixed_context_syntax, source_skill_text)
             self.assertIn(fixed_context_syntax, codex_skill_text)
-            self.assertIn("$code-inspector fastmode RI-XXX [RI-YYY ...]", source_skill_text)
+            self.assertIn("$poethan-code-inspector fastmode RI-XXX [RI-YYY ...]", source_skill_text)
             self.assertIn("FastMode 固定使用 Inspector 身份", source_skill_text)
             self.assertIn("Developer Agent 不是前置条件", source_skill_text)
             self.assertIn("专用 `cictl-insp fast pass|fail`", source_skill_text)
@@ -433,13 +433,13 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             self.assertNotIn("Multi-Thread", codex_skill_text)
             self.assertNotIn("SESSION_SCOPE_VIOLATION", codex_skill_text)
             self.assertIn("当前平台仅配置 `inspector` 角色", trae_skill_text)
-            self.assertIn("$code-inspector fastmode RI-XXX [RI-YYY ...]", trae_skill_text)
+            self.assertIn("$poethan-code-inspector fastmode RI-XXX [RI-YYY ...]", trae_skill_text)
 
             activation_text = (
-                ROOT / "skills" / "code-inspector" / "references" / "activation.yaml"
+                ROOT / "skills" / "poethan-code-inspector" / "references" / "activation.yaml"
             ).read_text(encoding="utf-8")
             fastmode_text = (
-                ROOT / "skills" / "code-inspector" / "references" / "fastmode.md"
+                ROOT / "skills" / "poethan-code-inspector" / "references" / "fastmode.md"
             ).read_text(encoding="utf-8")
             self.assertIn("minimum_issue_keys: 1", activation_text)
             self.assertIn("deduplicate: preserve_first_input_order", activation_text)
@@ -447,14 +447,14 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             self.assertIn("processing_order: serial", activation_text)
             self.assertIn("pending_action_required: false", activation_text)
             self.assertIn("outside_scope_behavior: 禁止操作", activation_text)
-            self.assertIn("$code-inspector fastmode RI-XXX [RI-YYY ...]", fastmode_text)
+            self.assertIn("$poethan-code-inspector fastmode RI-XXX [RI-YYY ...]", fastmode_text)
             self.assertIn("FastMode 至少需要一个 Issue Key", fastmode_text)
             self.assertIn("<issue_key> 不存在", fastmode_text)
             self.assertIn("pending_action=null", fastmode_text)
             self.assertIn("不自动设置 `CONFIRMED`", fastmode_text)
             self.assertIn("reviewctl fast pass|fail <issue_key> --content", fastmode_text)
             self.assertNotIn("activity-append --issue-key <issue_key> --activity-type VERIFICATION", fastmode_text)
-            self.assertIn("$code-inspector start` 即可启动", trae_skill_text)
+            self.assertIn("$poethan-code-inspector start` 即可启动", trae_skill_text)
             self.assertIn("固定工具：`cictl-dev`", codex_skill_text)
             self.assertIn("固定工具：`cictl-insp`", codex_skill_text)
             codex_rules_text = codex_rules.read_text(encoding="utf-8")
@@ -608,6 +608,28 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                "--activity-type", "VERIFICATION_PASSED", "--content", "通过")
             result = db("inspector", "issue-update-status", "--issue-key", "RI-TEST", "--status", "CONFIRMED")
             self.assertEqual(result["status"], "CONFIRMED")
+
+    def test_install_removes_legacy_skill_dir_but_keeps_foreign_content(self):
+        with tempfile.TemporaryDirectory() as temp:
+            home = Path(temp)
+            legacy = home / ".dsh" / "skills" / "code-inspector"
+            legacy.mkdir(parents=True)
+            (legacy / ".code-inspector-generated").write_text("generated\n", encoding="utf-8")
+            foreign = home / ".codex" / "skills" / "code-inspector"
+            foreign.mkdir(parents=True)
+            (foreign / "notes.md").write_text("user content\n", encoding="utf-8")
+
+            result = self.run_cmd(home, str(INSTALLER), "install")
+
+            self.assertEqual(result["status"], "ok")
+            self.assertFalse(legacy.exists())
+            self.assertTrue((foreign / "notes.md").is_file())
+            self.assertTrue(
+                (home / ".dsh" / "skills" / "poethan-code-inspector" / "SKILL.md").is_file()
+            )
+            self.assertTrue(
+                (home / ".codex" / "skills" / "poethan-code-inspector" / "SKILL.md").is_file()
+            )
 
     def test_task_resolution_and_batch_issue_deduplication(self):
         with tempfile.TemporaryDirectory() as temp:
