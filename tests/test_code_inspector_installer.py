@@ -137,12 +137,14 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             }
             INSTALLER_MODULE.ensure_dirs(review_home)
             INSTALLER_MODULE.migrate(database, review_home / "backups")
-            runtime_config = json.loads((source / "config" / "runtime.json").read_text(encoding="utf-8"))
+            runtime_config = {}
             runtime_config["database"] = str(database)
             (review_home / "config" / "runtime.json").write_text(
                 json.dumps(runtime_config), encoding="utf-8",
             )
 
+            for name in ("code-inspector-supervisor.py", "issue_thread.py", "agent_discovery.py"):
+                (review_home / "bin" / name).write_text("obsolete", encoding="utf-8")
             INSTALLER_MODULE.link_runtime(review_home, skill_config, force=False, skill_source=source)
             INSTALLER_MODULE.install_role_skills(
                 tools_config,
@@ -172,19 +174,9 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(json.loads(result.stdout), [])
-            runtime_status = subprocess.run(
-                [sys.executable, str(review_home / "bin" / "code-inspector-supervisor.py"), "status"],
-                cwd=root,
-                env={
-                    **os.environ,
-                    "AGENT_REVIEW_HOME": str(review_home),
-                    "AGENT_REVIEW_DB": str(database),
-                },
-                text=True,
-                capture_output=True,
-            )
-            self.assertEqual(runtime_status.returncode, 0, runtime_status.stderr)
-            self.assertEqual(json.loads(runtime_status.stdout), {"threads": [], "events": []})
+            for name in ("code-inspector-supervisor.py", "issue_thread.py", "agent_discovery.py"):
+                self.assertFalse((review_home / "bin" / name).exists())
+            self.assertFalse((installed_skill / "references" / "thread-runtime.md").exists())
 
     def test_webtool_launchers_are_platform_specific(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -199,7 +191,8 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             self.assertIn("cd /d", windows_text)
             self.assertIn('python "app.py" %*', windows_text)
 
-    def test_review_tool_metrics_and_fastmode_records_without_runtime(self):
+
+    def test_fastmode_records_without_scheduling(self):
         with tempfile.TemporaryDirectory() as temp:
             home = Path(temp)
             self.run_cmd(home, str(INSTALLER), "install")
@@ -227,43 +220,6 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                     )
                 conn.execute("DELETE FROM review_tool_call_metric")
 
-            # 普通单会话没有 Turn Metric，真实 CLI 调用仍只统计一次。
-            first = self.run_cmd(home, str(inspector_tool), "issue-context-get", "--issue-key", "RI-FAST-A")
-            self.assertIsNone(first["pending_action"])
-            with closing(sqlite3.connect(database)) as conn:
-                conn.row_factory = sqlite3.Row
-                self.assertEqual(conn.execute("SELECT COUNT(*) FROM code_inspector_turn_metric").fetchone()[0], 0)
-                metric = conn.execute("SELECT * FROM review_tool_call_metric").fetchone()
-                self.assertEqual(
-                    (metric["command"], metric["issue_key"], metric["role"], metric["operator_id"], metric["success"]),
-                    ("issue-context-get", "RI-FAST-A", "inspector", "codex-insp", 1),
-                )
-
-            # 即使 Runtime Turn 自己也保存了工具归因，真实调用表仍不重复累计。
-            with closing(sqlite3.connect(database)) as conn, conn:
-                conn.execute(
-                    """INSERT INTO code_inspector_turn_metric(
-                         issue_key,role,operator_id,projection_revision,turn_type,turn_id,
-                         input_tokens,output_tokens,review_db_calls_json
-                       ) VALUES('RI-FAST-A','inspector','codex-insp',0,'ACTION','turn-fast',10,2,
-                                '{"issue-context-get":1}')"""
-                )
-                self.assertEqual(
-                    conn.execute(
-                        "SELECT COUNT(*) FROM review_tool_call_metric WHERE command='issue-context-get'"
-                    ).fetchone()[0],
-                    1,
-                )
-            self.run_cmd(home, str(inspector_tool), "issue-context-get", "--issue-key", "RI-FAST-A")
-            with closing(sqlite3.connect(database)) as conn:
-                # Runtime 也经固定 wrapper 调 CLI：第二次真实调用变成 2，Turn 归因本身不变成第 3 次。
-                self.assertEqual(
-                    conn.execute(
-                        "SELECT COUNT(*) FROM review_tool_call_metric WHERE command='issue-context-get'"
-                    ).fetchone()[0],
-                    2,
-                )
-
             failed = self.run_raw(
                 home, str(inspector_tool), "issue-get", "--issue-key", "RI-NOT-FOUND",
             )
@@ -276,7 +232,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 "--content", secret,
             )
 
-            # 普通 activity-append 不能通过伪造 metadata 改变标准失败投递。
+            # 普通 activity-append 不能通过伪造 metadata 改变标准审核语义。
             spoof_metadata = json.dumps({"workflow_mode": "FASTMODE"})
             self.run_cmd(
                 home, str(inspector_tool), "activity-append", "--issue-key", "RI-OUTSIDE",
@@ -290,7 +246,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                            WHERE issue_key='RI-OUTSIDE' AND event_type='VERIFICATION_FAILED'
                              AND role='developer'"""
                     ).fetchone()[0],
-                    1,
+                    0,
                 )
 
             long_verification = "\n".join([
@@ -317,7 +273,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 self.assertLessEqual(len(decision_content), 180)
                 self.assertNotIn("\n", decision_content)
 
-            # FastMode 不依赖 pending_action 或 Developer Runtime，专用命令只记录验证事实。
+            # FastMode 不依赖 pending_action 或 Developer 会话，专用命令只记录验证事实。
             self.run_cmd(home, str(inspector_tool), "issue-context-get", "--issue-key", "RI-FAST-B")
             fast_content = "FAST-REVIEW-CONTENT-MUST-NOT-BE-METRIC"
             fast_evidence = "FAST-REVIEW-EVIDENCE-MUST-NOT-BE-METRIC"
@@ -357,49 +313,8 @@ class CodeInspectorInstallerTest(unittest.TestCase):
 
             with closing(sqlite3.connect(database)) as conn:
                 conn.row_factory = sqlite3.Row
-                failed_metric = conn.execute(
-                    """SELECT command,issue_key,role,operator_id,success
-                       FROM review_tool_call_metric
-                       WHERE command='issue-get' AND issue_key='RI-NOT-FOUND'"""
-                ).fetchone()
-                self.assertEqual(tuple(failed_metric), ("issue-get", "RI-NOT-FOUND", "inspector", "codex-insp", 0))
-                metric_columns = {
-                    row[1] for row in conn.execute("PRAGMA table_info(review_tool_call_metric)")
-                }
-                self.assertEqual(
-                    metric_columns,
-                    {"id", "command", "issue_key", "role", "operator_id", "success", "created_at"},
-                )
-                serialized_metrics = json.dumps(
-                    [tuple(row) for row in conn.execute("SELECT * FROM review_tool_call_metric")],
-                    ensure_ascii=False,
-                )
-                self.assertNotIn(secret, serialized_metrics)
-                self.assertNotIn(fast_content, serialized_metrics)
-                self.assertNotIn(fast_evidence, serialized_metrics)
-                self.assertEqual(
-                    conn.execute(
-                        """SELECT issue_key FROM review_tool_call_metric
-                           WHERE command='activity-get' ORDER BY id DESC LIMIT 1"""
-                    ).fetchone()[0],
-                    "RI-FAST-A",
-                )
-                self.assertEqual(
-                    conn.execute(
-                        """SELECT COUNT(*) FROM review_tool_call_metric
-                           WHERE command='fast-review-record' AND success=1"""
-                    ).fetchone()[0],
-                    2,
-                )
-                self.assertEqual(
-                    conn.execute(
-                        """SELECT COUNT(*) FROM review_tool_call_metric
-                           WHERE command='fast-review-record' AND success=0"""
-                    ).fetchone()[0],
-                    2,
-                )
                 self.assertEqual(conn.execute("SELECT COUNT(*) FROM code_inspector_thread").fetchone()[0], 0)
-                self.assertEqual(conn.execute("SELECT COUNT(*) FROM code_inspector_event").fetchone()[0], 1)
+                self.assertEqual(conn.execute("SELECT COUNT(*) FROM code_inspector_event").fetchone()[0], 0)
                 self.assertEqual(
                     conn.execute(
                         "SELECT COUNT(*) FROM issue_activity WHERE operator_type='DEVELOPMENT_AGENT'"
@@ -440,31 +355,24 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             self.assertTrue((codex_skill / "scripts" / "watch.py").is_file())
             self.assertTrue((home / ".agent-review" / "bin" / "review-db.py").is_file())
             self.assertTrue((home / ".agent-review" / "internal" / "reviewctl-adapters" / "reviewctl-web-human.py").is_file())
-            self.assertTrue((home / ".agent-review" / "bin" / "code-inspector-supervisor.py").is_file())
-            self.assertTrue((home / ".agent-review" / "bin" / "runtime_identity.py").is_file())
-            self.assertTrue((home / ".agent-review" / "bin" / "session_scope.py").is_file())
+            self.assertFalse((home / ".agent-review" / "bin" / "code-inspector-supervisor.py").exists())
+            self.assertFalse((home / ".agent-review" / "bin" / "runtime_identity.py").exists())
+            self.assertFalse((home / ".agent-review" / "bin" / "session_scope.py").exists())
             codex_rules = home / ".codex" / "rules" / "code-inspector.rules"
             self.assertTrue(codex_rules.is_file())
-            if os.name != "nt":
-                self.assertTrue(os.access(home / ".agent-review" / "bin" / "code-inspector-supervisor.py", os.X_OK))
             bindings = json.loads((home / ".agent-review" / "config" / "agent-bindings.json").read_text())
             self.assertEqual(bindings["web-human"]["role"], "human")
             installed_runtime = json.loads((home / ".agent-review" / "config" / "runtime.json").read_text())
-            self.assertEqual(installed_runtime["thread_runtime"]["isolation"]["granularity"], "issue_operator")
-            self.assertFalse(installed_runtime["thread_runtime"]["multi_thread"]["enabled"])
+            self.assertEqual(set(installed_runtime), {"database"})
             self.assertEqual(
                 Path(installed_runtime["database"]).resolve(),
                 (home / ".agent-review" / "data" / "review.db").resolve(),
             )
             self.assertEqual(bindings["codex-dev"]["role"], "developer")
             self.assertEqual(bindings["codex-insp"]["role"], "inspector")
-            self.assertEqual(bindings["codex-insp"]["runtime_backend"], "codex-app-server")
             self.assertEqual(bindings["trae-inspector"]["role"], "inspector")
-            self.assertEqual(bindings["trae-inspector"]["runtime_backend"], "external")
             self.assertEqual(bindings["dsh-developer"]["role"], "developer")
-            self.assertEqual(bindings["dsh-developer"]["runtime_backend"], "external")
             self.assertEqual(bindings["dsh-inspector"]["role"], "inspector")
-            self.assertEqual(bindings["dsh-inspector"]["runtime_backend"], "external")
             self.assertTrue((home / ".agent-review" / "bin" / "review-db-trae-inspector.py").exists())
             self.assertTrue((home / ".agent-review" / "bin" / "review-db-dsh-developer.py").exists())
             self.assertTrue((home / ".agent-review" / "bin" / "review-db-dsh-inspector.py").exists())
@@ -522,10 +430,8 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             self.assertIn("references/watch-mode.md", codex_skill_text)
             self.assertIn(str(codex_skill / "scripts" / "watch.py"), codex_skill_text)
             self.assertIn("缺少参数", codex_skill_text)
-            self.assertIn("Multi-Thread 默认关闭", codex_skill_text)
-            self.assertIn("SESSION_SCOPE_VIOLATION", codex_skill_text)
-            self.assertIn("Watch 不授权 Multi-Thread", codex_skill_text)
-            self.assertIn("禁止创建或恢复宿主 Goal", codex_skill_text)
+            self.assertNotIn("Multi-Thread", codex_skill_text)
+            self.assertNotIn("SESSION_SCOPE_VIOLATION", codex_skill_text)
             self.assertIn("当前平台仅配置 `inspector` 角色", trae_skill_text)
             self.assertIn("$code-inspector fastmode RI-XXX [RI-YYY ...]", trae_skill_text)
 
@@ -3111,226 +3017,6 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 else:
                     os.environ["AGENT_REVIEW_DB"] = previous_db
 
-    def test_webtool_runtime_observability_csrf_and_debug(self):
-        try:
-            import flask  # noqa: F401  # pylint: disable=unused-import,import-outside-toplevel
-        except ModuleNotFoundError:
-            self.skipTest("Flask dependency is not installed")
-        with tempfile.TemporaryDirectory() as temp:
-            home = Path(temp)
-            self.run_cmd(home, str(INSTALLER), "install")
-            review_home = home / ".agent-review"
-            database = review_home / "data" / "review.db"
-            with closing(sqlite3.connect(database)) as conn, conn:
-                conn.execute(
-                    "INSERT INTO review_task(task_key,project_name,project_path,title,objective,status) VALUES('RT-RUNTIME','p',?,'t','o','IN_PROGRESS')",
-                    (str(home),),
-                )
-                conn.execute(
-                    """INSERT INTO review_issue(issue_key,task_id,introduced_version,title,dimension,severity,
-                       remediation_benefit,remediation_cost,disposition,confidence,status,description,facts,rationale)
-                       VALUES('RI-RUNTIME',1,1,'Runtime','code_quality','medium','medium','low',
-                              'current_iteration','high','IN_PROGRESS','d','f','r')"""
-                )
-                conn.execute(
-                    """INSERT INTO review_issue(issue_key,task_id,introduced_version,title,dimension,severity,
-                       remediation_benefit,remediation_cost,disposition,confidence,status,description,facts,rationale)
-                       VALUES('RI-NO-TOKEN',1,1,'普通模式','code_quality','medium','medium','low',
-                              'current_iteration','high','PROPOSED','d','f','r')"""
-                )
-                conn.execute(
-                    """INSERT INTO code_inspector_thread(
-                       issue_id,issue_key,role,operator_id,agent_platform,runtime_backend,thread_id,
-                       thread_status,issue_status,next_action,last_event,cwd,context_tokens,context_window)
-                       VALUES(1,'RI-RUNTIME','inspector','codex-insp','codex','codex-app-server',
-                              'thr-visible','WAITING','IN_PROGRESS','await_event','STAGE_SUBMITTED',?,630,1000)""",
-                    (str(home),),
-                )
-                conn.execute(
-                    """INSERT INTO code_inspector_event(
-                       event_id,idempotency_key,issue_key,role,operator_id,agent_platform,runtime_backend,event_type,status,failure_kind)
-                       VALUES('evt-visible','idem-visible','RI-RUNTIME','inspector','codex-insp','codex',
-                              'codex-app-server','STAGE_SUBMITTED','FAILED','RETRYABLE')"""
-                )
-                conn.execute(
-                    """INSERT INTO code_inspector_event(
-                       event_id,idempotency_key,issue_key,role,operator_id,agent_platform,runtime_backend,
-                       event_type,status,last_error,projection_revision)
-                       VALUES('evt-stale','idem-stale','RI-RUNTIME','inspector','codex-insp','codex',
-                              'codex-app-server','STAGE_SUBMITTED','SUPERSEDED',
-                              'NO_PENDING_ACTION_AT_RESUME',4)"""
-                )
-                conn.executemany(
-                    """INSERT INTO code_inspector_turn_metric(
-                       event_id,issue_key,role,operator_id,projection_revision,turn_type,turn_id,
-                       input_tokens,cached_input_tokens,output_tokens,review_db_calls_json)
-                       VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
-                    [
-                        (None, "RI-RUNTIME", "inspector", "codex-insp", 1, "INIT", "turn-init", 1000, 200, 100, '{"issue-context-get":1}'),
-                        ("evt-action", "RI-RUNTIME", "inspector", "codex-insp", 3, "ACTION", "turn-action", 2000, 500, 250, '{"issue-context-get":2,"activity-get":1}'),
-                        (None, "RI-RUNTIME", "inspector", "codex-insp", 4, "COMPACT", "turn-compact", 300, 0, 30, '{}'),
-                    ],
-                )
-                conn.executemany(
-                    """INSERT INTO review_tool_call_metric(
-                         command,issue_key,role,operator_id,success
-                       ) VALUES(?,?,?,?,?)""",
-                    [
-                        ("issue-context-get", "RI-RUNTIME", "inspector", "codex-insp", 1),
-                        ("activity-get", "RI-RUNTIME", "inspector", "codex-insp", 0),
-                        ("issue-context-get", "RI-NO-TOKEN", "inspector", "codex-insp", 1),
-                    ],
-                )
-            old_home, old_db = os.environ.get("AGENT_REVIEW_HOME"), os.environ.get("AGENT_REVIEW_DB")
-            os.environ["AGENT_REVIEW_HOME"] = str(review_home)
-            os.environ["AGENT_REVIEW_DB"] = str(database)
-            webtool_dir = ROOT / "apps" / "code-inspector-webtool"
-            sys.path.insert(0, str(webtool_dir))
-            try:
-                import importlib
-                module = importlib.import_module("app")
-                module.app.config.update(TESTING=True, CSRF_ENABLED=True)
-                client = module.app.test_client()
-                runtime_page = client.get("/runtime")
-                self.assertEqual(runtime_page.status_code, 200)
-                runtime_html = runtime_page.get_data(as_text=True)
-                self.assertIn("thr-visible", runtime_html)
-                self.assertIn("evt-visible", runtime_html)
-                self.assertIn("63.0%", runtime_html)
-                self.assertIn("AI 运行情况", runtime_html)
-                self.assertIn("有 1 个问题需要关注", runtime_html)
-                self.assertIn("今日 AI 消耗", runtime_html)
-                self.assertIn("3.7K", runtime_html)
-                self.assertIn('<span>处理 Issue</span><strong>1</strong>', runtime_html)
-                self.assertIn('<span>模型唤醒</span><strong>2 <em>次</em></strong>', runtime_html)
-                self.assertIn("Cached Input Tokens", runtime_html)
-                self.assertIn("今日工具调用", runtime_html)
-                self.assertIn('<span>issue-context-get</span><strong>2</strong>', runtime_html)
-                self.assertIn("失败率 100.0%", runtime_html)
-                self.assertLess(runtime_html.index("issue-context-get"), runtime_html.index("activity-get"))
-                self.assertIn("今日节省情况", runtime_html)
-                self.assertIn('<span>拦截过期事件</span><strong>1</strong>', runtime_html)
-                self.assertIn('<span>避免模型唤醒</span><strong>1</strong>', runtime_html)
-                self.assertIn('<span>上下文整理</span><strong>1</strong>', runtime_html)
-                self.assertIn("Token 消耗最高", runtime_html)
-                self.assertIn("自动处理失败，需要检查", runtime_html)
-                self.assertIn("已被最新状态覆盖", runtime_html)
-                self.assertIn('<details class="advanced-diagnostics">', runtime_html)
-                self.assertIn("等待新任务", runtime_html)
-                self.assertIn("调度事件", runtime_html)
-                self.assertIn("Turn Metrics", runtime_html)
-                self.assertIn("Execution Revision", runtime_html)
-                self.assertIn("重新入队", runtime_html)
-                self.assertNotIn(">Reconcile<", runtime_html)
-                self.assertNotIn(">Retry<", runtime_html)
-                filtered_runtime = client.get(
-                    "/runtime?issue=RI-RUNTIME&role=inspector&status=FAILED"
-                )
-                self.assertEqual(filtered_runtime.status_code, 200)
-                self.assertIn(
-                    '<details class="advanced-diagnostics" open>',
-                    filtered_runtime.get_data(as_text=True),
-                )
-                issue_html = client.get("/issues/RI-RUNTIME").get_data(as_text=True)
-                self.assertIn("AI 运行", issue_html)
-                self.assertIn("AI Token", issue_html)
-                self.assertIn("3.7K", issue_html)
-                self.assertIn("模型唤醒", issue_html)
-                self.assertIn("执行失败", issue_html)
-                self.assertIn("issue-context-get", issue_html)
-                self.assertIn("activity-get", issue_html)
-                self.assertIn('<span>issue-context-get</span><strong>1</strong>', issue_html)
-                self.assertIn('<span>activity-get</span><strong>1</strong><small>失败 1</small>', issue_html)
-                self.assertIn("失败率 100.0%", issue_html)
-                self.assertIn("最近 AI 执行记录", issue_html)
-                self.assertIn("高级诊断", issue_html)
-                self.assertIn("检查者", issue_html)
-                self.assertIn("codex-insp", issue_html)
-                self.assertIn('data-issue-auto-refresh data-refresh-interval="1000"', issue_html)
-                self.assertIn('data-live-region="collaboration-records"', issue_html)
-                self.assertIn('data-live-region="human-actions"', issue_html)
-                self.assertIn('data-browser-events-url="/api/browser-events"', issue_html)
-                self.assertIn("开启桌面提醒", issue_html)
-
-                no_token_html = client.get("/issues/RI-NO-TOKEN").get_data(as_text=True)
-                self.assertIn("当前模式暂无法获取模型 Token Usage", no_token_html)
-                self.assertIn('<span>issue-context-get</span><strong>1</strong>', no_token_html)
-                self.assertNotIn('<span>AI Token</span><strong>0</strong>', no_token_html)
-
-                # 首次读取只建立游标，之后只返回真正发生的新变化。
-                initial_feed = client.get("/api/browser-events")
-                self.assertEqual(initial_feed.status_code, 200)
-                initial_data = initial_feed.get_json()
-                self.assertEqual(initial_data["events"], [])
-                with closing(sqlite3.connect(database)) as conn, conn:
-                    conn.execute("UPDATE review_task SET status='ON_HOLD' WHERE task_key='RT-RUNTIME'")
-                    conn.execute("UPDATE review_issue SET status='IMPLEMENTED_PENDING_REVIEW' WHERE issue_key='RI-RUNTIME'")
-                    conn.execute(
-                        """INSERT INTO issue_stage(issue_id,plan_no,stage_no,title,objective,acceptance_criteria,status)
-                           VALUES(1,1,1,'完成核心修复','完成修复','测试通过','PENDING_REVIEW')"""
-                    )
-                    conn.executemany(
-                        """INSERT INTO agent_audit_log(agent_id,action,resource_type,resource_id,success)
-                           VALUES('human',?,?,?,1)""",
-                        [
-                            ("task.update-status", "review_task", "RT-RUNTIME"),
-                            ("issue.update-status", "review_issue", "RI-RUNTIME"),
-                            ("stage.submit", "review_issue", "RI-RUNTIME"),
-                            ("issue.get", "review_issue", "RI-RUNTIME"),
-                        ],
-                    )
-                change_feed = client.get(f"/api/browser-events?after={initial_data['cursor']}")
-                self.assertEqual(change_feed.status_code, 200)
-                changes = change_feed.get_json()["events"]
-                self.assertEqual([item["kind"] for item in changes], ["task", "issue", "stage"])
-                self.assertEqual(changes[0]["status"], "ON_HOLD")
-                self.assertEqual(changes[0]["changeType"], "status")
-                self.assertEqual(changes[1]["issueKey"], "RI-RUNTIME")
-                self.assertEqual(changes[1]["changeType"], "status")
-                self.assertEqual(changes[2]["stage"]["stageNo"], 1)
-                self.assertEqual(changes[2]["stage"]["status"], "PENDING_REVIEW")
-                self.assertEqual(client.get("/api/browser-events?after=oops").status_code, 400)
-
-                refresh_script = (webtool_dir / "static" / "app.js").read_text(encoding="utf-8")
-                self.assertIn("window.setInterval(refreshIssue, interval)", refresh_script)
-                self.assertIn("window.scrollBy", refresh_script)
-                self.assertIn("userIsEditing()", refresh_script)
-                self.assertIn("comparableHtml(current) === comparableHtml(incoming)", refresh_script)
-                self.assertNotIn("location.reload", refresh_script)
-                self.assertIn("new CustomEvent('code-inspector:changed'", refresh_script)
-                self.assertIn("Notification.requestPermission()", refresh_script)
-                self.assertIn("window.setInterval(readChanges, 1000)", refresh_script)
-                self.assertIn("code-inspector-filter-scroll", refresh_script)
-                self.assertIn("window.scrollTo(0, saved.top)", refresh_script)
-                self.assertIn("navigator.clipboard?.writeText", refresh_script)
-                self.assertIn("document.execCommand('copy')", refresh_script)
-
-                denied = client.post("/runtime/events/evt-visible/retry", follow_redirects=False)
-                self.assertEqual(denied.status_code, 403)
-                with client.session_transaction() as state:
-                    token = state.get("csrf_token")
-                self.assertTrue(token)
-                with mock.patch.object(module, "run_runtime_command", return_value={"status": "PENDING"}) as command:
-                    accepted = client.post(
-                        "/runtime/events/evt-visible/retry", data={"csrf_token": token},
-                        follow_redirects=False,
-                    )
-                self.assertEqual(accepted.status_code, 302)
-                command.assert_called_once_with("retry-event", "--event-id", "evt-visible", "--confirm")
-                with mock.patch.dict(os.environ, {"WEBTOOL_DEBUG": "false"}):
-                    self.assertFalse(module.env_bool("WEBTOOL_DEBUG"))
-                with mock.patch.dict(os.environ, {"WEBTOOL_DEBUG": "yes"}):
-                    self.assertTrue(module.env_bool("WEBTOOL_DEBUG"))
-            finally:
-                sys.path.pop(0)
-                if old_home is None:
-                    os.environ.pop("AGENT_REVIEW_HOME", None)
-                else:
-                    os.environ["AGENT_REVIEW_HOME"] = old_home
-                if old_db is None:
-                    os.environ.pop("AGENT_REVIEW_DB", None)
-                else:
-                    os.environ["AGENT_REVIEW_DB"] = old_db
 
     def test_recent_activity_list_is_compact_and_activity_get_returns_full_record(self):
         with tempfile.TemporaryDirectory() as temp:

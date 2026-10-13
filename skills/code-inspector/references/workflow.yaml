@@ -127,35 +127,6 @@ issue_statuses:
   - CONFIRMED
   - CANCELLED
 
-runtime_events:
-  source: transactional_outbox
-  semantics: Event 仅是 Wake-up Signal；Runtime 按当前 Issue+Role Projection 判断真实待办，同批过期 Event 标记 SUPERSEDED 并保留审计，不逐条调用模型。
-  projection_revision: review_issue 上的单调 Working Set 版本；影响 Issue、Activity、Discussion、Decision、Stage 或投影内 Task 字段的写操作由数据库触发器推进。
-  revision_boundary: Event 领取时保存 event_revision；Resume 重新读取 execution_revision，Prompt、Compact 与 Turn metrics 只使用 execution_revision。
-  resume_recheck: pending_action 为空时 SKIPPED_STALE 且不调用模型；待办变化时使用最新 pending_action 执行。
-  coalescing_cutoff: dispatch 在 BEGIN IMMEDIATE 事务中同时读取 Projection 与当前 Event row-id cutoff，只覆盖 cutoff 以内的 Pending Event；不再比较 activity_id。
-  atomicity: 领域状态/Activity 与 code_inspector_event 必须在同一 SQLite Transaction 提交；Runtime binding 无效时领域变更回滚。
-  operator_resolution: 使用 agent-roles.json runtime.dispatch_operators 指定的已安装 binding；role 参数只做一致性校验。
-  mappings:
-    ISSUE_CREATED: developer
-    DESIGN_REQUESTED: developer
-    DESIGN_SUBMITTED: inspector
-    DESIGN_APPROVED: developer
-    DESIGN_REJECTED: developer
-    STAGE_SUBMITTED: inspector
-    STAGE_APPROVED: developer
-    STAGE_REJECTED: developer
-    IMPLEMENTATION_SUBMITTED: inspector
-    REVIEW_REJECTED: developer
-    VERIFICATION_FAILED: developer
-    # 方向失败进入重设计时唤醒 Inspector 先修订架构指导；Developer 需等新 design-request。
-    STATUS_CHANGED_REDESIGN_REQUIRED: inspector
-    INSPECTOR_CONFIRMATION_REQUIRED: inspector
-    HUMAN_CONFIRMATION_PROVIDED_to_DESIGN_REQUIRED_or_IN_PROGRESS: developer
-    HUMAN_STATUS_OVERRIDE_to_DESIGN_PENDING_REVIEW_or_IMPLEMENTED_PENDING_REVIEW: inspector
-    HUMAN_OR_INSPECTOR_STATUS_RESUME_to_DESIGN_REQUIRED_or_IN_PROGRESS: developer
-  no_agent_dispatch: [ON_HOLD, BLOCKED, HUMAN_CONFIRMATION_REQUIRED, CONFIRMED, CANCELLED]
-  manual_watch: 独立能力；不消费、不替代 Runtime Event Queue，仍要求用户显式开启。
 
 # Human 可人工覆盖到任一合法状态；Agent 仍遵守专用入口和验证前置条件。
 human_issue_override_statuses: &human_issue_override_statuses
@@ -327,7 +298,7 @@ design_depth:
       architecture_direction: 可选；只在确实存在方向性约束时提供。
       flow: design-request -> design-submit -> design-review -> 实现 -> 验证。
     COMPLEX:
-      signals: [跨模块职责调整, runtime/scheduler/supervisor/event核心链路, 状态机调整, 并发事务一致性设计, 持久化模型变化, 数据迁移, 对外接口或行为变化, 新基础设施或新依赖, 大范围重构, 高回归风险, 多种实现方向且影响差异明显]
+      signals: [跨模块职责调整, 状态机调整, 并发事务一致性设计, 持久化模型变化, 数据迁移, 对外接口或行为变化, 新基础设施或新依赖, 大范围重构, 高回归风险, 多种实现方向且影响差异明显]
       request_must_cover: [root_cause, architecture_direction, boundaries, design_questions, acceptance]
       architecture_direction_required: true
       architecture_direction_floor: >-

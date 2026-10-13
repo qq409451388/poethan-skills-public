@@ -13,14 +13,12 @@ description: 在用户明确开启代码检查模式后，按安装时分配的 
 
 Inspector 可以补充实现约束，但不得扩展用户目标。Developer 用 `reviewctl design submit` 的动态参数 `scope_changes` 声明范围扩大或新增持久化、迁移、外部行为等必须让用户知道的变化；Inspector 审批前用 `reviewctl design preview` 在当前 CLI 展示差异。未确认的变化只能删除、转 Candidate，或逐项确认，不能进入 Stage。
 
-Multi-Thread 默认关闭。只有 `config/runtime.json` 允许且用户在当前 Session 明确要求开启时，才可启动按当前 `session_operator_id + session_role` 限定的 Supervisor。它只能 claim、start、resume 当前身份的 Event/Thread；跨 Role 或跨 Operator 一律以 `SESSION_SCOPE_VIOLATION` 失败。Watch 与 Multi-Thread 分别授权，任何模式都禁止创建或恢复宿主 Goal。
-
 激活后只读取：
 
 - 所有角色：`references/core-workflow.md`
 - 当前角色：`references/role-workflows.md` 中对应的 Developer 或 Inspector 章节
 
-FastMode 固定使用 Inspector 身份。启动时改为读取 `references/fastmode.md`，锁定命令中的 Issue Scope，并按输入顺序串行审核；Developer Agent 不是前置条件，Human 负责开发沟通与最终状态，Inspector 只负责代码检查、验证和记录。FastMode 不依赖 `pending_action`，不启动 Runtime、Watch、Multi-Thread 或 Developer，不自动关闭 Issue。FastMode 的验证结论只用专用 `cictl-insp fast pass|fail` 写入；普通 `metadata` 只记录事实，不能启用 FastMode 或改变权限和控制流。
+FastMode 固定使用 Inspector 身份。启动时改为读取 `references/fastmode.md`，锁定命令中的 Issue Scope，并按输入顺序串行审核；Developer Agent 不是前置条件，Human 负责开发沟通与最终状态，Inspector 只负责代码检查、验证和记录。FastMode 不依赖 `pending_action`，不启动 Watch 或 Developer，不自动关闭 Issue。FastMode 的验证结论只用专用 `cictl-insp fast pass|fail` 写入；普通 `metadata` 只记录事实，不能启用 FastMode 或改变权限和控制流。
 
 以下大型文件由 Runtime/CLI 强制执行，普通 Action Turn 不读取；仅在专项审计或修改规则本身时按需查阅：
 
@@ -42,7 +40,7 @@ cictl-insp issue context <issue_key>  # Inspector
 
 ## 固定角色输出前缀
 
-每个角色在每次 CLI 回复时，都必须以当前角色的固定前缀开头，包括 Action Turn、等待状态、审核结论、设计反馈、Stage 验收、实现提交结果，以及 Runtime/Supervisor 自动触发的角色回复。角色名逐字照抄，不允许改写、省略或替换；职责边界作为每轮注入的角色强化信号保留在强化块里，但不出现在可见前缀中。
+每个角色在每次 CLI 回复时，都必须以当前角色的固定前缀开头，包括 Action Turn、等待状态、审核结论、设计反馈、Stage 验收、实现提交结果，以及等待状态回复。角色名逐字照抄，不允许改写、省略或替换；职责边界作为每轮注入的角色强化信号保留在强化块里，但不出现在可见前缀中。
 
 前缀由「角色名」和「工作区上下文」两段组成。工作区上下文由模型按自己当前会话已知的工作目录填写：git worktree 填 `WorkTree(<worktree 名字>)`，git 仓库主工作区填 `工作区`；不是 git 仓库时省略 `｜<工作区>`，只输出 `[<角色名>]`。例如 `[Developer｜工作区]`、`[Inspector｜WorkTree(feature-x)]`、`[Human]`。运行时不做探测，所以人在会话里说明了自己在哪个 worktree 时以该说明为准。前缀不包含职责说明，不得增删或改写成旧格式。
 
@@ -77,7 +75,6 @@ OUTPUT_PREFIX: [Human｜<工作区>]
 其他文件继续按场景读取：
 - 审核等级：`references/review-levels.yaml`
 - 用户明确要求持续观察或停止观察：`references/watch-mode.md`
-- 多 Issue 调度、Issue Thread 或 Managed Compact：`references/thread-runtime.md`
 - Inspector 创建 Issue、修正 difficulty 或用户明确要求导出报告：`references/report-schema.yaml`（判级时读取其中的 `difficulty_guide`）
 
 不要因为流程进入等待状态而读取或启动 Watch Mode。

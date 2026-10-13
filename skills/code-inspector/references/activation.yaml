@@ -57,45 +57,13 @@ fastmode:
   first_read_parameter_rule: 使用 --issue-key，禁止使用 --issue-id。
   pending_action_required: false
   runtime:
-    multi_thread: forbidden
     watch: forbidden
-    developer_thread: forbidden
     developer_session: forbidden
-    developer_event: forbidden
     fake_developer_activity: forbidden
   terminal_status_owner: human
   completion_behavior: 分 Issue 记录 PASS/FAIL 并汇总；不得自动 CONFIRMED 或 CANCELLED。
   lifecycle: Session 保持 FastMode；只能重查当前 Scope。更换 Scope 必须先 exit 后重新 fastmode。
 
-multi_thread:
-  default: inactive
-  require_config_enabled: true
-  require_explicit_session_activation: true
-  session_scoped: true
-  role_scoped: true
-  operator_scoped: true
-  cross_role_dispatch: forbidden
-  activation_phrases:
-    - 开启多线程模式
-    - 开启 multi-thread
-    - 开启 Issue 独立线程
-    - 后续每个 Issue 独立 Thread
-  deactivation_phrases:
-    - 关闭多线程模式
-    - 关闭 Issue Thread
-    - 回到单会话模式
-  activation_rule: config.thread_runtime.multi_thread.enabled=true 且用户在当前 Session 明确开启时才 active。
-  activation_feedback: |-
-    Code Inspector Multi-Thread 已开启。
-    Session:
-    role={session_role}
-    operator={session_operator_id}
-    本 Session 只会调度 {session_operator_id} 的 Issue Thread。
-  inactive_behavior: 沿用单 Session Code Inspector；不得 claim Runtime Event 或 start/resume Child Thread。
-  deactivation_behavior: 停止自动 dispatch，保留已有 Thread Mapping，后续显式开启时可 resume。
-  independent_authorization:
-    watch: 持续观察只授权 Watch，不授权 Multi-Thread。
-    goal: forbidden
 
 task_creation:
   required: true

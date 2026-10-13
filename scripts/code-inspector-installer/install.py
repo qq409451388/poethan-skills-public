@@ -37,17 +37,16 @@ def _load_reviewctl_registry() -> dict[str, list[str]]:
         mapping.setdefault(command.legacy, []).append(f"reviewctl {command.domain} {command.action}")
     return mapping
 
-# 固定角色身份：用于降低长上下文、Compact、多轮 Resume 后的角色漂移。
+# 固定角色身份：用于降低长上下文和多轮对话中的角色漂移。
 # 角色名必须逐字使用，不允许模型改写；只作角色强化信号，不作为权限判断依据。
-# 与 skills/code-inspector/scripts/codex_thread_runtime.py 的 ROLE_IDENTITIES
-# 必须逐字相同（两份物理上不同步，由测试断言兜住漂移）。
+# 平台 Skill 的角色输出身份由安装器统一生成。
 ROLE_IDENTITIES: dict[str, dict[str, str]] = {
     "inspector": {"name": "Inspector", "boundary": "审核、判断、验收；禁止修改业务代码"},
     "developer": {"name": "Developer", "boundary": "设计实现、编码、测试；禁止最终审核确认"},
     "human": {"name": "Human", "boundary": "业务决策、风险确认；不代替技术验证"},
 }
 
-# 与 codex_thread_runtime.WORKSPACE_CONTEXT_RULE 保持一致。
+# 平台 Skill 使用同一份工作区前缀规则。
 WORKSPACE_CONTEXT_RULE = (
     "OUTPUT_PREFIX 里的 `<工作区>` 按你当前会话已知的工作目录填写："
     "git worktree 填 `WorkTree(<worktree 名字>)`，git 仓库主工作区填 `工作区`；"
@@ -332,15 +331,22 @@ def link_runtime(home: Path, skill_config: dict[str, Any], force: bool, skill_so
     atomic_copy_path(src, dst, force)
     # Agent Model Routing 是本机级旁路能力，和 review-db 一起放到 bin 目录。
     atomic_copy_path(SCRIPT_DIR / "runtime" / "agent_routing.py", home / "bin" / "agent_routing.py", force)
-    atomic_copy_path(SCRIPT_DIR / "runtime" / "agent_discovery.py", home / "bin" / "agent_discovery.py", force)
-    if skill_source:
-        for name in (
-            "code-inspector-supervisor.py", "supervisor.py", "issue_thread.py",
-            "codex_thread_runtime.py", "runtime_identity.py", "runtime_capabilities.py",
-            "review_repository.py", "session_scope.py", "issue_projection.py",
-            "runtime_permissions.py",
-        ):
+    for name in ("issue_projection.py", "runtime_permissions.py"):
+        if skill_source:
             atomic_copy_path(skill_source / "scripts" / name, home / "bin" / name, force)
+    # 刷新安装时移除旧调度入口，避免残留工具绕回已删除的流程。
+    for name in (
+        "capability_probe.py", "capability-probe.py", "codex_thread_runtime.py",
+        "issue_thread.py", "issue-thread.py", "supervisor.py", "code-inspector-supervisor.py",
+        "runtime_identity.py", "runtime_capabilities.py", "session_scope.py",
+        "review_repository.py", "isolation_probe.py", "agent_discovery.py",
+    ):
+        obsolete = home / "bin" / name
+        if obsolete.exists() or obsolete.is_symlink():
+            remove_path(obsolete)
+    obsolete_capabilities = home / "config" / "runtime-capabilities.json"
+    if obsolete_capabilities.exists():
+        remove_path(obsolete_capabilities)
     for role, assignments in skill_config["bindings"].items():
         for assignment in assignments:
             alias = assignment["alias"]
@@ -518,7 +524,7 @@ def generated_skill_text(platform: str, identities: list[dict[str, Any]], target
         "`workflow.yaml` 或 `tool-contracts.yaml`，仅在专项审计或修改规则本身时查阅。不得直接操作 SQLite。\n\n"
         "## 固定角色输出前缀\n\n"
         "每个角色在每次 CLI 回复时，都必须以当前角色的固定前缀开头，包括 Action Turn、等待状态、"
-        "审核结论、设计反馈、Stage 验收、实现提交结果，以及 Runtime/Supervisor 自动触发的角色回复。"
+        "审核结论、设计反馈、Stage 验收、实现提交结果，以及等待状态回复。"
         "前缀固定且简短，逐字输出，不允许改写、省略或替换；职责边界作为每轮注入的角色强化信号保留在"
         "强化块里，但不出现在可见前缀中。"
         f"{WORKSPACE_CONTEXT_RULE}"
@@ -532,18 +538,11 @@ def generated_skill_text(platform: str, identities: list[dict[str, Any]], target
         "后的摘要和正文必须用中文说明业务变化，例如 `refactor(analytics): 统一淘宝数据源边界`，不得只写英文"
         "摘要。若项目已有明确的强制语言规范则遵循项目规范。原始标识符和证据保持不变；本规则不代表获得"
         "执行 `git add`、`git commit` 或 `git push` 的额外授权。\n\n"
-        "多 Issue 调度或 Issue Thread 操作必须读取 `references/thread-runtime.md`，配置来自 `config/runtime.json`。\n\n"
-        "## Session Scope 与 Multi-Thread\n\n"
-        "Session 启动时选定的 role、operator_id、agent_platform 固定到退出。Multi-Thread 默认关闭；"
-        "只有配置 `thread_runtime.multi_thread.enabled=true` 且用户在当前 Session 明确要求开启，才可激活。"
-        "Supervisor 只能 claim 当前 operator+role 的 Event，Child Thread 必须继承相同身份；跨 Role/Operator Dispatch "
-        "必须以 `SESSION_SCOPE_VIOLATION` 失败。Watch 不授权 Multi-Thread，Multi-Thread 也不授权 Watch；"
-        "任何模式都禁止创建或恢复宿主 Goal。关闭 Multi-Thread 时保留已有 Mapping，但停止自动 Dispatch。\n\n"
         "## FastMode\n\n"
         "FastMode 启动格式：`$code-inspector fastmode RI-XXX [RI-YYY ...]`。FastMode 固定使用 Inspector 身份，"
         "启动后只能检查命令中指定并去重的 Issue，且按输入顺序串行处理。Developer Agent 不是前置条件，"
         "Human 负责开发沟通与最终状态，Inspector 只负责代码检查、验证和记录。即使 `pending_action=null` 也执行"
-        " Human 明确请求的审查；不启动 Runtime、Watch、Multi-Thread、Developer Thread/Session/Event，不伪造 "
+        " Human 明确请求的审查；不启动 Watch 或 Developer 会话，不伪造 "
         "`implementation-submit` 或 Developer Activity，不修改业务代码，不自动 `CONFIRMED` 或 `CANCELLED`。"
         "FastMode 的 PASS/FAIL 只使用 Inspector 专用的 "
         f"`{inspector_tool} fast pass|fail <issue_key> --content <result_summary> [--evidence <evidence_summary>]` 写入；普通 `metadata` "
@@ -666,7 +665,6 @@ def install_role_skills(
             bindings[item["alias"]] = {
                 "alias": item["alias"], "agent": platform, "role": item["role"],
                 "agent_platform": platform,
-                "runtime_backend": "codex-app-server" if platform == "codex" else "external",
                 "default": item["default"], "role_policy": item["role_policy"],
                 "skill_path": str(target),
                 "fixed_tool_path": str(fixed_tool),
@@ -776,10 +774,8 @@ def main() -> int:
             (home / "config" / "code-inspector.json").write_text(
                 json.dumps(skill_config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
             )
-            runtime_config = json.loads((source / "config" / "runtime.json").read_text(encoding="utf-8"))
-            runtime_config["database"] = str(db)
             (home / "config" / "runtime.json").write_text(
-                json.dumps(runtime_config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+                json.dumps({"database": str(db)}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
             )
             migration_result = migrate(db, home / "backups")
             link_runtime(home, skill_config, args.force, source)
@@ -812,16 +808,13 @@ def main() -> int:
                     with closing(sqlite3.connect(db)) as conn:
                         required = {
                             "schema_version", "review_task", "review_task_version", "review_issue",
-                            "issue_stage", "issue_activity", "agent_audit_log", "code_inspector_thread",
-                            "code_inspector_event", "code_inspector_turn_metric", "review_tool_call_metric",
+                            "issue_stage", "issue_activity", "agent_audit_log",
                         }
                         tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
                         issue_columns = {row[1] for row in conn.execute("PRAGMA table_info(review_issue)")}
-                        event_columns = {row[1] for row in conn.execute("PRAGMA table_info(code_inspector_event)")}
                         schema_ok = (
                             required.issubset(tables)
                             and "projection_revision" in issue_columns
-                            and "coalesced_through_row_id" in event_columns
                         )
                         installed_version = conn.execute(
                             "SELECT COALESCE(MAX(version), 0) FROM schema_version"
@@ -838,7 +831,6 @@ def main() -> int:
                     installed_runtime = json.loads(runtime_config_path.read_text(encoding="utf-8"))
                     runtime_config_ok = bool(
                         installed_runtime.get("database")
-                        and installed_runtime.get("thread_runtime", {}).get("isolation", {}).get("granularity") == "issue_operator"
                     )
                 except (OSError, ValueError):
                     runtime_config_ok = False
@@ -851,10 +843,7 @@ def main() -> int:
                 "web_human_adapter": reviewctl_adapter_path(home, "web-human").exists(),
                 "runtime_review_db": (home / "bin" / "review-db.py").exists(),
                 "runtime_agent_routing": (home / "bin" / "agent_routing.py").exists(),
-                "runtime_agent_discovery": (home / "bin" / "agent_discovery.py").exists(),
                 "routing_capabilities": (home / "config" / "agent-capabilities.yml").exists(),
-                "runtime_supervisor": (home / "bin" / "code-inspector-supervisor.py").exists(),
-                "runtime_issue_thread": (home / "bin" / "issue_thread.py").exists(),
                 "runtime_config": runtime_config_ok,
                 "skill_config": (home / "config" / "code-inspector.json").exists(),
                 "agent_bindings": (home / "config" / "agent-bindings.json").exists(),

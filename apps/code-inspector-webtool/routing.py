@@ -5,14 +5,13 @@
   因此 WebApp 的读取、保存、展示与 Runtime 指向同一个文件（含 AGENT_ROUTING_CONFIG 覆盖）。
 - 模块加载优先使用安装后的 `~/.agent-review/bin/`，缺失时回退到源码 checkout，
   避免「源码已更新但未重新安装」时报缺少 agent_routing.py。
-- 不复制第二套 schema 校验：校验、序列化、合并全部委托给 agent_routing 模块。
+- 不复制第二套 schema 校验：校验和序列化全部委托给 agent_routing 模块。
 """
 from __future__ import annotations
 
 import importlib.util
 import json
 import os
-import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -26,8 +25,6 @@ SKILL_CONFIG_SOURCE = REPO_ROOT / "skills" / "code-inspector" / "config"
 
 CAPABILITY_FILENAME = "agent-capabilities.yml"
 EXAMPLE_FILENAME = "agent-routing.example.yml"
-
-_PROFILE_FIELD = re.compile(r"^p(\d+)_(id|agent|model|reasoning|level|enabled)$")
 
 
 def _load_module(module_name: str, filename: str):
@@ -54,10 +51,6 @@ def _load_module(module_name: str, filename: str):
 
 def load_routing_module():
     return _load_module("code_inspector_agent_routing", "agent_routing.py")
-
-
-def load_discovery_module():
-    return _load_module("code_inspector_agent_discovery", "agent_discovery.py")
 
 
 def routing_config_path() -> Path:
@@ -99,17 +92,6 @@ def example_text() -> str:
     return f"# 未找到示例文件。可在 {SKILL_CONFIG_SOURCE / EXAMPLE_FILENAME} 查看。\n"
 
 
-def discover_candidates() -> list[dict[str, Any]]:
-    return load_discovery_module().discover_agents()
-
-
-def discover_installed_agents() -> list[str]:
-    try:
-        return load_discovery_module().discover_installed_agents()
-    except Exception:  # noqa: BLE001 - 诊断信息不可用时不影响页面
-        return []
-
-
 def _snapshot():
     module = load_routing_module()
     return module.load_routing_snapshot(routing_config_path(), load_capabilities())
@@ -127,46 +109,12 @@ def status_view() -> dict[str, Any]:
     view["pathOverride"] = os.environ.get("AGENT_ROUTING_CONFIG") or None
     view["moduleSource"] = module_source()
     if not path.exists() and view["status"] == module.ROUTER_DISABLED:
-        view["message"] = "尚未配置：从本机 Agent 初始化，或手工新增 Dev 执行配置。"
+        view["message"] = "尚未配置：请在下方填写 YAML 执行配置。"
     elif view["status"] == module.ROUTER_INVALID:
         view["message"] = "配置无效：Model Router 未启用，代码检查主流程不受影响。"
     else:
         view["message"] = "模型路由已启用。"
-    view["enabledCount"] = sum(1 for entry in view["profiles"] if entry["enabled"])
-    view["agentOptions"] = _agent_options(view)
-    view["modelOptions"] = _model_options(view)
     return view
-
-
-def _agent_options(view: dict[str, Any]) -> list[str]:
-    """可选 Agent：capability 收录 + 本机已安装 + 现有配置里出现的。"""
-    options = set(view.get("capabilities") or {})
-    options.update(discover_installed_agents())
-    options.update(entry["agent"] for entry in view.get("profiles") or [])
-    return sorted(options)
-
-
-def _model_options(view: dict[str, Any]) -> dict[str, list[str]]:
-    capabilities = view.get("capabilities") or {}
-    return {agent: [item["model"] for item in models] for agent, models in capabilities.items()}
-
-
-def validate_document(document: Any) -> tuple[bool, str | None]:
-    module = load_routing_module()
-    try:
-        module.parse_routing_document(document, load_capabilities())
-    except module.AgentRoutingError as exc:
-        return False, str(exc)
-    return True, None
-
-
-def save_document(document: Any) -> dict[str, Any]:
-    """完整校验 → 原子写入 → runtime reload；校验失败时现有文件保持不变。"""
-    module = load_routing_module()
-    normalized, snapshot = module.save_routing_document(
-        document, routing_config_path(), load_capabilities(),
-    )
-    return {"saved": normalized, "snapshot": snapshot.as_dict()}
 
 
 def save_yaml_text(text: str) -> dict[str, Any]:
@@ -187,82 +135,9 @@ def dump_yaml(document: Any) -> str:
     return module.dump_routing_document(document, load_capabilities())
 
 
-def seed_result(replace: bool = False) -> dict[str, Any]:
-    """生成初始化结果。
-
-    - 无现有配置：直接生成（mode=create）。
-    - 有现有配置且 replace=False：与现有配置合并，保留人工配置（mode=merge）。
-    - replace=True：整体替换（mode=replace），必须由用户显式选择。
-    """
-    module = load_routing_module()
-    capabilities = load_capabilities()
-    discovered = discover_candidates()
-    path = routing_config_path()
-    if path.exists() and not replace:
-        try:
-            existing = module.load_document(path, capabilities)
-        except Exception:  # noqa: BLE001 - 现有配置损坏时不静默覆盖，改为报错
-            raise ValueError(
-                f"现有配置无法解析，已停止初始化以免覆盖：{path}。"
-                "请先修复或清空该文件，再选择「整体替换」。"
-            )
-        merged = module.merge_seed_document(existing, discovered, capabilities)
-        merged["mode"] = "merge"
-        return merged
-    document = module.seed_document(discovered, capabilities)
-    return {
-        "document": document,
-        "added": list(document["profiles"]),
-        "kept": 0,
-        "mode": "replace" if path.exists() else "create",
-    }
-
-
-def profiles_from_form(form) -> list[dict[str, Any]]:
-    """把表单里的 p{i}_* 字段折叠回 profiles 列表。
-
-    字段带显式下标，因此不依赖各字段的提交顺序，也不受「未勾选 checkbox 不提交」影响。
-    """
-    rows: dict[int, dict[str, str]] = {}
-    for key in form.keys():
-        match = _PROFILE_FIELD.match(key)
-        if not match:
-            continue
-        rows.setdefault(int(match.group(1)), {})[match.group(2)] = form.get(key, "")
-
-    profiles: list[dict[str, Any]] = []
-    used: set[str] = set()
-    for index in sorted(rows):
-        row = rows[index]
-        agent = str(row.get("agent") or "").strip()
-        model = str(row.get("model") or "").strip()
-        reasoning = str(row.get("reasoning") or "").strip()
-        level_text = str(row.get("level") or "").strip()
-        if not any((agent, model, reasoning, level_text)):
-            continue  # 整行空：忽略
-        profile_id = str(row.get("id") or "").strip()
-        if not profile_id:
-            slug = re.sub(r"[^A-Za-z0-9._-]+", "-", f"{agent}-{model}-{reasoning}").strip("-").lower()
-            profile_id = slug or "profile"
-        candidate, suffix = profile_id, 2
-        while candidate in used:
-            candidate = f"{profile_id}-{suffix}"
-            suffix += 1
-        used.add(candidate)
-        profiles.append({
-            "id": candidate,
-            "agent": agent,
-            "model": model,
-            "reasoning": reasoning,
-            "level": int(level_text) if level_text.lstrip("-").isdigit() else level_text,
-            "enabled": str(row.get("enabled") or "").strip().lower() in {"1", "true", "yes", "on"},
-        })
-    return profiles
-
-
-# 等级 → 角色称谓：纯展示，帮助人工校准滑杆语义。
+# 等级 → 角色称谓：纯展示，帮助人工校准等级语义。
 # 不进入 Inspector 的 difficulty_guide（模型侧只描述任务难度，不感知执行者），
-# 也不参与 Router 的 `enabled and level >= difficulty` 筛选。
+# 也不参与 Router 的 `level >= difficulty` 筛选。
 LEVEL_ROLES = {
     1: "实习生",
     2: "初级开发",
@@ -270,19 +145,6 @@ LEVEL_ROLES = {
     4: "高级开发",
     5: "架构师",
 }
-
-
-def capabilities_json() -> str:
-    """供前端按 Model 联动 Reasoning 使用的能力表，附带等级角色称谓。"""
-    module = load_routing_module()
-    return json.dumps(
-        {
-            "capabilities": load_capabilities(),
-            "fallbackReasonings": list(module.FALLBACK_REASONING),
-            "levelRoles": LEVEL_ROLES,
-        },
-        ensure_ascii=False,
-    )
 
 
 def recommended_for(difficulty: Any) -> list[dict[str, Any]]:
@@ -301,9 +163,9 @@ def recommended_for(difficulty: Any) -> list[dict[str, Any]]:
 
 
 def candidate_profiles(difficulty: Any) -> list[dict[str, Any]]:
-    """可作为执行者的合法候选：enabled 且 level >= difficulty。
+    """可作为执行者的合法候选：level >= difficulty。
 
-    与 Router 的推荐集合完全一致；不展示所有 enabled profile，避免选到
+    与 Router 的推荐集合完全一致；不展示不满足等级要求的 Profile，避免选到
     当前根本完不成该任务的执行配置。
     """
     try:
@@ -332,26 +194,8 @@ def assignment_state(assignment: Any, difficulty: Any) -> tuple[str, str | None]
 
 
 def profile_groups(status: dict[str, Any]) -> list[dict[str, Any]]:
-    """把 profiles 按 Agent 分组，并附带每个 Model 的可选 Reasonings。"""
-    module = load_routing_module()
-    capabilities = status.get("capabilities") or {}
-    groups: list[dict[str, Any]] = []
-    by_agent: dict[str, dict[str, Any]] = {}
-    for position, profile in enumerate(status.get("profiles") or []):
-        group = by_agent.get(profile["agent"])
-        if group is None:
-            group = {"agent": profile["agent"], "rows": []}
-            by_agent[profile["agent"]] = group
-            groups.append(group)
-        models = [item["model"] for item in capabilities.get(profile["agent"], [])]
-        if profile["model"] not in models:
-            models = [*models, profile["model"]]  # 保留自定义模型，避免静默丢失
-        group["rows"].append({
-            "index": position,
-            "profile": profile,
-            "modelOptions": models,
-            "reasoningOptions": module.reasoning_options(
-                capabilities, profile["agent"], profile["model"],
-            ),
-        })
-    return groups
+    """按 Agent 分组，只展示当前 YAML 中的执行配置。"""
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for profile in status.get("profiles") or []:
+        groups.setdefault(profile["agent"], []).append(profile)
+    return [{"agent": agent, "profiles": profiles} for agent, profiles in groups.items()]

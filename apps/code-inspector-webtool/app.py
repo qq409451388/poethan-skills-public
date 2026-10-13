@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from flask import Flask, abort, redirect, render_template, request, session, url_for
 from markupsafe import Markup
 
-from commands import run_human_command, run_runtime_command
+from commands import run_human_command
 from db import parse_json_field, query_all, query_one
 import routing
 
@@ -147,24 +147,7 @@ LABELS = {
     "APPROVED": "通过", "REJECTED": "未通过", "PROVIDED": "已确认",
 }
 
-RUNTIME_LABELS = {
-    "inspector": "检查者", "developer": "开发者",
-    "INITIALIZING": "准备中", "ACTIVE": "正在执行", "WAITING": "等待新任务",
-    "PAUSED": "已暂停", "COMPLETED": "已完成", "FAILED": "执行失败", "ARCHIVED": "已归档",
-    "PENDING": "等待处理", "PROCESSING": "正在处理", "DONE": "处理完成",
-    "SUPERSEDED": "已被最新状态覆盖",
-    "RETRYABLE": "可安全重试", "NON_RETRYABLE": "不可自动重试",
-    "AMBIGUOUS": "执行结果不确定",
-    "INIT": "初始化", "ACTION": "业务执行", "COMPACT": "上下文整理",
-    "SESSION_SCOPE_VIOLATION": "会话身份范围不匹配",
-    "AMBIGUOUS_DISPATCH": "执行结果不确定",
-    "PRE_ACTION_RETRYABLE": "尚未执行，可重试",
-    "STALE_ACTIVE_AMBIGUOUS": "执行租约过期，结果待核对",
-    "COMPACT_FAILED": "上下文整理失败", "ARCHIVE_FAILED": "线程归档失败",
-}
-RUNTIME_THREAD_STATUSES = ["INITIALIZING", "ACTIVE", "WAITING", "PAUSED", "COMPLETED", "FAILED", "ARCHIVED"]
-RUNTIME_EVENT_STATUSES = ["PENDING", "PROCESSING", "DONE", "FAILED", "SUPERSEDED"]
-RUNTIME_PROCESSING_TIMEOUT_MINUTES = 10
+
 TOKEN_ATTENTION_MINIMUM = 10_000
 WAKEUP_ATTENTION_MINIMUM = 5
 
@@ -203,7 +186,6 @@ def label(value: str | None) -> str:
 ASSIGNMENT_REASON_LABELS = {
     "router_disabled": "Model Router 未启用或配置无效，无法核对该执行配置",
     "profile_missing": "该执行配置已被删除，或 Routing 配置已被整体替换",
-    "profile_disabled": "该执行配置已被禁用",
     "profile_changed": "该执行配置的 Agent / Model / Reasoning 已被修改",
     "profile_level_below_difficulty": "该执行配置的等级已低于当前 difficulty",
     "profile_level_reduced": "该执行配置的等级被下调",
@@ -213,11 +195,6 @@ ASSIGNMENT_REASON_LABELS = {
 @app.template_filter("assignment_reason")
 def assignment_reason(value: str | None) -> str:
     return ASSIGNMENT_REASON_LABELS.get(value or "", value or "未提供")
-
-
-@app.template_filter("runtime_label")
-def runtime_label(value: str | None) -> str:
-    return RUNTIME_LABELS.get(value or "", LABELS.get(value or "", value or "—"))
 
 
 @app.template_filter("compact_count")
@@ -797,107 +774,6 @@ def task_update_status(task_key: str):
         return feedback_redirect(target, err=str(exc))
 
 
-def runtime_day_bounds() -> tuple[str, str]:
-    """返回展示时区“今日”对应的 UTC SQLite 时间边界。"""
-    local_now = datetime.now(DISPLAY_TIMEZONE)
-    local_start = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
-    local_end = local_start + timedelta(days=1)
-    return tuple(
-        value.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-        for value in (local_start, local_end)
-    )
-
-
-def token_total(row: dict) -> int:
-    """Cached Input 是 Input 的子集，因此总量只计算 Input + Output。"""
-    return int(row.get("input_tokens") or 0) + int(row.get("output_tokens") or 0)
-
-
-def review_db_tool_counts(rows: list[dict]) -> list[dict]:
-    entries = []
-    for row in rows:
-        count = int(row.get("call_count") or 0)
-        failure_count = int(row.get("failure_count") or 0)
-        entries.append({
-            "name": str(row["command"]),
-            "count": count,
-            "failure_count": failure_count,
-            "failure_rate": round(100 * failure_count / count, 1) if count else 0.0,
-        })
-    return sorted(entries, key=lambda entry: (-entry["count"], entry["name"]))
-
-
-def issue_ai_summary(issue_key: str, threads: list[dict], events: list[dict]) -> dict:
-    usage = query_one(
-        """SELECT COALESCE(SUM(input_tokens),0) AS input_tokens,
-                  COALESCE(SUM(cached_input_tokens),0) AS cached_input_tokens,
-                  COALESCE(SUM(output_tokens),0) AS output_tokens,
-                  COUNT(*) AS turn_count,
-                  SUM(CASE WHEN input_tokens IS NOT NULL OR cached_input_tokens IS NOT NULL
-                                OR output_tokens IS NOT NULL THEN 1 ELSE 0 END) AS token_usage_count,
-                  SUM(CASE WHEN turn_type='INIT' THEN 1 ELSE 0 END) AS init_count,
-                  SUM(CASE WHEN turn_type='ACTION' THEN 1 ELSE 0 END) AS action_count,
-                  SUM(CASE WHEN turn_type='COMPACT' THEN 1 ELSE 0 END) AS compact_count
-           FROM code_inspector_turn_metric WHERE issue_key=?""",
-        (issue_key,),
-    ) or {}
-    recent_turns = query_all(
-        """SELECT event_id,role,operator_id,projection_revision,turn_type,turn_id,
-                  input_tokens,cached_input_tokens,output_tokens,review_db_calls_json,created_at
-           FROM code_inspector_turn_metric WHERE issue_key=? ORDER BY id DESC LIMIT 12""",
-        (issue_key,),
-    )
-    for turn in recent_turns:
-        turn["total_tokens"] = token_total(turn)
-        turn["review_db_calls"] = parse_json_field(turn["review_db_calls_json"], {})
-    tool_rows = query_all(
-        """SELECT command,COUNT(*) AS call_count,
-                  SUM(CASE WHEN success=0 THEN 1 ELSE 0 END) AS failure_count
-           FROM review_tool_call_metric WHERE issue_key=? GROUP BY command""",
-        (issue_key,),
-    )
-    context_values = [
-        row["context_usage"] for row in threads if row.get("context_usage") is not None
-    ]
-    ambiguous = next((
-        row for row in threads
-        if "AMBIGUOUS" in str(row.get("error_code") or "")
-    ), None)
-    failed_thread = next((row for row in threads if row.get("thread_status") == "FAILED"), None)
-    paused_thread = next((row for row in threads if row.get("thread_status") == "PAUSED"), None)
-    latest_event = next(
-        (event for event in events if event.get("status") != "SUPERSEDED"),
-        events[0] if events else None,
-    )
-    if ambiguous or (latest_event and latest_event.get("failure_kind") == "AMBIGUOUS"):
-        latest_status, latest_kind = "执行结果不确定", "attention"
-    elif failed_thread or (latest_event and latest_event.get("status") == "FAILED"):
-        latest_status, latest_kind = "执行失败", "danger"
-    elif paused_thread:
-        latest_status, latest_kind = "已暂停", "attention"
-    elif any(row.get("thread_status") == "ACTIVE" for row in threads) or (
-        latest_event and latest_event.get("status") == "PROCESSING"
-    ):
-        latest_status, latest_kind = "正在处理", "active"
-    elif recent_turns:
-        latest_status, latest_kind = "正常", "ok"
-    elif tool_rows:
-        latest_status, latest_kind = "已记录工具调用", "neutral"
-    else:
-        latest_status, latest_kind = "暂无执行记录", "neutral"
-    return {
-        **usage,
-        "token_usage_available": int(usage.get("token_usage_count") or 0) > 0,
-        "total_tokens": token_total(usage),
-        "wakeups": int(usage.get("init_count") or 0) + int(usage.get("action_count") or 0),
-        "context_usage": max(context_values) if context_values else None,
-        "latest_status": latest_status,
-        "latest_kind": latest_kind,
-        "tool_calls": review_db_tool_counts(tool_rows),
-        "recent_turns": recent_turns,
-    }
-
-
 @app.route("/issues/<issue_key>")
 def issue_detail(issue_key: str):
     issue = query_one(
@@ -958,25 +834,6 @@ def issue_detail(issue_key: str):
     current_execution_stage = next((
         item for item in (active_stage_plan or []) if item["status"] in {"IN_PROGRESS", "PENDING_REVIEW"}
     ), None)
-    runtime_threads = query_all(
-        """SELECT issue_key,role,operator_id,agent_platform,runtime_backend,thread_id,
-                  thread_status,context_tokens,context_window,last_event,last_active_at,
-                  next_action,worker_id,lease_until,heartbeat_at,error_code,error_message,
-                  created_at,updated_at
-           FROM code_inspector_thread WHERE issue_key=? ORDER BY role,operator_id""", (issue_key,)
-    )
-    for runtime_thread in runtime_threads:
-        runtime_thread["context_usage"] = round(
-            100 * runtime_thread["context_tokens"] / runtime_thread["context_window"], 1
-        ) if runtime_thread.get("context_tokens") is not None and runtime_thread.get("context_window") else None
-    runtime_events = query_all(
-        """SELECT event_id,operator_id,role,event_type,status,attempt_count,failure_kind,
-                  projection_revision,claimed_at,lease_until,worker_id,next_attempt_at,
-                  last_error,superseded_by_event_id,created_at
-           FROM code_inspector_event WHERE issue_key=? ORDER BY id DESC LIMIT 20""", (issue_key,)
-    )
-    ai_summary = issue_ai_summary(issue_key, runtime_threads, runtime_events)
-    # 推荐按当前 Routing 配置动态计算，避免展示持久化下来的过期快照。
     issue["recommended_executors"] = routing.recommended_for(issue.get("difficulty"))
     issue["assignment_status"], issue["assignment_invalid_reason"] = routing.assignment_state(
         issue.get("assignment"), issue.get("difficulty"),
@@ -996,286 +853,9 @@ def issue_detail(issue_key: str):
         dispositions=DISPOSITIONS, activity_types=ACTIVITY_TYPES, discussion_topics=DISCUSSION_TOPICS,
         issue_statuses=ISSUE_STATUSES,
         task_statuses=TASK_STATUSES,
-        runtime_threads=runtime_threads, runtime_events=runtime_events,
-        ai_summary=ai_summary,
         assignment_profiles=routing.candidate_profiles(issue.get("difficulty")),
         level_roles=routing.LEVEL_ROLES,
     )
-
-
-@app.get("/runtime")
-def runtime_overview():
-    today_start, today_end = runtime_day_bounds()
-    issue = request.args.get("issue", "").strip()
-    role = request.args.get("role", "").strip()
-    operator = request.args.get("operator", "").strip()
-    status_filter = request.args.get("status", "").strip()
-    filters, params = [], []
-    for column, value in (("t.issue_key", issue), ("t.role", role), ("t.operator_id", operator)):
-        if value:
-            filters.append(f"{column}=?"); params.append(value)
-    thread_statuses = set(RUNTIME_THREAD_STATUSES)
-    event_statuses = set(RUNTIME_EVENT_STATUSES)
-    if status_filter:
-        if status_filter in thread_statuses:
-            filters.append("thread_status=?"); params.append(status_filter)
-        else:
-            filters.append("0=1")
-    where = " WHERE " + " AND ".join(filters) if filters else ""
-    threads = query_all(
-        """SELECT t.issue_key,t.role,t.operator_id,t.agent_platform,t.runtime_backend,t.thread_id,
-                  t.thread_status,t.issue_status,t.next_action,t.last_event,t.last_active_at,
-                  t.worker_id,t.lease_until,t.heartbeat_at,t.error_code,t.error_message,
-                  t.context_tokens,t.context_window,t.created_at,t.updated_at,
-                  i.projection_revision
-           FROM code_inspector_thread t JOIN review_issue i ON i.id=t.issue_id""" + where + " ORDER BY t.updated_at DESC", params,
-    )
-    for row in threads:
-        row["context_usage"] = round(100 * row["context_tokens"] / row["context_window"], 1) if row.get("context_tokens") is not None and row.get("context_window") else None
-    event_filters, event_params = [], []
-    for column, value in (("issue_key", issue), ("role", role), ("operator_id", operator)):
-        if value:
-            event_filters.append(f"{column}=?"); event_params.append(value)
-    if status_filter in event_statuses:
-        event_filters.append("status=?"); event_params.append(status_filter)
-    elif status_filter:
-        event_filters.append("0=1")
-    event_where = " WHERE " + " AND ".join(event_filters) if event_filters else ""
-    events = query_all(
-        """SELECT event_id,issue_key,role,operator_id,event_type,status,attempt_count,
-                  projection_revision,failure_kind,claimed_at,lease_until,worker_id,
-                  next_attempt_at,last_error,superseded_by_event_id,created_at,updated_at
-           FROM code_inspector_event""" + event_where + " ORDER BY id DESC LIMIT 200", event_params,
-    )
-    turns = query_all(
-        """SELECT event_id,issue_key,role,operator_id,projection_revision,turn_type,turn_id,
-                  input_tokens,cached_input_tokens,output_tokens,review_db_calls_json,created_at
-           FROM code_inspector_turn_metric"""
-        + (" WHERE " + " AND ".join(
-            [clause for clause in (
-                "issue_key=?" if issue else "",
-                "role=?" if role else "",
-                "operator_id=?" if operator else "",
-            ) if clause]
-        ) if issue or role or operator else "")
-        + " ORDER BY id DESC LIMIT 200",
-        tuple(value for value in (issue, role, operator) if value),
-    )
-    for turn in turns:
-        turn["total_tokens"] = token_total(turn)
-        turn["review_db_calls"] = parse_json_field(turn["review_db_calls_json"], {})
-
-    today = query_one(
-        """SELECT COALESCE(SUM(input_tokens),0) AS input_tokens,
-                  COALESCE(SUM(cached_input_tokens),0) AS cached_input_tokens,
-                  COALESCE(SUM(output_tokens),0) AS output_tokens,
-                  SUM(CASE WHEN input_tokens IS NOT NULL OR cached_input_tokens IS NOT NULL
-                                OR output_tokens IS NOT NULL THEN 1 ELSE 0 END) AS token_usage_count,
-                  COUNT(DISTINCT issue_key) AS issue_count,
-                  SUM(CASE WHEN turn_type IN ('INIT','ACTION') THEN 1 ELSE 0 END) AS wakeups,
-                  SUM(CASE WHEN turn_type='COMPACT' THEN 1 ELSE 0 END) AS compact_count
-           FROM code_inspector_turn_metric WHERE created_at>=? AND created_at<?""",
-        (today_start, today_end),
-    ) or {}
-    today["token_usage_available"] = int(today.get("token_usage_count") or 0) > 0
-    today["total_tokens"] = token_total(today)
-    issue_count = int(today.get("issue_count") or 0)
-    today["average_tokens"] = round(today["total_tokens"] / issue_count) if issue_count else 0
-
-    tool_filters = ["created_at>=?", "created_at<?"]
-    tool_params: list[str] = [today_start, today_end]
-    for column, value in (("issue_key", issue), ("role", role), ("operator_id", operator)):
-        if value:
-            tool_filters.append(f"{column}=?")
-            tool_params.append(value)
-    today_tool_calls = review_db_tool_counts(query_all(
-        """SELECT command,COUNT(*) AS call_count,
-                  SUM(CASE WHEN success=0 THEN 1 ELSE 0 END) AS failure_count
-           FROM review_tool_call_metric WHERE """
-        + " AND ".join(tool_filters) + " GROUP BY command",
-        tool_params,
-    ))
-
-    savings = query_one(
-        """SELECT COUNT(*) AS intercepted_events
-           FROM code_inspector_event e
-           WHERE e.status='SUPERSEDED' AND e.updated_at>=? AND e.updated_at<?
-             AND NOT EXISTS(
-               SELECT 1 FROM code_inspector_turn_metric m WHERE m.event_id=e.event_id
-             )""",
-        (today_start, today_end),
-    ) or {"intercepted_events": 0}
-    savings["avoided_wakeups"] = int(savings.get("intercepted_events") or 0)
-    savings["compact_count"] = int(today.get("compact_count") or 0)
-
-    issue_usage = query_all(
-        """SELECT m.issue_key,i.title,
-                  COALESCE(SUM(m.input_tokens),0) AS input_tokens,
-                  COALESCE(SUM(m.cached_input_tokens),0) AS cached_input_tokens,
-                  COALESCE(SUM(m.output_tokens),0) AS output_tokens,
-                  SUM(CASE WHEN m.turn_type IN ('INIT','ACTION') THEN 1 ELSE 0 END) AS wakeups,
-                  SUM(CASE WHEN m.turn_type='INIT' THEN 1 ELSE 0 END) AS init_count,
-                  SUM(CASE WHEN m.turn_type='ACTION' THEN 1 ELSE 0 END) AS action_count,
-                  SUM(CASE WHEN m.turn_type='COMPACT' THEN 1 ELSE 0 END) AS compact_count
-           FROM code_inspector_turn_metric m
-           LEFT JOIN review_issue i ON i.issue_key=m.issue_key
-           WHERE m.created_at>=? AND m.created_at<?
-           GROUP BY m.issue_key,i.title
-           ORDER BY COALESCE(SUM(m.input_tokens),0)+COALESCE(SUM(m.output_tokens),0) DESC""",
-        (today_start, today_end),
-    )
-    for usage in issue_usage:
-        usage["total_tokens"] = token_total(usage)
-
-    recent_start = (
-        datetime.now(DISPLAY_TIMEZONE) - timedelta(days=30)
-    ).astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-    recent_average = query_one(
-        """WITH per_issue AS (
-             SELECT issue_key,
-                    COALESCE(SUM(input_tokens),0)+COALESCE(SUM(output_tokens),0) AS tokens,
-                    SUM(CASE WHEN turn_type IN ('INIT','ACTION') THEN 1 ELSE 0 END) AS wakeups
-             FROM code_inspector_turn_metric WHERE created_at>=? GROUP BY issue_key
-           )
-           SELECT COALESCE(AVG(tokens),0) AS tokens,COALESCE(AVG(wakeups),0) AS wakeups
-           FROM per_issue""",
-        (recent_start,),
-    ) or {"tokens": 0, "wakeups": 0}
-
-    thread_alerts = query_all(
-        """SELECT t.issue_key,i.title,t.thread_status,t.role,t.operator_id,t.thread_id,
-                  t.error_code,t.error_message,t.lease_until,t.worker_id,t.updated_at
-           FROM code_inspector_thread t LEFT JOIN review_issue i ON i.id=t.issue_id
-           WHERE t.thread_status IN ('PAUSED','FAILED') OR t.error_code LIKE '%AMBIGUOUS%'
-           ORDER BY CASE WHEN t.error_code LIKE '%AMBIGUOUS%' THEN 0
-                         WHEN t.thread_status='FAILED' THEN 1 ELSE 2 END,t.updated_at DESC"""
-    )
-    event_alerts = query_all(
-        f"""SELECT e.issue_key,i.title,e.event_id,e.event_type,e.status,e.failure_kind,
-                   e.last_error,e.worker_id,e.claimed_at,e.lease_until,e.updated_at,
-                   CASE WHEN e.status='PROCESSING' AND (
-                     (e.lease_until IS NOT NULL AND e.lease_until<CURRENT_TIMESTAMP) OR
-                     (e.lease_until IS NULL AND COALESCE(e.claimed_at,e.updated_at,e.created_at)
-                       <datetime('now','-{RUNTIME_PROCESSING_TIMEOUT_MINUTES} minutes'))
-                   ) THEN 1 ELSE 0 END AS processing_too_long
-            FROM code_inspector_event e
-            LEFT JOIN review_issue i ON i.issue_key=e.issue_key
-            WHERE e.status='FAILED' OR e.failure_kind='AMBIGUOUS' OR (
-              e.status='PROCESSING' AND (
-                (e.lease_until IS NOT NULL AND e.lease_until<CURRENT_TIMESTAMP) OR
-                (e.lease_until IS NULL AND COALESCE(e.claimed_at,e.updated_at,e.created_at)
-                  <datetime('now','-{RUNTIME_PROCESSING_TIMEOUT_MINUTES} minutes'))
-              )
-            )
-            ORDER BY CASE WHEN e.failure_kind='AMBIGUOUS' THEN 0
-                          WHEN e.status='FAILED' THEN 1 ELSE 2 END,e.updated_at DESC"""
-    )
-
-    attention: list[dict] = []
-    seen_issues: set[str] = set()
-
-    def add_attention(issue_key: str, title: str | None, message: str, kind: str, technical: dict) -> None:
-        if issue_key in seen_issues or len(attention) >= 10:
-            return
-        seen_issues.add(issue_key)
-        attention.append({
-            "issue_key": issue_key, "title": title or "未命名 Issue",
-            "message": message, "kind": kind, "technical": technical,
-        })
-
-    for row in thread_alerts:
-        ambiguous = "AMBIGUOUS" in str(row.get("error_code") or "")
-        if ambiguous:
-            message, kind = "任务执行状态不确定，建议人工核对", "danger"
-        elif row["thread_status"] == "FAILED":
-            message, kind = "自动处理失败，需要检查", "danger"
-        else:
-            message, kind = "AI 已暂停，需要确认是否继续", "warning"
-        add_attention(row["issue_key"], row.get("title"), message, kind, row)
-    for row in event_alerts:
-        if row.get("failure_kind") == "AMBIGUOUS":
-            message, kind = "任务执行状态不确定，建议人工核对", "danger"
-        elif row.get("processing_too_long"):
-            message, kind = "处理时间明显过长，可能已经卡住", "warning"
-        else:
-            message, kind = "自动处理失败，需要检查", "danger"
-        add_attention(row["issue_key"], row.get("title"), message, kind, row)
-    operational_alert_count = len(attention)
-
-    average_tokens = float(recent_average.get("tokens") or 0)
-    average_wakeups = float(recent_average.get("wakeups") or 0)
-    for usage in issue_usage:
-        if (
-            average_tokens > 0 and usage["total_tokens"] >= TOKEN_ATTENTION_MINIMUM
-            and usage["total_tokens"] >= average_tokens * 2
-        ):
-            ratio = usage["total_tokens"] / average_tokens
-            add_attention(
-                usage["issue_key"], usage.get("title"),
-                f"AI 消耗偏高：{compact_count(usage['total_tokens'])} Token，约为近期平均的 {ratio:.1f} 倍",
-                "cost", usage,
-            )
-        elif (
-            average_wakeups > 0 and int(usage.get("wakeups") or 0) >= WAKEUP_ATTENTION_MINIMUM
-            and float(usage["wakeups"]) >= average_wakeups * 2
-        ):
-            ratio = float(usage["wakeups"]) / average_wakeups
-            add_attention(
-                usage["issue_key"], usage.get("title"),
-                f"模型唤醒偏多：{usage['wakeups']} 次，约为近期平均的 {ratio:.1f} 倍",
-                "cost", usage,
-            )
-
-    if attention:
-        health = {
-            "ok": False,
-            "title": f"有 {len(attention)} 个问题需要关注",
-            "explanation": (
-                "发现执行失败、暂停或长时间未完成，请优先查看下方提示。"
-                if operational_alert_count else
-                "自动处理没有故障，但部分 Issue 的 AI 消耗明显偏高。"
-            ),
-        }
-    else:
-        health = {
-            "ok": True, "title": "运行正常",
-            "explanation": "未发现执行失败、结果不确定、异常暂停或长时间未完成的任务。",
-        }
-    return render_template(
-        "runtime.html", threads=threads, events=events, turns=turns,
-        today=today, today_tool_calls=today_tool_calls,
-        savings=savings, issue_usage=issue_usage[:10],
-        attention=attention, health=health,
-        filters={"issue": issue, "role": role, "operator": operator, "status": status_filter},
-        thread_statuses=RUNTIME_THREAD_STATUSES, event_statuses=RUNTIME_EVENT_STATUSES,
-    )
-
-
-@app.post("/runtime/events/<event_id>/retry")
-def runtime_retry_event(event_id: str):
-    try:
-        run_runtime_command("retry-event", "--event-id", event_id, "--confirm")
-        return redirect_back("runtime_overview", msg="调度事件已重新放回待处理队列")
-    except Exception as exc:
-        return redirect_back("runtime_overview", err=str(exc))
-
-
-@app.post("/runtime/threads/<issue_key>/<operator_id>/reconcile")
-def runtime_reconcile_thread(issue_key: str, operator_id: str):
-    try:
-        run_runtime_command("reconcile", "--issue", issue_key, "--operator", operator_id)
-        return redirect_back("runtime_overview", msg="线程核对已完成；不确定的业务动作没有自动重放")
-    except Exception as exc:
-        return redirect_back("runtime_overview", err=str(exc))
-
-
-@app.post("/runtime/threads/<issue_key>/<operator_id>/pause")
-def runtime_pause_thread(issue_key: str, operator_id: str):
-    try:
-        run_runtime_command("pause-thread", "--issue", issue_key, "--operator", operator_id, "--confirm")
-        return redirect_back("runtime_overview", msg="线程已暂停")
-    except Exception as exc:
-        return redirect_back("runtime_overview", err=str(exc))
 
 
 @app.route("/issues/<issue_key>/assignment", methods=["POST"])
@@ -1556,7 +1136,7 @@ def routing_config():
             "profiles": [], "capabilities": {}, "revision": None,
             "configPath": "<不可用>", "capabilityPath": "<不可用>",
             "pathOverride": None, "moduleSource": routing.module_source(),
-            "error": str(exc), "enabledCount": 0,
+            "error": str(exc),
             "message": "Agent Routing 模块不可用。",
             "agentOptions": [], "modelOptions": {}, "levelScale": [1, 2, 3, 4, 5],
         }
@@ -1564,107 +1144,25 @@ def routing_config():
     return render_template("routing.html", **context)
 
 
-def _routing_page_context(status: dict, seed_preview: dict | None = None, **extra):
-    """页面渲染上下文；各处渲染路径共用，避免字段漏传。"""
+def _routing_page_context(status: dict):
+    """执行配置只读展示；YAML 原文是唯一编辑入口，非法配置也可直接修复。"""
+    example = routing.example_text()
+    path = routing.routing_config_path()
     try:
-        example = routing.example_text()
-    except Exception:  # noqa: BLE001
-        example = ""
-    try:
-        yaml_text = routing.dump_yaml(
-            {"version": status.get("version") or 2, "profiles": list(status.get("profiles") or [])}
-        )
-    except Exception:  # noqa: BLE001 - 序列化异常时退回示例文本，页面仍可打开
+        yaml_text = path.read_text(encoding="utf-8") if path.exists() else example
+    except OSError:
         yaml_text = example
-    discovered, discovery_error = [], None
-    try:
-        discovered = routing.discover_candidates()
-    except Exception as exc:  # noqa: BLE001 - 发现不可用时页面仍要能打开
-        discovery_error = str(exc)
-    try:
-        capabilities_payload = routing.capabilities_json()
-    except Exception:  # noqa: BLE001
-        capabilities_payload = json.dumps(
-            {"capabilities": {}, "fallbackReasonings": [], "levelRoles": routing.LEVEL_ROLES},
-            ensure_ascii=False,
-        )
-    config_path = routing.routing_config_path()
-    try:
-        groups = routing.profile_groups(status)
-    except Exception:  # noqa: BLE001 - 分组失败时页面仍要能打开
-        groups = []
     return {
-        "status": status,
-        "example": example,
-        "yaml_text": yaml_text,
-        "discovered": discovered,
-        "discovery_error": discovery_error,
-        "seed_preview": seed_preview,
-        "capabilities_payload": capabilities_payload,
-        "level_roles": routing.LEVEL_ROLES,
-        "config_exists": config_path.exists(),
-        "profile_groups": groups,
-        **extra,
+        "status": status, "example": example, "yaml_text": yaml_text,
+        "profile_groups": routing.profile_groups(status), "level_roles": routing.LEVEL_ROLES,
     }
-
-
-@app.post("/routing/seed")
-def routing_seed():
-    """从本机已安装 Agent 初始化执行配置。
-
-    默认只预览；`apply=1` 时按同样的校验与原子写入流程保存。
-    已有配置时默认合并（保护人工配置），只有显式 `replace=1` 才整体替换。
-    """
-    replace = request.form.get("replace") == "1"
-    try:
-        result = routing.seed_result(replace=replace)
-    except Exception as exc:  # noqa: BLE001
-        return redirect_back("routing_config", err=f"无法从本机 Agent 初始化：{exc}")
-    if not result["document"]["profiles"]:
-        return redirect_back(
-            "routing_config",
-            err="没有发现可用候选：本机没有绑定 Developer 身份，或对应 Agent 的模型配置无法读取。",
-        )
-    if result["mode"] == "merge" and not result["added"]:
-        return redirect_back(
-            "routing_config",
-            msg=f"现有配置已覆盖全部本机 Agent，无需新增；保留原有 {result['kept']} 条执行配置。",
-        )
-    if request.form.get("apply") != "1":
-        status = routing.status_view()
-        return render_template(
-            "routing.html",
-            **_routing_page_context(status, seed_preview=result),
-        )
-    try:
-        saved = routing.save_document(result["document"])
-    except Exception as exc:  # noqa: BLE001
-        return redirect_back("routing_config", err=f"初始化配置未保存：{exc}")
-    snapshot = saved["snapshot"]
-    if snapshot["status"] != "ENABLED":
-        return redirect_back(
-            "routing_config",
-            err=f"初始化配置已写入但未启用：{snapshot.get('error') or snapshot['status']}",
-        )
-    action = {"merge": "合并", "replace": "替换", "create": "创建"}.get(result["mode"], "写入")
-    return redirect_back(
-        "routing_config",
-        msg=f"已{action} {len(snapshot['profiles'])} 条执行配置并立即生效。",
-    )
 
 
 @app.post("/routing/save")
 def routing_save():
-    """结构化表单保存：完整校验后才原子替换文件，失败时保留原配置。"""
-    mode = request.form.get("mode", "rows")
+    """只接受 YAML：完整校验后才原子替换，失败时保留原配置。"""
     try:
-        if mode == "yaml":
-            result = routing.save_yaml_text(request.form.get("yaml_text", ""))
-        else:
-            result = routing.save_document({
-                "version": 2,
-                "profiles": routing.profiles_from_form(request.form),
-            })
+        result = routing.save_yaml_text(request.form.get("yaml_text", ""))
     except Exception as exc:  # noqa: BLE001
         return redirect_back("routing_config", err=f"配置未保存：{exc}")
     snapshot = result["snapshot"]
@@ -1681,23 +1179,13 @@ def routing_save():
 @app.post("/routing/validate")
 def routing_validate():
     """只校验不写盘，用于页面「校验配置」。"""
-    mode = request.form.get("mode", "rows")
     try:
-        if mode == "yaml":
-            module = routing.load_routing_module()
-            document = module.parse_routing_text(
-                request.form.get("yaml_text", ""), routing.load_capabilities(),
-            )
-        else:
-            document = {
-                "version": 2,
-                "profiles": routing.profiles_from_form(request.form),
-            }
-        ok, error = routing.validate_document(document)
+        module = routing.load_routing_module()
+        document = module.parse_routing_text(
+            request.form.get("yaml_text", ""), routing.load_capabilities(),
+        )
     except Exception as exc:  # noqa: BLE001
         return redirect_back("routing_config", err=f"配置校验失败：{exc}")
-    if not ok:
-        return redirect_back("routing_config", err=f"配置校验失败：{error}")
     count = len(document.get("profiles") or [])
     return redirect_back("routing_config", msg=f"配置校验通过，共 {count} 条 Dev 执行配置。")
 

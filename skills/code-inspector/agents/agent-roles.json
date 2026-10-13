@@ -3,11 +3,7 @@
   "skill_name": "code-inspector",
   "runtime": {
     "local_home": "${HOME}/.agent-review",
-    "database": "${HOME}/.agent-review/data/review.db",
-    "dispatch_operators": {
-      "developer": "codex-dev",
-      "inspector": "codex-insp"
-    }
+    "database": "${HOME}/.agent-review/data/review.db"
   },
   "agents": [
     "codex",

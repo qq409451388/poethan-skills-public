@@ -21,14 +21,7 @@
 
 ## Developer 执行模型推荐（可选）
 
-Inspector 只输出抽象的 `difficulty`（1–5 的整数，5 为上限，越高要求越高），不感知任何具体模型名称或执行者等级。是否把它换算成“哪些 Dev 执行配置可以完成这个任务”，由本机级配置文件决定：
-
-```text
-~/.agent-review/config/agent-routing.yml      # 你的执行配置
-~/.agent-review/config/agent-capabilities.yml # Skill 内置的 Agent/Model 能力表
-```
-
-该文件不存在时功能完全不启用，Issue 照常创建、状态机照常流转，只是没有推荐列表。配置结构见 [config/agent-routing.example.yml](config/agent-routing.example.yml)：
+Inspector 输出抽象 `difficulty`（1–5），本机 `~/.agent-review/config/agent-routing.yml` 手填执行配置：
 
 ```yaml
 version: 2
@@ -38,52 +31,13 @@ profiles:
   model: gpt-6-astra
   reasoning: high
   level: 5
-  enabled: true
 ```
 
-每条记录都是一个 **Dev 执行配置**：Agent、Model、Reasoning、等级。`role` 不是可配置维度——执行配置只代表 Developer 能力，旧配置里的 `INSPECTOR` 条目在读入时会被丢弃。筛选语义是 `enabled = true` 且 `level >= difficulty`，`level` 取离散值 `1..5`，与 `difficulty` 同一尺度；结果只是候选，不改变 Issue 状态机，也不代表强制调度结果。WebApp 配置页把 `1..5` 标注为 `实习生 / 初级开发 / 中级开发 / 高级开发 / 架构师`，仅用于人工校准滑杆语义，既不进入 Inspector 的判级口径，也不参与筛选。
+YAML 中的每条 Profile 都参与推荐，筛选条件为 `level >= difficulty`。配置不存在或无效时推荐为空，审核开发流程继续可用。Model/Reasoning 校验范围来自 [config/agent-capabilities.yml](config/agent-capabilities.yml)，未收录模型使用通用档位。
 
-### Model 与 Reasoning 的能力来源
+WebApp `/routing` 按 Agent 分组只读展示执行配置；新增、删除和等级调整统一编辑 YAML。保存先完整校验，再原子替换文件。旧 `enabled: true` 读取时忽略，保存时移除；旧 `enabled: false` 明确报错，必须删除对应条目，避免静默启用。
 
-可选的 Model 与 Reasoning 档位来自 Skill 内置的 [config/agent-capabilities.yml](config/agent-capabilities.yml)，结构为 `agent -> models[] -> supportedReasonings[]`：
-
-```yaml
-agents:
-- agent: codex
-  models:
-  - model: gpt-6-astra
-    supportedReasonings: [low, medium, high, xhigh, max, ultra]
-  - model: gpt-6-luna
-    supportedReasonings: [low, medium, high, xhigh, max]
-```
-
-同一个 Agent 可以维护多个 Model，每个 Model 有**自己**的 Reasoning 范围；不假设都支持 `high`/`xhigh`。WebApp 的下拉与后端校验读同一份数据，因此不会出现“后端允许但页面无法表达”的档位。未收录的模型不会被拒绝，而是退回通用档位集合。
-
-本机 discovery 只做两件事：发现安装了哪些 Agent、读取其当前默认模型与推理档位作为初始推荐；它不判断模型能力，也不会把同一个 Agent 压成单模型。
-
-### 推荐与分配
-
-- `difficulty` 是 Inspector 输出的抽象能力要求。
-- 推荐（`recommendedExecutors`）由 Router 按**当前**配置动态计算，是 `difficulty + 当前 Routing 配置` 的投影，不落库、不缓存。读取 Issue 不会写数据库，也不会推进 `projection_revision`。
-- 真正选定的执行者是独立的 `assignment` 字段，用 `issue-set-assignment` 写入。只接受 `enabled` 且 `level >= difficulty` 的合法候选。
-
-两者生命周期不同：Routing 配置变化只会让 assignment 变成 `STALE`，**不会自动改选**，也不会删除历史分配。`reviewctl issue show` / `reviewctl issue context` 返回：
-
-```json
-{
-  "assignment": {"profileId": "...", "agent": "...", "model": "...", "reasoning": "...", "level": 3},
-  "assignmentStatus": "STALE",
-  "assignmentInvalidReason": "profile_level_below_difficulty"
-}
-```
-
-`assignmentStatus` 取 `VALID` / `STALE` / `NONE`。判定只看**当前配置内容**，不看历史 `routingRevision`：即使配置整体重写，只要被选 profile 的 agent/model/reasoning/level 仍然一致且满足 difficulty，就仍是 `VALID`。失效原因包括 `router_disabled`、`profile_missing`、`profile_disabled`、`profile_changed`、`profile_level_below_difficulty`、`profile_level_reduced`。
-
-`projection_revision` 只表示 Issue 核心 Working Set / Workflow 状态变化：`difficulty` 与 `assignment` 的变更会推进它，而 Routing 配置变化、推荐重算、单纯读取 Issue 都不会。
-
-### 页面与保存流程
-
-配置的查看与修改统一在 WebApp 的「模型路由配置」页面完成（`/routing`）：按 Agent 分组、一个 Agent 下配置多个 Model、Model 从 capability 选择、Reasoning 随 Model 联动、等级用离散滑杆。保存流程是「完整校验 → 写临时文件 → 原子替换 → reload 运行时快照」，校验失败不修改现有文件，reload 失败继续沿用上一份有效配置，都不需要重启 WebApp。从本机 Agent 初始化时，已有配置默认**合并**（只追加新组合，保留人工调整过的等级与启用状态），整体替换必须显式选择。
+推荐 `recommendedExecutors` 在读取时按当前 YAML 计算，不写数据库。正式 Assignment 保存所选 Profile 的快照；配置删除、模型或 Reasoning 变化、等级降低或不满足 difficulty 时返回 `STALE`，不会自动改选或删除历史分配。Assignment 用于记录执行选择，不自动启动或切换 Agent 模型。
 
 ## 安装
 
@@ -137,8 +91,6 @@ references/role-workflows.md  # Developer / Inspector 分角色流程
 references/workflow.yaml      # 状态机
 references/tool-contracts.yaml
 references/watch-mode.md
-references/thread-runtime.md
-config/runtime.json
 ```
 
 修改这些源文件后重新执行安装，安装器会一次性替换 Agent 使用的完整副本，不需要同步修改生成器中的 Skill 文案。
@@ -217,7 +169,7 @@ COMPLEX     Inspector(五段式含架构方向) → Developer(方案) → Inspec
             → 分 Stage 实施与验收 → 最终实现 → 最终验证
 ```
 
-实现审核失败时，若只是代码未按批准方案正确落地，则记录 `VERIFICATION_FAILED` 并回 `IN_PROGRESS`；若方向本身被新证据推翻，则转 `REDESIGN_REQUIRED`。转入后 Runtime 先唤醒 Inspector 并拒绝 Developer 直接重交方案：Inspector 必须重新检查 Root Cause、Architecture Direction、Boundaries、Acceptance 哪些判断失误，先用 `design-request` 提交修订后的架构级指导，Developer 再提交新方案。连续两次失败后 Inspector 必须主动重新判断失败属于实现还是设计，避免重复阅读与大范围返工。
+实现审核失败时，若只是代码未按批准方案正确落地，则记录 `VERIFICATION_FAILED` 并回 `IN_PROGRESS`；若方向本身被新证据推翻，则转 `REDESIGN_REQUIRED`。转入后 当前待办先交由 Inspector，领域命令拒绝 Developer 直接重交方案：Inspector 必须重新检查 Root Cause、Architecture Direction、Boundaries、Acceptance 哪些判断失误，先用 `design-request` 提交修订后的架构级指导，Developer 再提交新方案。连续两次失败后 Inspector 必须主动重新判断失败属于实现还是设计，避免重复阅读与大范围返工。
 
 复杂 Issue 可在设计批准前创建 Stage Plan。Stage 独立于 Issue 状态，按 `PLANNED → IN_PROGRESS → PENDING_REVIEW → APPROVED` 串行推进。Developer 在改码前先用 `reviewctl stage prepare` 声明影响范围和原因，历史保护项默认从既有 baseline 继承；完成后通过 `reviewctl stage submit` 提交 commit 和当前测试，命令自动关联 Git Diff 与上一轮阻断 finding。Inspector 默认从 `reviewctl stage show` 读取当前 Stage、合并后的有界保护约束和历史摘要；确需核验证据时再用 `reviewctl stage history` 读取完整 baseline。审核使用 BLOCKER/MUST/SHOULD/NIT 四级 finding，只有前两级阻断。通过时建立包含已验证行为、输入输出契约、业务语义和测试集合的 `PASSED` baseline，自动激活下一 Stage。第二轮起不得新增无关 SHOULD/NIT，新 BLOCKER/MUST 必须解释此前遗漏原因和实际风险；阻断项清零且所有验收通过后必须 PASS。若发现整案错误则用 `reviewctl stage redesign` 进入 `REDESIGN_REQUIRED`，旧计划完整保留。所有 Stage 通过后才允许 `reviewctl impl submit`，且仍需最终整体验证。简单 Issue 无需 Stage。
 
@@ -231,19 +183,11 @@ Human 可使用 `human-confirmation-resolve` 原子记录业务边界或风险�
 
 执行 `git pull` 或修改本地源文件不会直接改变 Agent 当前使用的版本。验证源码后执行 `python3 scripts/code-inspector-installer/install.py --force install`，安装器才会复制并替换平台目录中的完整 Skill 和运行工具。
 
-## 多 Issue Runtime
+## 会话与上下文
 
-启用 Thread Isolation 后，Supervisor 只保存 `(issue_key, operator_id) → thread_id`、固定身份、租约和事件等轻量调度数据；具体审核、实现、Diff/Evidence/测试分析由独立 Issue Thread 完成。Review Domain 的可执行状态变化会在同一事务写入 Runtime Event。Event 只作为唤醒信号：Supervisor 领取时重新计算当前 Issue Projection，同一 Issue/Role 的旧事件会标记为 `SUPERSEDED`，没有真实待办时不会调用模型；dispatch 使用事务内 Event row-id cutoff，晚于快照的新 Event 不会被误收敛。Resume 会再次检查 Projection，无待办时直接 `SKIPPED_STALE`，待办变化时使用最新 action。Projection revision 是 Issue 自身的单调 Working Set 版本，由数据库触发器覆盖 Issue、Activity、Discussion、Decision、Stage 和相关 Task 字段变化；领取时的 event revision 只用于追踪，Prompt、Compact 和 metrics 使用 Resume 时重读的 execution revision。普通 Action Turn 先且通常只调用一次 `reviewctl issue context <issue_key>` 获取同一 SQLite read snapshot 下的有界 Working Set（包括项目治理字段、Issue 初始 evidence/local terms 和最近 8 条讨论摘要），再按资源 id 懒加载明细；evidence 与 local terms 同样有数量和单项长度上限。`pending_action` 表示当前待办，`permitted_actions` 与 `exception_actions` 由 Runtime 权限唯一计算。每个 INIT/ACTION/COMPACT Turn 只记录 Token 数和 Review DB 子命令计数，不保存提示词、工具参数、返回正文或推理内容。App Server 适配层、Registry CLI、事件调度器、静默多目标 Watcher和兼容性探针位于 `scripts/`，开关集中在 `config/runtime.json`。
+Agent 在当前会话处理指定 Issue，不创建或恢复独立 Thread，不自动调度其他角色。新会话显式选择角色后，用 `issue context <issue_key>` 读取有界 Working Set；只有需要正文时才按资源 id 读取明细。状态与审核权限仍由领域命令校验。
 
-```bash
-python3 scripts/issue-thread.py status
-python3 scripts/code-inspector-supervisor.py status
-python3 scripts/code-inspector-supervisor.py metrics --issue RI-EXAMPLE
-python3 scripts/code-inspector-supervisor.py run
-python3 scripts/capability-probe.py --write
-```
-
-Developer Thread 只获得 workspace-write 能力，并按项目路径加 Workspace Lock；需要多个 Developer 真正同时改同一仓库时，仍必须先分配独立 worktree/branch。
+Watch 只在用户明确要求时使用 Shell 静默观察指定目标，命中后由当前会话处理。FastMode 由 Human 协调开发，Inspector 串行检查指定 Issue 并记录结论。历史调度表保留但不再读写。
 
 以下情况仍需要显式执行安装器：
 

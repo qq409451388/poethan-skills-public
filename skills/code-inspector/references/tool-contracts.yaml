@@ -71,7 +71,7 @@ commands:
     content_rule: summary 直说现象、影响和关键原因；按需使用轻量 Markdown，不保存推理过程或长日志。description 可作为旧调用的 summary 兼容输入。
     evidence_location: 优先 file_path 加 class_name/method_name/符号或 code_excerpt；line_start/line_end 只是快照提示。
     difficulty: 可选正整数，只描述任务本身的抽象困难程度；不写具体模型名称，也不做模型能力判断。缺少时不产生推荐执行配置。
-    recommended_executors: 创建时由本机 Model Router 按 enabled + role=DEVELOPER + level>=difficulty 计算并写入 Issue；Router 未配置时为空列表，命令照常成功。
+    recommended_executors: 读取时由本机 Model Router 按 level>=difficulty 动态计算；Router 未配置时为空列表，命令照常成功。
   issue-set-difficulty:
     roles: [inspector, human]
     required: [--issue-key, --difficulty]
@@ -341,7 +341,7 @@ commands:
       fail: [追加 VERIFICATION_FAILED, 写入 VERIFICATION REJECTED decision]
       evidence_present: [先追加 VERIFICATION_EVIDENCE_ADDED]
     metadata: 命令内部固定写入 workflow_mode=FASTMODE，仅用于审计展示，不参与权限或控制流判断。
-    forbidden_effects: [创建 Developer Thread, 创建 Developer Event, 修改 Issue 状态, 自动 CONFIRMED, 自动 CANCELLED]
+    forbidden_effects: [修改 Issue 状态, 自动 CONFIRMED, 自动 CANCELLED]
   activity-append:
     roles: [inspector, developer, human]
     required: [--issue-key, --activity-type, --content]
@@ -349,7 +349,7 @@ commands:
     json_arguments: [--code-reference, --metadata]
     forbidden_atomic_types: [DESIGN_REQUESTED, DESIGN_SUBMITTED, DESIGN_APPROVED, DESIGN_REJECTED, STAGE_PLAN_CREATED, STAGE_SCOPE_DECLARED, STAGE_SUBMITTED, STAGE_APPROVED, STAGE_REJECTED, STAGE_PLAN_SUPERSEDED, HUMAN_CONFIRMATION_REQUESTED, HUMAN_CONFIRMATION_PROVIDED]
     forbidden_discussion_types: [COMMENT_ADDED, DESIGN_GUIDANCE]
-    note: 讨论一律使用 discussion-append；审核、验证等结论会同步建立 issue_decision，核心工作流活动必须由对应原子命令生成。正式结论类型可用 --summary 提供短摘要；省略时 Runtime 从 --content 生成，完整内容仍保留在 Activity。metadata 只记录业务事实，不能改变权限、模式或控制流；FastMode 结论必须使用 fast-review-record。普通 VERIFICATION_FAILED 始终按标准 Workflow 投递 Developer Runtime Event。
+    note: 讨论一律使用 discussion-append；审核、验证等结论会同步建立 issue_decision，核心工作流活动必须由对应原子命令生成。正式结论类型可用 --summary 提供短摘要；省略时 Runtime 从 --content 生成，完整内容仍保留在 Activity。metadata 只记录业务事实，不能改变权限、模式或控制流；FastMode 结论必须使用 fast-review-record。普通 VERIFICATION_FAILED 按标准 Workflow 记录验证失败。
     content_format:
       short: 单行纯文本，不添加 Markdown 装饰。
       multiline: 多个独立说明可直接换行；无需强制使用列表。

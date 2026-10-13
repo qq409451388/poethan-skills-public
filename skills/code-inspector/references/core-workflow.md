@@ -14,7 +14,7 @@ Inspector/Developer 仍遵守状态前置条件：Agent 进入 `HUMAN_CONFIRMATI
 
 Code Inspector 的目标不是让 Developer 无限提交、Inspector 无限驳回。设计职责按层划分：Inspector 是能力更强的模型，负责 What / Why / Boundary / Architecture Direction / Acceptance——问题为什么发生（Root Cause）、应在哪一层解决和推荐或禁止哪些架构方向（Architecture Direction）、哪些业务语义和兼容性不可破坏、方案必须回答哪些问题（Design Questions）、什么条件满足才算解决（Acceptance）；Developer 负责具体 How——修改哪些模块、类、方法，代码如何组织，数据流、API、DB、状态如何落地，幂等并发事务怎么实现，测试怎么写，Diff 和 Commit 怎么提交。Inspector 不下沉到具体类、方法和代码实现，不把 Developer 变成纯打字工具；Developer 也不重新决定 Inspector 已确定的架构级方向。Developer 发现 Architecture Direction 有事实错误或无法实现时，必须通过讨论或 `INSPECTOR_CONFIRMATION_REQUIRED` 反馈并由 Inspector 修订方向，不得静默改用另一套架构。
 
-设计深度随复杂度自适应，分级规则见 `workflow.yaml` 的 `design_depth`：SIMPLE 问题（局部明确、唯一合理修复、不改外部行为、低风险）由 Inspector 确认问题和边界后直接 `PROPOSED -> IN_PROGRESS`，不要求设计请求和 Stage Plan；NORMAL 问题（需要一定设计判断，但无架构级调整）的 `reviewctl design request` 至少覆盖 Root Cause、Boundaries、Design Questions、Acceptance，Architecture Direction 仅在确有方向性约束时提供；COMPLEX / HIGH-RISK 问题（跨模块职责调整、runtime/scheduler/supervisor/event 核心链路、状态机、并发事务一致性、持久化模型、数据迁移、对外行为变化、新基础设施、大范围重构、高回归风险、多实现方向且影响差异明显）必须走完整设计流程，Architecture Direction 为必填语义，且要明确到架构层——状态归属的领域对象、source of truth、push 还是 pull、生命周期由谁管理、是否允许跨层访问、在哪一层解决而不是打补丁、哪些路径必须幂等、哪种旧方案不应继续扩展；禁止只写“注意兼容”“考虑并发”“避免破坏现有逻辑”“请给出合理方案”。内容长度随复杂度伸缩，不允许让简单问题也输出五段式长设计文档。
+设计深度随复杂度自适应，分级规则见 `workflow.yaml` 的 `design_depth`：SIMPLE 问题（局部明确、唯一合理修复、不改外部行为、低风险）由 Inspector 确认问题和边界后直接 `PROPOSED -> IN_PROGRESS`，不要求设计请求和 Stage Plan；NORMAL 问题（需要一定设计判断，但无架构级调整）的 `reviewctl design request` 至少覆盖 Root Cause、Boundaries、Design Questions、Acceptance，Architecture Direction 仅在确有方向性约束时提供；COMPLEX / HIGH-RISK 问题（跨模块职责调整、状态机、并发事务一致性、持久化模型、数据迁移、对外行为变化、新基础设施、大范围重构、高回归风险、多实现方向且影响差异明显）必须走完整设计流程，Architecture Direction 为必填语义，且要明确到架构层——状态归属的领域对象、source of truth、push 还是 pull、生命周期由谁管理、是否允许跨层访问、在哪一层解决而不是打补丁、哪些路径必须幂等、哪种旧方案不应继续扩展；禁止只写“注意兼容”“考虑并发”“避免破坏现有逻辑”“请给出合理方案”。内容长度随复杂度伸缩，不允许让简单问题也输出五段式长设计文档。
 
 跨模块、数据库结构或数据迁移、历史数据补处理、状态流转、重复执行与并发、消息确认和失败恢复、公共 API、大重构或方向不确定的问题，Inspector 应在编码前使用 `reviewctl design request`；旁支发现转 Candidate，不写成当前 MUST。
 
@@ -40,7 +40,7 @@ Inspector 的 Stage finding 只分四级：`BLOCKER` 是功能、数据、安全
 
 当 `BLOCKER=0`、`MUST=0`、当前 Stage 验收全部 PASS、历史 Stage 累计回归全部 PASS 时，Inspector 必须输出 `PASS` 并结束审核，不能以“还可优化”“最好重构”“不够优雅”继续循环。`reviewctl stage review` 的 content 与 summary 由命令从结构化审核结果确定性生成，固定包含 Inspection Result、四级 findings、Historical Regression、Current Stage Acceptance 和 Final Decision；正式决策摘要最多 180 字。SHOULD/NIT 存入 baseline/Activity Backlog 后继续通过。governance v2 直接使用 `reviewctl stage review`，由命令从 findings、当前验收和历史回归自动计算最终 Gate；只有整案失效才使用 `reviewctl stage redesign`。
 
-实现审核失败必须区分两类：方案正确但实现遗漏或有 Bug 时记录 `VERIFICATION_FAILED` 并回 `IN_PROGRESS`，Developer 继续按原设计修复；方案方向被新代码证据、测试或实际约束推翻时转 `REDESIGN_REQUIRED`。进入 `REDESIGN_REQUIRED` 后 Runtime 会先唤醒 Inspector 并阻止 Developer 直接重交方案：Inspector 必须重新检查 Root Cause 是否判断错误、Architecture Direction 是否需要改变、Boundaries 是否遗漏、Acceptance 是否错误，先用 `reviewctl design request` 提交修订后的架构级指导，Developer 才能提交新的具体方案。Human 仍可用 `reviewctl issue status` 人工纠正。连续两次实现失败后，Inspector 必须重新判断是实现错误还是设计错误；即便仍属实现错误，也必须给出具体失败原因、必改点和验证标准，禁止机械重复循环。
+实现审核失败必须区分两类：方案正确但实现遗漏或有 Bug 时记录 `VERIFICATION_FAILED` 并回 `IN_PROGRESS`，Developer 继续按原设计修复；方案方向被新代码证据、测试或实际约束推翻时转 `REDESIGN_REQUIRED`。进入 `REDESIGN_REQUIRED` 后 当前待办先交由 Inspector，领域命令阻止 Developer 直接重交方案：Inspector 必须重新检查 Root Cause 是否判断错误、Architecture Direction 是否需要改变、Boundaries 是否遗漏、Acceptance 是否错误，先用 `reviewctl design request` 提交修订后的架构级指导，Developer 才能提交新的具体方案。Human 仍可用 `reviewctl issue status` 人工纠正。连续两次实现失败后，Inspector 必须重新判断是实现错误还是设计错误；即便仍属实现错误，也必须给出具体失败原因、必改点和验证标准，禁止机械重复循环。
 
 ## Human 升级
 

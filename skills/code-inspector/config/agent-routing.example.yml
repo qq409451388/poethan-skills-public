@@ -22,18 +22,15 @@ profiles:
   model: gpt-6-astra
   reasoning: high
   level: 5
-  enabled: true
 
 - id: codex-gpt-6-sol
   agent: codex
   model: gpt-6-sol
   reasoning: high
   level: 4
-  enabled: true
 
 - id: claude-opus-5-1m
   agent: claude
   model: claude-opus-5[1M]
   reasoning: high
   level: 4
-  enabled: true

@@ -287,48 +287,6 @@ def audit(conn: sqlite3.Connection, agent: str, action: str, resource_type: str,
     )
 
 
-def runtime_event_binding(target_role: str) -> tuple[str, dict[str, Any]] | None:
-    """Resolve the configured automatic Runtime operator; absence means Runtime is not installed."""
-    config_dir = configured_home() / "config"
-    skill_path = config_dir / "code-inspector.json"
-    bindings_path = config_dir / "agent-bindings.json"
-    if not skill_path.exists() and not bindings_path.exists():
-        return None
-    if not skill_path.exists() or not bindings_path.exists():
-        raise RuntimeError("Runtime 配置不完整，请重新执行 Code Inspector 安装")
-    skill = json.loads(skill_path.read_text(encoding="utf-8"))
-    bindings = json.loads(bindings_path.read_text(encoding="utf-8"))
-    operator_id = skill.get("runtime", {}).get("dispatch_operators", {}).get(target_role)
-    binding = bindings.get(operator_id) if operator_id else None
-    if not operator_id or not binding or binding.get("role") != target_role:
-        raise RuntimeError(f"Runtime 默认 {target_role} operator binding 无效")
-    return operator_id, binding
-
-
-def enqueue_runtime_event(
-    conn: sqlite3.Connection, issue_key: str, event_type: str, activity_id: int,
-    target_role: str, stage_no: int | None = None,
-) -> None:
-    """Transactional outbox insert in the same transaction as the domain activity."""
-    resolved = runtime_event_binding(target_role)
-    if resolved is None:
-        return
-    operator_id, binding = resolved
-    event_id = str(uuid.uuid4())
-    idempotency_key = f"{issue_key}:{operator_id}:{activity_id}:{event_type}"
-    conn.execute(
-        """INSERT OR IGNORE INTO code_inspector_event(
-             event_id,idempotency_key,issue_key,role,operator_id,agent_platform,
-             runtime_backend,event_type,activity_id,stage_no)
-           VALUES(?,?,?,?,?,?,?,?,?,?)""",
-        (
-            event_id, idempotency_key, issue_key, target_role, operator_id,
-            binding.get("agent_platform") or binding.get("agent") or "unknown",
-            binding.get("runtime_backend") or ("codex-app-server" if binding.get("agent") == "codex" else "external"),
-            event_type, activity_id, stage_no,
-        ),
-    )
-
 def require_agent(agent: str) -> None:
     if agent not in {"inspector", "developer", "human"}:
         raise PermissionError(f"未知 agent: {agent}")
@@ -344,39 +302,8 @@ def operator_type(agent: str) -> str:
 def actor_id(args: argparse.Namespace) -> str:
     return args.operator_id or args.agent
 
-def metric_issue_key(conn: sqlite3.Connection, args: argparse.Namespace) -> str | None:
-    """只提取统计所需 Issue Key；不保存或序列化完整命令参数。"""
-    issue_key = getattr(args, "issue_key", None)
-    if isinstance(issue_key, str) and issue_key:
-        return issue_key
-    activity_id = getattr(args, "activity_id", None)
-    if getattr(args, "command", None) == "activity-get" and activity_id is not None:
-        row = conn.execute(
-            """SELECT i.issue_key
-               FROM issue_activity a JOIN review_issue i ON i.id = a.issue_id
-               WHERE a.id = ?""",
-            (activity_id,),
-        ).fetchone()
-        return row["issue_key"] if row else None
-    return None
 
-def record_tool_call_metric(args: argparse.Namespace, success: bool) -> None:
-    """每次已解析的 Review DB CLI 调用只写一条轻量计数。"""
-    with connect() as conn:
-        conn.execute(
-            """INSERT INTO review_tool_call_metric(
-                 command, issue_key, role, operator_id, success
-               ) VALUES (?, ?, ?, ?, ?)""",
-            (
-                args.command,
-                metric_issue_key(conn, args),
-                args.agent,
-                actor_id(args),
-                1 if success else 0,
-            ),
-        )
-
-def require_runtime_issue_action(
+def require_issue_action(
     action: str, role: str, issue_status: str, *, stage: sqlite3.Row | None = None,
     has_active_plan: bool = False, active_plan_complete: bool = False,
     redesign_guidance_required: bool = False,
@@ -927,7 +854,6 @@ def issue_create(args: argparse.Namespace) -> None:
             ) VALUES (?, 0, 'ISSUE_CREATED', ?, ?, ?)""",
             (issue_id, {"inspector": "INSPECTOR_AGENT", "human": "HUMAN"}[args.agent], actor_id(args), payload["summary"]),
         )
-        enqueue_runtime_event(conn, issue_key, "ISSUE_CREATED", activity_cursor.lastrowid, "developer")
         audit(conn, actor_id(args), "issue.create", "review_issue", issue_key, True)
     print_json({"issue_key": issue_key, "version": task["current_version"]})
 
@@ -1020,7 +946,6 @@ def issue_create_batch(args: argparse.Namespace) -> None:
                    VALUES (?, 0, 'ISSUE_CREATED', ?, ?, ?)""",
                 (issue_id, operator_type(args.agent), actor_id(args), payload["summary"]),
             )
-            enqueue_runtime_event(conn, issue_key, "ISSUE_CREATED", activity_cursor.lastrowid, "developer")
             created.append(issue_key)
         audit(conn, actor_id(args), "issue.create-batch", "review_task", args.task_key, True, f"created={len(created)}")
     print_json({"task_key": args.task_key, "created": created, "skipped": skipped, "version": version})
@@ -1296,7 +1221,7 @@ def apply_assignment_update(
 ) -> dict[str, Any]:
     """记录真正选定的执行配置（assignment），与候选推荐区分开。
 
-    只接受「enabled 且 level >= 当前 difficulty」的合法候选——与页面下拉展示的集合一致，
+    只接受「level >= 当前 difficulty」的合法候选——与页面下拉展示的集合一致，
     避免绕过界面写入一个当前根本完不成该任务的执行者。推荐本身是候选，不是调度结果。
     """
     row = conn.execute(
@@ -1318,8 +1243,8 @@ def apply_assignment_update(
             # 没有 difficulty 就无法判断候选是否够格；页面此时也不会给出任何候选。
             raise ValueError("Issue 尚未设置 difficulty，无法指定执行者；请先用 issue-set-difficulty 标注困难程度")
         match = snapshot.profile(profile_id)
-        if match is None or not match["enabled"]:
-            raise ValueError(f"执行配置不存在或未启用: {profile_id}")
+        if match is None:
+            raise ValueError(f"执行配置不存在: {profile_id}")
         if match["level"] < difficulty:
             raise ValueError(
                 f"执行配置 {profile_id} 的 level {match['level']} 低于当前 difficulty {difficulty}，"
@@ -1440,7 +1365,7 @@ def issue_update_body(args: argparse.Namespace) -> None:
 
 def apply_status_update(
     conn: sqlite3.Connection, args: argparse.Namespace, issue_key: str, status: str,
-    content: str | None, *, emit_runtime_event: bool = True,
+    content: str | None,
 ) -> dict[str, Any]:
     if status not in ALLOWED_STATUS_BY_AGENT[args.agent]:
         raise PermissionError(f"agent {args.agent} 无权设置状态 {status}")
@@ -1518,31 +1443,6 @@ def apply_status_update(
             content or f"状态变更为 {status}", status,
         ),
     )
-    if not emit_runtime_event:
-        pass
-    elif status == "INSPECTOR_CONFIRMATION_REQUIRED":
-        enqueue_runtime_event(conn, issue_key, status, activity_cursor.lastrowid, "inspector")
-    elif args.agent in {"inspector", "human"} and status in {"DESIGN_REQUIRED", "DESIGN_PENDING_REVIEW"}:
-        enqueue_runtime_event(
-            conn, issue_key, f"STATUS_CHANGED_{status}", activity_cursor.lastrowid,
-            "developer" if status == "DESIGN_REQUIRED" else "inspector",
-        )
-    elif (
-        args.agent in {"inspector", "human"} and status == "IN_PROGRESS"
-        and row["status"] not in {"IMPLEMENTED_PENDING_REVIEW", "INSPECTOR_CONFIRMATION_REQUIRED"}
-    ):
-        enqueue_runtime_event(conn, issue_key, "STATUS_CHANGED_IN_PROGRESS", activity_cursor.lastrowid, "developer")
-    elif args.agent == "human" and status == "IMPLEMENTED_PENDING_REVIEW":
-        enqueue_runtime_event(
-            conn, issue_key, "STATUS_CHANGED_IMPLEMENTED_PENDING_REVIEW",
-            activity_cursor.lastrowid, "inspector",
-        )
-    elif status == "REDESIGN_REQUIRED" and row["status"] != status:
-        # 方向失败进入重设计：先唤醒 Inspector 修订架构指导，Developer 等待新的 design-request。
-        enqueue_runtime_event(
-            conn, issue_key, "STATUS_CHANGED_REDESIGN_REQUIRED",
-            activity_cursor.lastrowid, "inspector",
-        )
     audit(conn, actor_id(args), "issue.update-status", "review_issue", issue_key, True)
     return {"issue_key": issue_key, "status": status, "attempt_no": attempt_no}
 
@@ -1598,7 +1498,7 @@ def apply_design_transition(
     ).fetchone()
     if not row:
         raise KeyError(f"问题不存在: {args.issue_key}")
-    require_runtime_issue_action(
+    require_issue_action(
         args.command, args.agent, row["status"],
         redesign_guidance_required=redesign_guidance_required(conn, row["id"], row["status"]),
     )
@@ -1613,14 +1513,6 @@ def apply_design_transition(
             dumps(code_reference or []), dumps(metadata or {}),
         ),
     )
-    target_role = {
-        "DESIGN_REQUESTED": "developer",
-        "DESIGN_SUBMITTED": "inspector",
-        "DESIGN_APPROVED": "developer",
-        "DESIGN_REJECTED": "developer",
-    }.get(activity_type)
-    if target_role:
-        enqueue_runtime_event(conn, args.issue_key, activity_type, activity_cursor.lastrowid, target_role)
     conn.execute(
         "UPDATE review_issue SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
         (target_status, row["id"]),
@@ -1798,7 +1690,7 @@ def design_choice_record(args: argparse.Namespace) -> None:
             raise ValueError("impacts 必须与 change-ids 对应范围变化的影响类型完全一致")
         if issue["status"] != "DESIGN_PENDING_REVIEW":
             raise RuntimeError("只能为 DESIGN_PENDING_REVIEW 的当前设计记录用户选择")
-        require_runtime_issue_action("design-choice-record", args.agent, issue["status"])
+        require_issue_action("design-choice-record", args.agent, issue["status"])
         decision_id = record_issue_decision(
             conn, args, issue, "CLI_DESIGN_CONFIRMATION", "CONFIRMED", summary,
             scope_key=f"design:{args.design_activity_id}:{','.join(sorted(change_ids))}",
@@ -2485,7 +2377,7 @@ def stage_prepare(args: argparse.Namespace) -> None:
             raise KeyError(f"Stage 不存在: plan={plan_no}, stage={args.stage_no}")
         if stage["status"] != "IN_PROGRESS":
             raise RuntimeError(f"Stage {args.stage_no} 当前为 {stage['status']}，不能声明开发范围")
-        require_runtime_issue_action(
+        require_issue_action(
             "stage-prepare", args.agent, issue["status"], stage=stage, has_active_plan=True,
         )
         previous = conn.execute(
@@ -2565,7 +2457,7 @@ def stage_submit(args: argparse.Namespace) -> None:
             raise KeyError(f"Stage 不存在: plan={plan_no}, stage={args.stage_no}")
         if stage["status"] != "IN_PROGRESS":
             raise RuntimeError(f"Stage {args.stage_no} 当前为 {stage['status']}，不能提交")
-        require_runtime_issue_action(
+        require_issue_action(
             "stage-submit", args.agent, issue["status"], stage=stage, has_active_plan=True,
         )
         if int(stage["governance_version"]) >= 2:
@@ -2611,10 +2503,6 @@ def stage_submit(args: argparse.Namespace) -> None:
                 content, dumps(code_reference), dumps(activity_metadata),
             ),
         )
-        enqueue_runtime_event(
-            conn, args.issue_key, "STAGE_SUBMITTED", activity_cursor.lastrowid,
-            "inspector", args.stage_no,
-        )
         audit(conn, actor_id(args), "stage.submit", "review_issue", args.issue_key, True)
     print_json({"issue_key": args.issue_key, "plan_no": plan_no, "stage_no": args.stage_no,
                 "status": "PENDING_REVIEW"})
@@ -2641,7 +2529,7 @@ def stage_review(args: argparse.Namespace) -> None:
             raise KeyError(f"Stage 不存在: plan={plan_no}, stage={args.stage_no}")
         if stage["status"] != "PENDING_REVIEW":
             raise RuntimeError(f"Stage {args.stage_no} 当前为 {stage['status']}，不能验收")
-        require_runtime_issue_action(
+        require_issue_action(
             "stage-review", args.agent, issue["status"], stage=stage, has_active_plan=True,
         )
 
@@ -2759,10 +2647,6 @@ def stage_review(args: argparse.Namespace) -> None:
                 dumps(activity_metadata),
             ),
         )
-        enqueue_runtime_event(
-            conn, args.issue_key, activity_type, activity_cursor.lastrowid,
-            "developer", args.stage_no,
-        )
         record_issue_decision(
             conn, args, issue, "STAGE_REVIEW",
             "APPROVED" if decision == "approved" else "REJECTED", short_summary,
@@ -2774,11 +2658,6 @@ def stage_review(args: argparse.Namespace) -> None:
             conn.execute(
                 "UPDATE review_issue SET status = 'REDESIGN_REQUIRED', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                 (issue["id"],),
-            )
-            # 整案失效：唤醒 Inspector 先修订架构指导；Developer 在新 design-request 前无待办。
-            enqueue_runtime_event(
-                conn, args.issue_key, "STATUS_CHANGED_REDESIGN_REQUIRED",
-                activity_cursor.lastrowid, "inspector",
             )
         audit(conn, actor_id(args), "stage.review", "review_issue", args.issue_key, True)
     print_json({
@@ -2817,7 +2696,7 @@ def human_escalate(args: argparse.Namespace) -> None:
         ).fetchone()
         if not row:
             raise KeyError(f"问题不存在: {args.issue_key}")
-        require_runtime_issue_action("human-escalate", args.agent, row["status"])
+        require_issue_action("human-escalate", args.agent, row["status"])
         content = f"为什么必须人工决定：{reason}\n\nHuman 只需回答：{question}"
         conn.execute(
             """INSERT INTO issue_activity(
@@ -2875,11 +2754,6 @@ def human_confirmation_resolve(args: argparse.Namespace) -> None:
                 content, next_status, dumps(metadata),
             ),
         )
-        if next_status in {"DESIGN_REQUIRED", "IN_PROGRESS"}:
-            enqueue_runtime_event(
-                conn, args.issue_key, "HUMAN_CONFIRMATION_PROVIDED",
-                activity_cursor.lastrowid, "developer",
-            )
         record_issue_decision(
             conn, args, row, "HUMAN_CONFIRMATION", next_status, content,
             source_activity_id=activity_cursor.lastrowid, metadata=metadata,
@@ -2927,7 +2801,7 @@ def implementation_submit(args: argparse.Namespace) -> None:
             if incomplete:
                 summary = ", ".join(f"Stage {item['stage_no']}={item['status']}" for item in incomplete)
                 raise RuntimeError(f"Stage Plan #{plan_no} 尚未全部验收通过: {summary}")
-        require_runtime_issue_action(
+        require_issue_action(
             "implementation-submit", args.agent, row["status"],
             has_active_plan=plan_no is not None, active_plan_complete=active_plan_complete,
         )
@@ -2942,13 +2816,8 @@ def implementation_submit(args: argparse.Namespace) -> None:
                 dumps(code_reference), dumps(metadata),
             ),
         )
-        enqueue_runtime_event(
-            conn, args.issue_key, "IMPLEMENTATION_SUBMITTED",
-            activity_cursor.lastrowid, "inspector",
-        )
         result = apply_status_update(
             conn, args, args.issue_key, "IMPLEMENTED_PENDING_REVIEW", args.status_content,
-            emit_runtime_event=False,
         )
         audit(conn, actor_id(args), "implementation.submit", "review_issue", args.issue_key, True)
     print_json({**result, "activity_type": "IMPLEMENTATION_SUBMITTED"})
@@ -3010,7 +2879,7 @@ def discussion_append(args: argparse.Namespace) -> None:
         raise ValueError("discussion-append 的 --content 不能为空")
     with connect() as conn:
         issue = issue_row(conn, args.issue_key)
-        require_runtime_issue_action("discussion-append", args.agent, issue["status"])
+        require_issue_action("discussion-append", args.agent, issue["status"])
         cursor = conn.execute(
             """INSERT INTO issue_discussion(
                    issue_id, topic, operator_type, operator_id, content
@@ -3292,11 +3161,6 @@ def activity_append(args: argparse.Namespace) -> None:
                 conn, args, row, decision_type, outcome, short_summary,
                 scope_key=scope_key, source_activity_id=activity_cursor.lastrowid,
                 metadata=metadata,
-            )
-        if args.activity_type in {"REVIEW_REJECTED", "VERIFICATION_FAILED"}:
-            enqueue_runtime_event(
-                conn, args.issue_key, args.activity_type,
-                activity_cursor.lastrowid, "developer",
             )
         audit(conn, actor_id(args), "activity.append", "issue_activity", args.issue_key, True)
     print_json({"issue_key": args.issue_key, "activity_type": args.activity_type})
@@ -4092,13 +3956,11 @@ def main(propagate_errors: bool = False) -> int:
     parser = build_parser()
     args = parser.parse_args()
     success = False
-    failure: Exception | None = None
     try:
         validate_actor_binding(args)
         args.func(args)
         success = True
     except Exception as exc:
-        failure = exc
         if propagate_errors:
             raise
         if not isinstance(exc, DatabaseOpenError):
@@ -4111,15 +3973,6 @@ def main(propagate_errors: bool = False) -> int:
             except Exception:
                 pass
         print(json.dumps({"error": str(exc)}, ensure_ascii=False), file=sys.stderr)
-    # 数据库本身无法打开时不通过第二次连接制造隐式重试；其他调用统一只记一次。
-    if not isinstance(failure, DatabaseOpenError):
-        try:
-            record_tool_call_metric(args, success)
-        except Exception as metric_error:
-            print(
-                json.dumps({"warning": f"Review DB 工具调用统计写入失败: {metric_error}"}, ensure_ascii=False),
-                file=sys.stderr,
-            )
     return 0 if success else 1
 
 if __name__ == "__main__":
