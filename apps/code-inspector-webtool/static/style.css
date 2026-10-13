@@ -506,14 +506,71 @@ tbody tr:last-child td { border-bottom: 0; }
 
 .routing-level-legend { display: flex; flex-wrap: nowrap; align-items: center; justify-content: flex-start; gap: 8px; margin: 14px 0 16px; padding: 10px 12px; overflow-x: auto; border: 1px solid #e7edf5; border-radius: 8px; background: #f8fafc; white-space: nowrap; }
 .routing-level-label { flex: 0 0 auto; margin-right: 4px; color: var(--muted); font-size: 11px; }
-.routing-level-tag { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 6px; padding: 4px 9px 4px 5px; border: 1px solid var(--level-border); border-radius: 999px; background: var(--level-bg); color: var(--level-color); font-size: 11px; font-weight: 600; line-height: 20px; }
-.routing-level-number { display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; background: var(--level-color); color: #fff; font-size: 10px; font-weight: 700; }
-.routing-level-1 { --level-bg: #f0f3f7; --level-border: #dbe2eb; --level-color: #52627a; }
-.routing-level-2 { --level-bg: #ecf8f4; --level-border: #c8e9dc; --level-color: #24745c; }
-.routing-level-3 { --level-bg: #edf4ff; --level-border: #ccddf8; --level-color: #3168b5; }
-.routing-level-4 { --level-bg: #f3effc; --level-border: #ded2f3; --level-color: #7955ad; }
-.routing-level-5 { --level-bg: #fff6e8; --level-border: #efd9af; --level-color: #936414; }
-.routing-page .routing-actions form { display: inline-flex; }
+/* 等级标签沿用指定 Demo 的曜石渐变、极光玻璃和金属勋章；由 YAML style 选择。 */
+.rank-chip {
+  /* 等级决定配色；data-skin 由 YAML style 决定外观。 */
+  --c1: #62708a; --c2: #a5b2c7; --soft: #f0f3f8; --ink: #52617b;
+  isolation: isolate; position: relative; overflow: hidden;
+  display: inline-flex; align-items: center; gap: 8px; height: 37px; white-space: nowrap;
+  padding: 0 13px 0 7px; border-radius: 12px; border: 1px solid transparent;
+  user-select: none; font-size: 12px; font-weight: 750;
+  transition: transform .18s ease, box-shadow .18s ease, background .18s ease;
+}
+.rank-chip:focus-visible { outline: 3px solid #6c73ee; outline-offset: 3px; }
+.rank-chip .rank-number {
+  display: inline-grid; place-items: center; width: 24px; height: 24px; flex: none;
+  border-radius: 8px; font-size: 12px; line-height: 1; font-weight: 860;
+  transition: background .2s ease, box-shadow .2s ease;
+}
+.rank-chip .rank-name { position: relative; z-index: 1; letter-spacing: .015em; color: inherit; }
+.rank-chip[data-rank="1"] { --c1: #697892; --c2: #abb8cc; --soft:#eff2f7; --ink:#50617c; }
+.rank-chip[data-rank="2"] { --c1: #138c9c; --c2: #65c4ba; --soft:#e8f8f6; --ink:#107f8b; }
+.rank-chip[data-rank="3"] { --c1: #4e6fdf; --c2: #8ba1f5; --soft:#edf1ff; --ink:#4d67c9; }
+.rank-chip[data-rank="4"] { --c1: #7651cb; --c2: #c086e4; --soft:#f5edfc; --ink:#8154bf; }
+.rank-chip[data-rank="5"] { --c1: #a66a23; --c2: #f1c46f; --soft:#fff5de; --ink:#98621d; }
+
+/* 1 · 曜石渐变 */
+.rank-chip[data-skin="jewel"] {
+  color: #fff; background: linear-gradient(120deg, var(--c1) 0%, var(--c2) 115%);
+  border-color: rgba(255,255,255,.3);
+  box-shadow: 0 5px 12px color-mix(in srgb, var(--c1) 23%, transparent), inset 0 1px 0 rgba(255,255,255,.39), inset 0 -1px 1px rgba(20,28,52,.12);
+}
+.rank-chip[data-skin="jewel"]::before {
+  content: ""; pointer-events: none; position: absolute; inset: 0 0 auto; height: 54%;
+  background: linear-gradient(to bottom, rgba(255,255,255,.24), rgba(255,255,255,0)); border-radius: inherit;
+}
+.rank-chip[data-skin="jewel"] .rank-number { background: rgba(255,255,255,.19); border: 1px solid rgba(255,255,255,.25); }
+.rank-chip[data-skin="jewel"][data-rank="5"] { color: #563a16; background: linear-gradient(115deg, #e3b05b, #f6d996 55%, #c79542); border-color: #f5d792; }
+.rank-chip[data-skin="jewel"][data-rank="5"] .rank-number { background: rgba(255,255,255,.45); border-color: rgba(255,255,255,.6); }
+
+/* 2 · 极光玻璃 */
+.rank-chip[data-skin="aurora"] {
+  color: var(--ink); background: linear-gradient(120deg, var(--soft), #fff 100%);
+  border-color: color-mix(in srgb, var(--c1) 22%, white);
+  box-shadow: 0 3px 8px rgba(52,69,108,.04), inset 0 1px 0 rgba(255,255,255,1);
+}
+.rank-chip[data-skin="aurora"] .rank-number {
+  color: var(--ink); background: color-mix(in srgb, var(--c2) 25%, white);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c2) 28%, white);
+}
+.rank-chip[data-skin="aurora"]::after { content: ""; position: absolute; inset: auto 14px 0 14px; height: 2px; background: linear-gradient(90deg, transparent, var(--c2), transparent); opacity:.8; }
+
+/* 3 · 金属勋章 */
+.rank-chip[data-skin="medal"] {
+  color: #46516b; background: linear-gradient(125deg,#fff 20%,#f7f8fc 100%);
+  border-color: #e1e6ef; padding-left: 5px; border-radius: 999px;
+  box-shadow: 0 4px 12px rgba(46,60,98,.055), inset 0 1px 0 #fff;
+}
+.rank-chip[data-skin="medal"] .rank-number {
+  color: #fff; background: linear-gradient(140deg, var(--c2), var(--c1)); border-radius: 50%;
+  box-shadow: 0 2px 5px color-mix(in srgb, var(--c1) 24%, transparent), inset 0 1px 1px rgba(255,255,255,.4);
+}
+.rank-chip[data-skin="medal"][data-rank="5"] {
+  color: #895b16; background: linear-gradient(120deg,#fff9eb,#fff,#fff4d9); border-color: #eacb86;
+}
+.rank-chip[data-skin="medal"][data-rank="5"] .rank-number { color: #654417; background: linear-gradient(135deg,#ffedb6,#d9a552 70%,#b17b28); }
+.executor-rank-status { display: flex; align-items: center; gap: 8px; }
+@media (prefers-reduced-motion: reduce) { .rank-chip, .rank-chip .rank-number { transition: none; } }
 
 /* Issue 执行者分配 */
 .issue-executor-assigned { border-color: #acd8ba; background: var(--green-soft); }

@@ -854,7 +854,7 @@ def issue_detail(issue_key: str):
         issue_statuses=ISSUE_STATUSES,
         task_statuses=TASK_STATUSES,
         assignment_profiles=routing.candidate_profiles(issue.get("difficulty")),
-        level_roles=routing.LEVEL_ROLES,
+        level_roles=routing.LEVEL_ROLES, rank_skin=routing.rank_skin(),
     )
 
 
@@ -1155,6 +1155,7 @@ def _routing_page_context(status: dict):
     return {
         "status": status, "example": example, "yaml_text": yaml_text,
         "profile_groups": routing.profile_groups(status), "level_roles": routing.LEVEL_ROLES,
+        "rank_skin": routing.rank_skin(status.get("style", 1)),
     }
 
 

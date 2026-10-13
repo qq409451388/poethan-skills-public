@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "components/rank_tag.html" import rank_tag %}
 {% block title %}模型路由配置 · 代码检查工作台{% endblock %}
 {% block page_class %}routing-page{% endblock %}
 {% block content %}
@@ -17,13 +18,13 @@
 </section>
 <section class="panel" data-live-region="routing-table">
   <div class="section-head"><div><h2>Dev 执行配置</h2><p class="section-sub">只读展示当前有效配置，所有修改统一在下方 YAML 中完成。</p></div></div>
-  <p class="routing-level-legend"><span class="routing-level-label">等级参照</span>{% for level, role in level_roles.items() %}<span class="routing-level-tag routing-level-{{ level }}"><span class="routing-level-number">{{ level }}</span>{{ role }}</span>{% endfor %}</p>
+  <p class="routing-level-legend"><span class="routing-level-label">等级参照</span>{% for level, role in level_roles.items() %}{{ rank_tag(level, role, rank_skin) }}{% endfor %}</p>
   {% for group in profile_groups %}
   <section class="routing-agent" data-agent="{{ group.agent }}">
     <header class="routing-agent-head"><div><strong>{{ group.agent }}</strong><small>{{ group.profiles|length }} 条配置</small></div></header>
     <div class="table-wrap"><table class="routing-table">
       <thead><tr><th>ID</th><th>Model</th><th>Reasoning</th><th>等级</th></tr></thead>
-      <tbody>{% for profile in group.profiles %}<tr data-profile-row><td class="mono">{{ profile.id }}</td><td>{{ profile.model }}</td><td>{{ profile.reasoning }}</td><td>{{ profile.level }} · {{ level_roles.get(profile.level, '') }}</td></tr>{% endfor %}</tbody>
+      <tbody>{% for profile in group.profiles %}<tr data-profile-row><td class="mono">{{ profile.id }}</td><td>{{ profile.model }}</td><td>{{ profile.reasoning }}</td><td>{{ rank_tag(profile.level, level_roles.get(profile.level, ''), rank_skin) }}</td></tr>{% endfor %}</tbody>
     </table></div>
   </section>
   {% else %}<p class="panel-note">暂无有效执行配置，请填写下方 YAML。</p>{% endfor %}

@@ -25,6 +25,7 @@ Inspector 输出抽象 `difficulty`（1–5），本机 `~/.agent-review/config/
 
 ```yaml
 version: 2
+style: 1
 profiles:
 - id: codex-gpt-6-astra
   agent: codex
@@ -32,6 +33,8 @@ profiles:
   reasoning: high
   level: 5
 ```
+
+根参数 `style` 选择等级标签外观：`1` 曜石渐变、`2` 极光玻璃、`3` 金属勋章；省略时默认 `1`，只接受整数 `1..3`。它只影响展示，不改变候选筛选和 Assignment 有效性。
 
 YAML 中的每条 Profile 都参与推荐，筛选条件为 `level >= difficulty`。配置不存在或无效时推荐为空，审核开发流程继续可用。Model/Reasoning 校验范围来自 [config/agent-capabilities.yml](config/agent-capabilities.yml)，未收录模型使用通用档位。
 

@@ -280,11 +280,14 @@ def _legacy_profiles(
 def parse_routing_document(
     document: Any, capabilities: dict[str, list[dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
-    """校验并规范化配置，始终返回 v2 结构 {version, profiles}。"""
+    """校验并规范化配置，始终返回 v2 结构 {version, style, profiles}。"""
     if capabilities is None:
         capabilities = load_capabilities()
     if not isinstance(document, dict):
         raise AgentRoutingError("配置根节点必须是对象")
+    style = document.get("style", 1)
+    if isinstance(style, bool) or not isinstance(style, int) or style not in {1, 2, 3}:
+        raise AgentRoutingError("style 必须是 1、2 或 3 的整数")
     version = document.get("version")
     if isinstance(version, bool) or not isinstance(version, int):
         raise AgentRoutingError("version 必须是整数")
@@ -311,7 +314,7 @@ def parse_routing_document(
         if entry["id"] in seen:
             raise AgentRoutingError(f"profiles.id 必须唯一，重复: {entry['id']}")
         seen.add(entry["id"])
-    return {"version": CONFIG_VERSION, "profiles": profiles}
+    return {"version": CONFIG_VERSION, "style": style, "profiles": profiles}
 
 
 # ---------------------------------------------------------------------------
@@ -557,7 +560,7 @@ class AgentRoutingSnapshot:
         self, status: str, profiles: tuple[dict[str, Any], ...] = (),
         version: int | None = None, path: Path | None = None, error: str | None = None,
         capabilities: dict[str, list[dict[str, Any]]] | None = None,
-        revision: str | None = None,
+        revision: str | None = None, style: int = 1,
     ) -> None:
         self.status = status
         self.profiles = profiles
@@ -566,6 +569,7 @@ class AgentRoutingSnapshot:
         self.error = error
         self.capabilities = capabilities or {}
         self.revision = revision
+        self.style = style
 
     @property
     def enabled(self) -> bool:
@@ -623,6 +627,7 @@ class AgentRoutingSnapshot:
             "status": self.status,
             "enabled": self.enabled,
             "version": self.version,
+            "style": self.style,
             "path": str(self.path) if self.path else None,
             "error": self.error,
             "revision": self.revision,
@@ -696,7 +701,7 @@ def load_routing_snapshot(path: Path, capabilities: dict[str, list[dict[str, Any
         return AgentRoutingSnapshot(ROUTER_INVALID, path=path, error=str(exc), capabilities=capabilities)
     return AgentRoutingSnapshot(
         "ENABLED", tuple(document["profiles"]), version=document["version"], path=path,
-        capabilities=capabilities, revision=document_revision(document),
+        capabilities=capabilities, revision=document_revision(document), style=document["style"],
     )
 
 
@@ -778,7 +783,7 @@ def recommend_executors(difficulty: int | None, path: Path | None = None) -> lis
 def load_document(path: Path, capabilities: dict[str, list[dict[str, Any]]] | None = None) -> dict[str, Any]:
     """读取并规范化磁盘上的配置；文件不存在返回空配置。"""
     if not path.exists():
-        return {"version": CONFIG_VERSION, "profiles": []}
+        return {"version": CONFIG_VERSION, "style": 1, "profiles": []}
     return parse_routing_text(path.read_text(encoding="utf-8"), capabilities)
 
 

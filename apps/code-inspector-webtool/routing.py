@@ -199,3 +199,10 @@ def profile_groups(status: dict[str, Any]) -> list[dict[str, Any]]:
     for profile in status.get("profiles") or []:
         groups.setdefault(profile["agent"], []).append(profile)
     return [{"agent": agent, "profiles": profiles} for agent, profiles in groups.items()]
+
+
+def rank_skin(style: int | None = None) -> str:
+    """YAML 的 1/2/3 对应 Demo 的三套只读等级标签样式。"""
+    if style is None:
+        style = _snapshot().style
+    return {1: "jewel", 2: "aurora", 3: "medal"}.get(style, "jewel")
