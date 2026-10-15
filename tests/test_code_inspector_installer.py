@@ -2325,12 +2325,44 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             with sqlite3.connect(database) as conn:
                 conn.execute("DROP TRIGGER force_human_escalation_update_failure")
 
+            # 升级必须自包含：选项要带影响，只有标题的选项与对不上的推荐都被拒绝。
+            failed = fails(
+                "inspector", "human-escalate", "--issue-key", "RI-HUMAN",
+                "--reason", "项目内无法确定账务事实源", "--question", "应以哪个系统为准？",
+                "--options", json.dumps(["方案A：保留现库表并双写"], ensure_ascii=False),
+            )
+            self.assertIn("必须是对象", failed.stdout + failed.stderr)
+            failed = fails(
+                "inspector", "human-escalate", "--issue-key", "RI-HUMAN",
+                "--reason", "项目内无法确定账务事实源", "--question", "应以哪个系统为准？",
+                "--options", json.dumps([{"label": "方案A：保留现库表并双写"}], ensure_ascii=False),
+            )
+            self.assertIn("缺少 impact", failed.stdout + failed.stderr)
+            # 选项只表达改动目的、原因与影响；风险/代价/可回退不是选项字段。
+            failed = fails(
+                "inspector", "human-escalate", "--issue-key", "RI-HUMAN",
+                "--reason", "项目内无法确定账务事实源", "--question", "应以哪个系统为准？",
+                "--options", json.dumps(
+                    [{"label": "ledger", "impact": "保留总账事实", "risk": "短期一致性窗口"}],
+                    ensure_ascii=False,
+                ),
+            )
+            self.assertIn("未知字段", failed.stdout + failed.stderr)
+            failed = fails(
+                "inspector", "human-escalate", "--issue-key", "RI-HUMAN",
+                "--reason", "项目内无法确定账务事实源", "--question", "应以哪个系统为准？",
+                "--options", json.dumps([{"label": "ledger", "impact": "保留总账事实"}], ensure_ascii=False),
+                "--recommended-option", "不存在的方案",
+            )
+            self.assertIn("无法对应任何选项", failed.stdout + failed.stderr)
+
             escalation = db(
                 "inspector", "human-escalate", "--issue-key", "RI-HUMAN",
                 "--reason", "代码、测试、Schema 与历史活动均不能确定两个账务系统的最终事实归属",
                 "--question", "历史冲突时应以 ledger 还是 settlement 为最终事实源？",
                 "--options", json.dumps([
-                    {"label": "ledger", "impact": "保留总账事实"},
+                    {"label": "ledger", "purpose": "不改读路径地引入单一事实源",
+                     "reason": "存量读方无法短期切换", "impact": "保留总账事实"},
                     {"label": "settlement", "impact": "保留结算事实"},
                 ], ensure_ascii=False),
                 "--evidence", json.dumps([
@@ -2346,7 +2378,33 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             request_activity = [a for a in activities if a["activity_type"] == "HUMAN_CONFIRMATION_REQUESTED"][-1]
             self.assertEqual(request_activity["metadata_json"]["question"], "历史冲突时应以 ledger 还是 settlement 为最终事实源？")
             self.assertEqual(request_activity["metadata_json"]["options"][0]["label"], "ledger")
+            self.assertEqual(request_activity["metadata_json"]["options"][0]["id"], "A")
             self.assertEqual(request_activity["code_reference_json"][0]["file_path"], "migration/reconcile.sql")
+            # 选项与影响必须写进活动正文，任何展示正文的界面都能看到，而不是只躺在 metadata 里。
+            self.assertIn("影响：保留总账事实", request_activity["content"])
+
+            # Human 在 CLI 里一次就能读完整决策简报，不必反过来追问选项细节。
+            brief = self.run_raw(
+                home, str(db_tool), "--agent", "inspector", "--operator-id", "trae-inspector",
+                "human-brief", "--issue-key", "RI-HUMAN", cwd=workspace,
+            )
+            self.assertEqual(brief.returncode, 0, brief.stderr)
+            self.assertIn("需要你决定", brief.stdout)
+            self.assertIn("改动目的：不改读路径地引入单一事实源", brief.stdout)
+            self.assertIn("原因：存量读方无法短期切换", brief.stdout)
+            self.assertIn("影响：保留总账事实", brief.stdout)
+            self.assertIn("影响：保留结算事实", brief.stdout)
+            self.assertNotIn("风险：", brief.stdout)
+            self.assertNotIn("可回退：", brief.stdout)
+            self.assertIn("Inspector 推荐：A. ledger", brief.stdout)
+            self.assertIn("WebApp", brief.stdout)
+
+            # 同一份决策信息也随 issue context 返回，Agent 一次调用即可拿到。
+            context = db("inspector", "issue-context-get", "--issue-key", "RI-HUMAN")
+            self.assertEqual(context["human_request"]["options"][1]["impact"], "保留结算事实")
+            self.assertEqual(
+                context["human_request"]["recommended_option"], "ledger（可审计且已有不可变流水）"
+            )
 
             # 两个 Agent 在等待 Human 时没有自动继续动作，且原子活动不能伪造。
             fails("developer", "implementation-submit", "--issue-key", "RI-HUMAN", "--content", "越权继续")
@@ -2766,10 +2824,15 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 self.assertIn("difficulty = 3 · 中级开发", issue_html)
                 self.assertIn("难度 3 的角色参照为", issue_html)
                 self.assertIn('class="tab active" data-tab-target="all"', issue_html)
-                self.assertIn('class="tab-pane active" data-tab-pane="all"', issue_html)
+                # 三个记录标签共用一份 DOM，用 data-records-view 过滤，不再各渲染一份。
+                self.assertIn('data-records-view="all"', issue_html)
+                self.assertEqual(issue_html.count('class="record-stream"'), 1)
                 self.assertIn("讨论 1", issue_html)
                 self.assertIn("处理历史", issue_html)
-                self.assertIn("高级状态", issue_html)
+                # 改状态与追加讨论是页面级入口，不再藏在「编辑 Issue」弹窗里；任务编辑只在任务页。
+                self.assertIn('data-modal-open="issue-status-modal"', issue_html)
+                self.assertIn('data-modal-open="issue-discussion-modal"', issue_html)
+                self.assertNotIn("task-edit-modal", issue_html)
                 self.assertIn("order.py", issue_html)
                 self.assertIn("重复提交会创建两笔订单", issue_html)
                 self.assertIn("回归项", issue_html)
@@ -2815,10 +2878,12 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 self.assertIn("Human 操作台", review_page)
                 self.assertIn("order.py", review_page)
                 self.assertIn('提交人 <b class="mono">codex-dev</b> · Developer', review_page)
-                implementation_discussion = review_page.split(
-                    'data-tab-pane="discussion"', 1,
-                )[1].split('data-tab-pane="history"', 1)[0]
-                self.assertIn('data-activity-type="IMPLEMENTATION_SUBMITTED"', implementation_discussion)
+                # 三个记录标签共用一份 DOM，靠 data-in-discussion / data-in-history 过滤；
+                # 协作提交（如实现提交）在讨论视图里也会出现。
+                implementation_tag = review_page.split(
+                    'data-activity-type="IMPLEMENTATION_SUBMITTED"', 1,
+                )[1].split('>', 1)[0]
+                self.assertIn('data-in-discussion="1"', implementation_tag)
 
                 confirmed = client.post(
                     f"/issues/{issue_key}/human-action",
@@ -2859,16 +2924,14 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 self.assertIn("审核设计方案", design_page)
                 self.assertIn("方案概要", design_page)
                 self.assertIn("调整问题处理流程，保持现有使用方式不变。", design_page)
-                design_discussion = design_page.split(
-                    'data-tab-pane="discussion"', 1,
-                )[1].split('data-tab-pane="history"', 1)[0]
-                self.assertIn('data-activity-type="DESIGN_SUBMITTED"', design_discussion)
-                self.assertIn("Human 代为补充具体方案", design_discussion)
-                design_history = design_page.split(
-                    'data-tab-pane="history"', 1,
-                )[1].split('class="panel runtime-panel"', 1)[0]
-                self.assertIn("调整问题处理流程，保持现有使用方式不变。", design_history)
-                self.assertNotIn("Human 代为补充具体方案", design_history)
+                # 协作提交同时属于讨论与处理历史两个视图；正文只渲染一份。
+                design_tag = design_page.split(
+                    'data-activity-type="DESIGN_SUBMITTED"', 1,
+                )[1].split('>', 1)[0]
+                self.assertIn('data-in-discussion="1"', design_tag)
+                self.assertIn('data-in-history="1"', design_tag)
+                self.assertEqual(design_page.count('class="record-stream"'), 1)
+                self.assertIn("Human 代为补充具体方案", design_page)
                 web_design_activity = next(
                     item for item in reversed(db("inspector", "activity-list", "--issue-key", "RI-WEB-DESIGN"))
                     if item["activity_type"] == "DESIGN_SUBMITTED"
@@ -2979,7 +3042,10 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                     "inspector", "human-escalate", "--issue-key", "RI-WEB-HUMAN",
                     "--reason", "项目内无法确定冲突数据的最终业务事实源",
                     "--question", "冲突时应保留订单系统还是账务系统结果？",
-                    "--options", json.dumps(["订单系统", "账务系统"], ensure_ascii=False),
+                    "--options", json.dumps([
+                        {"label": "订单系统", "impact": "以订单侧结果为准，账务差异人工对账"},
+                        {"label": "账务系统", "impact": "以不可变账务流水为准，订单侧差异回滚"},
+                    ], ensure_ascii=False),
                     "--evidence", json.dumps([{"file_path": "reconcile.py", "line_start": 41}], ensure_ascii=False),
                     "--recommended-option", "账务系统",
                 )

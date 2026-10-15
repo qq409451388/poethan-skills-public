@@ -48,7 +48,9 @@ Human 只作为极低频最终兜底，不是第三个普通 Reviewer。Develope
 
 允许升级的原因仅限：关键业务事实或外部约束确实无法由 Agent 获得且直接决定实现方向，或继续自主决策存在重大、不可逆的数据损坏风险。Agent 意见不一致、普通架构取舍、方案质量差、实现或测试失败均不是升级理由，应继续使用证据、方案讨论、设计驳回或 `REDESIGN_REQUIRED` 自主解决。
 
-升级内容必须整理为原因、已验证事实、未知事实、选项与影响、推荐选项以及 Human 只需回答的问题，不得倾倒长日志、完整代码或 Agent 对话。`HUMAN_CONFIRMATION_REQUIRED` 会暂停自动流转；Human 可用 `reviewctl human resolve` 原子记录决定并恢复流程，也可通过通用状态命令直接指定任一合法状态。Agent 恢复后仍负责其设计、实现和验证工作。
+升级内容必须整理为原因、已验证事实、未知事实、选项与影响、推荐选项以及 Human 只需回答的问题，不得倾倒长日志、完整代码或 Agent 对话。每个选项必须是对象并同时给出 `label` 与 `impact`；只给标题的选项会被 Runtime 拒绝。`HUMAN_CONFIRMATION_REQUIRED` 会暂停自动流转；Human 可用 `reviewctl human resolve` 原子记录决定并恢复流程，也可通过通用状态命令直接指定任一合法状态。Agent 恢复后仍负责其设计、实现和验证工作。
+
+Human 通常没有全程跟进某个 Issue，也不在 CLI 里做决定：**升级后必须立刻运行 `reviewctl human brief <issue_key>` 并把输出原样贴进对话**，让 Human 在 CLI 就能读到选项与影响、未知事实和推荐；不要让 Human 反过来追问细节。Human 的决定仍然只在 WebApp 的「最终边界 / 安全确认」提交。
 
 ## 内容、讨论与历史
 

@@ -20,7 +20,7 @@ domain_action_map:
   activity: {list: activity-list, recent: activity-list-recent, show: activity-get, revisions: activity-revision-list, add: activity-append, edit: activity-amend}
   decision: {list: decision-list, add: decision-record}
   candidate: {list: candidate-list, submit: candidate-submit, accept: "candidate-update-status(ACCEPTED)", reject: "candidate-update-status(REJECTED)"}
-  human: {ask: human-escalate, resolve: human-confirmation-resolve}
+  human: {ask: human-escalate, brief: human-brief, resolve: human-confirmation-resolve}
   fast: {pass: "fast-review-record(pass)", fail: "fast-review-record(fail)"}
   impl: {submit: implementation-submit}
   watch: {issue: "watch-probe(issue-status)", stage: "watch-probe(stage-status)", activity: "watch-probe(activity)", task: "watch-probe(task-status)"}
@@ -312,14 +312,23 @@ commands:
   human-escalate:
     roles: [inspector]
     purpose: 在 Agent 无法取得关键业务事实或存在重大不可逆数据风险时，原子请求 Human 最终边界或安全决策。
-    required: [--issue-key, --reason, --question]
-    optional: [--options, --evidence, --recommended-option]
-    json_arguments: [--options, --evidence]
+    required: [--issue-key, --reason, --question, ask]
+    payload: ask（@json）
+    optional: [--reason, --question]
+    json_arguments: [options, unknown_facts, evidence, recommended_option, recommended_reason]
+    option_shape: 每个选项必须是对象且同时给出 label 与 impact；可选 purpose（改动目的）、reason（原因）、id、evidence。只给标题的字符串选项会被拒绝。
     effects: [追加 HUMAN_CONFIRMATION_REQUESTED, 转为 HUMAN_CONFIRMATION_REQUIRED]
     content_rules:
       required_summary: [为什么必须人工决定, 已验证事实, 无法确认的事实, 可选方案及影响, Inspector 推荐方案, Human 只需回答的问题]
       forbidden_payload: [未经整理的长日志, 完整代码, Agent 对话记录]
-    note: 这是 Inspector-only 的异常升级入口；Human 与 Developer 均不得发起。普通技术不确定性必须先由 Agent 通过证据、独立方案讨论、设计驳回或重新设计解决。
+    note: 这是 Inspector-only 的异常升级入口；Human 与 Developer 均不得发起。普通技术不确定性必须先由 Agent 通过证据、独立方案讨论、设计驳回或重新设计解决。升级必须自包含：Human 常常没有全程跟进，不允许要求他再追问才能判断。content 由 Runtime 渲染完整简报，Human 在 WebApp 提交决定。
+  human-brief:
+    roles: [inspector, human]
+    purpose: 输出面向人的 Issue 简报，供 Agent 在 CLI 里原样转述给 Human。
+    required: [--issue-key]
+    returns: 纯文本（不是 JSON）
+    behavior: 等待人工决定时给出决策简报（原因、已验证/未知事实、选项与影响、推荐、只需回答的问题、提交入口）；否则给出当前状态、下一步与最近进展摘要。
+    note: 只读命令。升级后应主动输出本命令的结果，不要让 Human 追问选项细节。
   human-confirmation-resolve:
     roles: [human]
     purpose: 原子记录 Human 的业务边界或风险决定，并恢复 Agent 工作流。

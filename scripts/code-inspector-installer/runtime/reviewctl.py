@@ -702,21 +702,44 @@ CANDIDATE_SUBMIT_SCHEMA = {
                   "suggested_dimension": "code_quality", "suggested_severity": "low"}],
 }
 
+HUMAN_OPTION_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["label", "impact"],
+    "properties": {
+        "id": {"type": "string"},
+        "label": {"type": "string"},
+        "purpose": {"type": "string"},
+        "reason": {"type": "string"},
+        "impact": {"type": "string"},
+        "evidence": {"type": "array", "items": {"type": "string"}},
+    },
+}
+
 HUMAN_ASK_SCHEMA = {
     "$schema": DRAFT_2020_12,
     "title": "reviewctl human ask 动态参数",
-    "description": "人工升级的选项、证据与推荐。",
+    "description": "人工升级的选项与影响、已验证/未知事实和推荐。",
     "type": "object",
     "additionalProperties": False,
     "properties": {
-        "options": {"type": "array", "items": {"type": "string"}},
+        "options": {"type": "array", "minItems": 1, "items": HUMAN_OPTION_SCHEMA},
+        "unknown_facts": {"type": "array", "items": {"type": "string"}},
         "evidence": {"type": "array", "items": {"type": "string"}},
         "recommended_option": {"type": "string"},
+        "recommended_reason": {"type": "string"},
     },
     "examples": [{
-        "options": ["方案A：保留现库表并双写", "方案B：直接迁移"],
+        "options": [
+            {"label": "保留现库表并双写", "purpose": "不改读路径地引入新事实源",
+             "reason": "存量读方无法短期切换", "impact": "读路径不变，写入翻倍"},
+            {"label": "直接迁移", "purpose": "只保留一份事实",
+             "reason": "双写会长期保留一致性窗口", "impact": "需要一次性停机迁移"},
+        ],
+        "unknown_facts": ["历史冲突数据的真实占比未知"],
         "evidence": ["订单表存在无校验写入路径"],
-        "recommended_option": "方案A：保留现库表并双写",
+        "recommended_option": "保留现库表并双写",
+        "recommended_reason": "可审计且已有不可变流水",
     }],
 }
 
@@ -1433,6 +1456,8 @@ COMMANDS: list[Command] = [
             options=[_o("decision", required=True), _o("content", required=True),
                      _o("next-status", choices=("DESIGN_REQUIRED", "IN_PROGRESS", "ON_HOLD",
                                                 "BLOCKED", "CANCELLED"))]),
+    Command("human", "brief", "human-brief", "输出人工决策简报或 Issue 进展摘要",
+            positionals=[_p("issue", legacy="issue-key")]),
     # ---- fast ----
     Command("fast", "pass", "fast-review-record", "FastMode 记录通过",
             positionals=[_p("issue", legacy="issue-key")],

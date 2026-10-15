@@ -25,6 +25,9 @@ import routing
 
 BASE_DIR = Path(__file__).resolve().parent
 app = Flask(__name__, template_folder=str(BASE_DIR / "templates"), static_folder=str(BASE_DIR / "static"))
+# 本地工具，页面会边用边改：模板始终按 mtime 重新读取，避免"改了模板但页面不变、
+# 必须重启进程才生效"的假故障（非 debug 模式下 Jinja 默认会把模板缓存在进程内存里）。
+app.config["TEMPLATES_AUTO_RELOAD"] = True
 app.config["JSON_SORT_KEYS"] = False
 app.secret_key = os.environ.get("WEBTOOL_SECRET_KEY") or secrets.token_hex(32)
 app.config["CSRF_ENABLED"] = True
@@ -777,9 +780,7 @@ def task_update_status(task_key: str):
 @app.route("/issues/<issue_key>")
 def issue_detail(issue_key: str):
     issue = query_one(
-        """SELECT i.*, t.task_key, t.project_name, t.project_path, t.title AS task_title,
-                  t.objective AS task_objective, t.remark AS task_remark, t.close_reason AS task_close_reason,
-                  t.status AS task_status, t.task_type
+        """SELECT i.*, t.task_key, t.project_name, t.project_path
            FROM review_issue i JOIN review_task t ON t.id = i.task_id WHERE i.issue_key = ?""", (issue_key,)
     )
     if not issue:
@@ -852,7 +853,6 @@ def issue_detail(issue_key: str):
         severities=SEVERITIES, benefits=BENEFITS, costs=COSTS, confidence=CONFIDENCE,
         dispositions=DISPOSITIONS, activity_types=ACTIVITY_TYPES, discussion_topics=DISCUSSION_TOPICS,
         issue_statuses=ISSUE_STATUSES,
-        task_statuses=TASK_STATUSES,
         assignment_profiles=routing.candidate_profiles(issue.get("difficulty")),
         level_roles=routing.LEVEL_ROLES, rank_skin=routing.rank_skin(),
     )

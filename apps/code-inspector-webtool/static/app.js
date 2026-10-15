@@ -303,6 +303,10 @@ document.querySelectorAll('form[method="post" i]').forEach((form) => {
     copy.querySelectorAll('.record-over-limit, .records-expanded').forEach((item) => {
       item.classList.remove('record-over-limit', 'records-expanded');
     });
+    // 记录视图是纯客户端状态：不归一化就会被判成"内容变了"，导致每秒重建整个区域。
+    copy.querySelectorAll('.record-panel').forEach((panel) => {
+      panel.setAttribute('data-records-view', 'all');
+    });
     // classList 改写会顺带压缩属性里的空白，先统一两侧，避免被误判成内容变化。
     copy.querySelectorAll('[class]').forEach((element) => {
       const value = element.getAttribute('class');
@@ -318,9 +322,10 @@ document.querySelectorAll('form[method="post" i]').forEach((form) => {
       activeTabs: Array.from(region.querySelectorAll('.tabs')).map(
         (tabs) => tabs.querySelector('.tab.active')?.dataset.tabTarget || null,
       ),
-      expandedRecords: Array.from(region.querySelectorAll('.tab-pane')).map(
-        (pane) => pane.classList.contains('records-expanded'),
-      ),
+      recordViews: Array.from(region.querySelectorAll('.record-panel')).map((panel) => ({
+        view: panel.dataset.recordsView || 'all',
+        expanded: panel.classList.contains('records-expanded'),
+      })),
     };
   }
 
@@ -339,9 +344,12 @@ document.querySelectorAll('form[method="post" i]').forEach((form) => {
         pane.classList.toggle('active', pane.dataset.tabPane === target);
       });
     });
-    region.querySelectorAll('.tab-pane').forEach((pane, index) => {
-      if (state.expandedRecords[index] === undefined) return;
-      pane.classList.toggle('records-expanded', state.expandedRecords[index]);
+    region.querySelectorAll('.record-panel').forEach((panel, index) => {
+      const saved = state.recordViews?.[index];
+      if (!saved) return;
+      panel.dataset.recordsView = saved.view;
+      panel.classList.toggle('records-expanded', saved.expanded);
+      applyRecordView(panel);
     });
   }
 
@@ -367,33 +375,64 @@ document.querySelectorAll('form[method="post" i]').forEach((form) => {
 
   const RECORD_PREVIEW_LIMIT = 5;
 
-  function renderRecordPreviews(scope) {
-    scope.querySelectorAll('.tab-pane').forEach((pane) => {
-      const records = Array.from(pane.querySelectorAll('.event'));
-      const expander = pane.querySelector(':scope > .record-expander');
-      if (records.length <= RECORD_PREVIEW_LIMIT) {
-        records.forEach((record) => record.classList.remove('record-over-limit'));
-        pane.classList.remove('records-expanded');
-        expander?.remove();
-        return;
-      }
-      records.forEach((record, index) => {
-        record.classList.toggle('record-over-limit', index >= RECORD_PREVIEW_LIMIT);
-      });
-      if (expander) return;
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.className = 'record-expander';
-      button.innerHTML = '<span class="record-expander-more">点击展开完整内容</span>'
-        + '<span class="record-expander-less">收起</span>';
-      pane.append(button);
+  function recordInView(record, view) {
+    if (view === 'discussion') return record.hasAttribute('data-in-discussion');
+    if (view === 'history') return record.hasAttribute('data-in-history');
+    return true;
+  }
+
+  // 三个标签共用同一份记录 DOM：切换视图只改 data-records-view，由 CSS 过滤，
+  // 因此预览条数必须按"当前视图里可见的记录"重算，否则筛选后可能一条都看不到。
+  function applyRecordView(panel) {
+    const view = panel.dataset.recordsView || 'all';
+    const stream = panel.querySelector('.record-stream');
+    if (!stream) return;
+    const records = Array.from(stream.querySelectorAll('.event'));
+    const matching = records.filter((record) => recordInView(record, view));
+    const expanded = panel.classList.contains('records-expanded');
+    const expander = stream.querySelector(':scope > .record-expander');
+    if (matching.length <= RECORD_PREVIEW_LIMIT) {
+      records.forEach((record) => record.classList.remove('record-over-limit'));
+      panel.classList.remove('records-expanded');
+      expander?.remove();
+      return;
+    }
+    const matchingSet = new Set(matching);
+    matching.forEach((record, index) => {
+      record.classList.toggle('record-over-limit', !expanded && index >= RECORD_PREVIEW_LIMIT);
     });
+    records.forEach((record) => {
+      if (!matchingSet.has(record)) record.classList.remove('record-over-limit');
+    });
+    if (expander) return;
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'record-expander';
+    button.innerHTML = '<span class="record-expander-more">点击展开完整内容</span>'
+      + '<span class="record-expander-less">收起</span>';
+    stream.append(button);
+  }
+
+  function renderRecordPreviews(scope) {
+    scope.querySelectorAll('.record-panel').forEach((panel) => applyRecordView(panel));
   }
 
   document.addEventListener('click', (event) => {
     const expander = event.target.closest('.record-expander');
     if (!expander) return;
-    expander.closest('.tab-pane')?.classList.toggle('records-expanded');
+    const panel = expander.closest('.record-panel');
+    if (!panel) return;
+    panel.classList.toggle('records-expanded');
+    applyRecordView(panel);
+  });
+
+  // 记录标签只切换 data-records-view（CSS 负责过滤），所以必须和 applyRecordView 同作用域。
+  document.addEventListener('click', (event) => {
+    const tab = event.target.closest('.record-panel [data-tab-target]');
+    if (!tab) return;
+    const panel = tab.closest('.record-panel');
+    panel.dataset.recordsView = tab.dataset.tabTarget;
+    applyRecordView(panel);
   });
 
   function openHashTarget() {

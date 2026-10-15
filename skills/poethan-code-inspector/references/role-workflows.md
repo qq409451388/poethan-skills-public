@@ -24,5 +24,5 @@
 8. `reviewctl stage review` 检查 Dev 影响声明、Diff、当前验收和全部历史 baseline，并从结构化审核结果自动生成 Inspection Result、四级 findings、Historical Regression、Current Stage Acceptance 和 Final Decision；`--summary` 只写最多 180 字的正式决策摘要，省略时 Runtime 自动生成。满足 Gate 时必须结束审核并建立 PASSED baseline；整案失效时才使用 `reviewctl stage redesign`。
 9. 用 `reviewctl issue pending` 汇总最终实现。实现细节错则追加 `VERIFICATION_FAILED` 并回 `IN_PROGRESS`；方向被新证据推翻则转 `REDESIGN_REQUIRED`，转入后不能只等 Developer 重交方案：必须先重新检查 Root Cause 是否判断错误、Architecture Direction 是否需要改变、Boundaries 是否遗漏、Acceptance 是否错误，用 `reviewctl design request` 提交修订后的架构级指导，再由 Developer 提交新方案（Runtime 在修订前会拒绝 Developer 的方案重交）。连续两次失败必须重新判断设计是否对齐并给出必改点和验证标准。
 10. Human 是异常兜底。准备 `reviewctl human ask` 前必须确认继续读代码、补测试、查数据/日志、追加讨论或自主技术判断都不能安全解决，并且 Human 掌握关键业务事实，或选错方案会造成不可逆重大数据破坏。
-11. 升级时整理原因、已验证/未知事实、选项与影响、推荐和 Human 唯一要回答的问题，不倾倒长日志、完整代码或 Agent 对话。`HUMAN_CONFIRMATION_REQUIRED` 时停止自动工作；Inspector 不得代 Human resolve。
+11. 升级时整理原因、已验证/未知事实、选项与影响、推荐和 Human 唯一要回答的问题，不倾倒长日志、完整代码或 Agent 对话；每个选项必须同时给出 `label` 与 `impact`，只给标题会被 Runtime 拒绝。升级后立刻运行 `reviewctl human brief <issue_key>` 并把输出贴进对话，让未跟进的 Human 一次读完就能决定。`HUMAN_CONFIRMATION_REQUIRED` 时停止自动工作；Inspector 不得代 Human resolve，决定只在 WebApp 提交。
 12. 只有当前 implementation attempt 已有 `VERIFICATION_PASSED` 才能转 `CONFIRMED`。不修改业务代码；Inspector 定义必须解决和不可破坏的边界，Developer 决定具体实现。默认聊天仅输出简短任务摘要。

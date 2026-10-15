@@ -2300,6 +2300,10 @@ def issue_context_get(args: argparse.Namespace) -> None:
                ORDER BY id DESC LIMIT ?""",
             (projection["issue_id"], DISCUSSION_CONTEXT_LIMIT),
         ).fetchall()
+        human_request = (
+            human_request_view(conn, projection["issue_id"])
+            if issue["status"] == "HUMAN_CONFIRMATION_REQUIRED" else None
+        )
         conn.commit()
     # 审计在 read snapshot 释放后单独写入，避免并发提交后把旧快照升级为写事务时触发
     # SQLITE_BUSY_SNAPSHOT。
@@ -2332,6 +2336,7 @@ def issue_context_get(args: argparse.Namespace) -> None:
         "latest_activities": [dict(item) for item in activities],
         "latest_discussions": [dict(item) for item in discussions],
         "protected_constraints": constraints,
+        "human_request": human_request,
         "pending_action": projection["pending_action"],
         "permitted_actions": projection["permitted_actions"],
         "exception_actions": projection["exception_actions"],
@@ -2670,23 +2675,305 @@ def stage_review(args: argparse.Namespace) -> None:
         "next_stage_no": next_stage["stage_no"] if next_stage else None,
     })
 
+HUMAN_OPTION_KEYS = ("id", "label", "purpose", "reason", "impact", "evidence")
+
+HUMAN_STATUS_LABELS = {
+    "PROPOSED": "待处理", "DESIGN_REQUIRED": "需要设计", "DESIGN_PENDING_REVIEW": "设计待审核",
+    "REDESIGN_REQUIRED": "需要重新设计", "IN_PROGRESS": "进行中",
+    "IMPLEMENTED_PENDING_REVIEW": "待审核", "INSPECTOR_CONFIRMATION_REQUIRED": "待 Inspector 确认",
+    "HUMAN_CONFIRMATION_REQUIRED": "需要人工确认", "CONFIRMED": "已确认",
+    "ON_HOLD": "已搁置", "BLOCKED": "受阻", "CANCELLED": "已取消",
+}
+
+HUMAN_ACTIVITY_LABELS = {
+    "ISSUE_CREATED": "问题创建", "DESIGN_REQUESTED": "要求设计", "DESIGN_SUBMITTED": "提交设计",
+    "REDESIGN_SUBMITTED": "提交重新设计", "DESIGN_APPROVED": "设计通过", "DESIGN_REJECTED": "设计驳回",
+    "DESIGN_GUIDANCE": "架构指导", "STAGE_PLAN_CREATED": "创建阶段计划",
+    "STAGE_SCOPE_DECLARED": "声明阶段范围", "STAGE_SUBMITTED": "提交阶段",
+    "STAGE_APPROVED": "阶段通过", "STAGE_REJECTED": "阶段驳回",
+    "STAGE_PLAN_SUPERSEDED": "阶段计划被取代", "IMPLEMENTATION_SUBMITTED": "提交实现",
+    "REVIEW_APPROVED": "审核通过", "REVIEW_REJECTED": "审核驳回",
+    "VERIFICATION_PASSED": "验证通过", "VERIFICATION_FAILED": "验证失败",
+    "VERIFICATION_EVIDENCE_ADDED": "补充验证证据",
+    "INSPECTOR_CONFIRMATION_PROVIDED": "Inspector 确认答复",
+    "HUMAN_CONFIRMATION_REQUESTED": "请求人工决定",
+    "HUMAN_CONFIRMATION_PROVIDED": "人工决定已提交",
+    "STATUS_CHANGED": "状态变更", "EVIDENCE_ADDED": "补充证据", "COMMENT_ADDED": "留言",
+}
+
+HUMAN_DECISION_LABELS = {
+    "DESIGN_REVIEW": "设计结论", "STAGE_REVIEW": "阶段验收结论",
+    "IMPLEMENTATION_REVIEW": "实现审核结论", "SCOPE_CONFIRMATION": "边界确认",
+    "HUMAN_CONFIRMATION": "人工决定", "DISCUSSION_CONCLUSION": "讨论结论",
+    "VERIFICATION": "验证结论",
+}
+
+HUMAN_PENDING_ACTION_LABELS = {
+    "submit_design": "Developer 提交设计方案",
+    "implement_issue": "Developer 开始实现",
+    "implement_stage": "Developer 按当前 Stage 实现",
+    "submit_final_implementation": "Developer 提交最终实现证据",
+    "triage_or_implement_issue": "Developer 受理并实现",
+    "review_design": "Inspector 审核设计方案",
+    "review_implementation": "Inspector 审核实现",
+    "review_stage": "Inspector 验收当前 Stage",
+    "answer_inspector_confirmation": "Developer 回应 Inspector 确认请求",
+    "revise_design_guidance": "Inspector 修订架构指导",
+}
+
+
+def _human_option_id(index: int) -> str:
+    """按位置生成稳定选项编号：A、B、C…；超过 26 个时退化为 O27。"""
+    return chr(ord("A") + index) if index < 26 else f"O{index + 1}"
+
+
+def _human_text(value: Any) -> str:
+    return "" if value is None else str(value).strip()
+
+
+def _strip_human_option_prefix(label: str) -> str:
+    """历史数据里的选项常自带 "A：" 前缀；编号由 Runtime 统一生成，这里去掉重复前缀。"""
+    stripped = re.sub(r"^[A-Za-z]\s*[：:.、]\s*", "", label)
+    return stripped or label
+
+
+def validate_human_options(raw: Any) -> list[dict[str, Any]]:
+    """校验并归一化人工升级选项（写入路径）。
+
+    契约要求升级必须给出"选项与影响"，因此这里只接受对象，并强制 label 与 impact
+    同时存在——只有标题的字符串选项会让 Human 无法判断，无法再被写库。
+    历史数据里的纯字符串选项由 normalize_human_options 在读取路径上兼容。
+    """
+    if not isinstance(raw, list) or not raw:
+        raise ValueError(
+            "options 必须是非空 JSON 数组；每个选项形如 "
+            '{"label": "方案名", "impact": "选它会发生什么变化"}'
+        )
+    normalized: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for index, item in enumerate(raw):
+        if not isinstance(item, dict):
+            raise ValueError(
+                f"options[{index}] 必须是对象而不是 {type(item).__name__}；"
+                "只给标题的选项会让 Human 无法判断，已不再接受"
+            )
+        unknown = [key for key in item if key not in HUMAN_OPTION_KEYS]
+        if unknown:
+            raise ValueError(
+                f"options[{index}] 含未知字段 {unknown}；可用字段: {list(HUMAN_OPTION_KEYS)}"
+            )
+        label = _human_text(item.get("label"))
+        impact = _human_text(item.get("impact"))
+        if not label:
+            raise ValueError(f"options[{index}] 缺少 label")
+        if not impact:
+            raise ValueError(
+                f"options[{index}]（{label}）缺少 impact；必须说明选择该方案会带来什么变化"
+            )
+        option_id = _human_text(item.get("id")) or _human_option_id(index)
+        if option_id in seen_ids:
+            raise ValueError(f"options[{index}] 的 id {option_id!r} 重复")
+        seen_ids.add(option_id)
+        option: dict[str, Any] = {"id": option_id, "label": label, "impact": impact}
+        for key in ("purpose", "reason"):
+            value = _human_text(item.get(key))
+            if value:
+                option[key] = value
+        option_evidence = item.get("evidence")
+        if option_evidence is not None:
+            if not isinstance(option_evidence, list) or not all(
+                isinstance(entry, str) for entry in option_evidence
+            ):
+                raise ValueError(f"options[{index}].evidence 必须是字符串数组")
+            option["evidence"] = [entry.strip() for entry in option_evidence if entry.strip()]
+        normalized.append(option)
+    return normalized
+
+
+def normalize_human_options(raw: Any) -> list[dict[str, Any]]:
+    """读取路径的宽松归一化，兼容历史数据里的纯字符串选项。"""
+    if not isinstance(raw, list):
+        return []
+    normalized: list[dict[str, Any]] = []
+    for index, item in enumerate(raw):
+        if isinstance(item, str):
+            label = _strip_human_option_prefix(item.strip())
+            if label:
+                normalized.append({"id": _human_option_id(index), "label": label, "impact": None})
+            continue
+        if not isinstance(item, dict):
+            continue
+        label = _strip_human_option_prefix(
+            _human_text(item.get("label") or item.get("title") or item.get("name"))
+        )
+        if not label:
+            continue
+        option: dict[str, Any] = {
+            "id": _human_text(item.get("id")) or _human_option_id(index),
+            "label": label,
+            "impact": _human_text(item.get("impact")) or None,
+        }
+        for key in ("purpose", "reason"):
+            value = _human_text(item.get(key))
+            if value:
+                option[key] = value
+        normalized.append(option)
+    return normalized
+
+
+def match_human_option(options: list[dict[str, Any]], reference: str) -> dict[str, Any] | None:
+    """把推荐值匹配到具体选项：先按 id，再按 label 精确匹配，最后按 label 包含匹配。"""
+    wanted = (reference or "").strip().lower()
+    if not wanted:
+        return None
+    for option in options:
+        if str(option.get("id", "")).lower() == wanted:
+            return option
+    for option in options:
+        if str(option.get("label", "")).lower() == wanted:
+            return option
+    for option in options:
+        label = str(option.get("label", "")).lower()
+        if label and label in wanted:
+            return option
+    return None
+
+
+def _human_local_time(value: Any) -> str:
+    """把库内 UTC 时间转成展示时区，与 WebApp 的 localtime 过滤器保持一致。"""
+    if not value:
+        return "—"
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return str(value)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    display = timezone.utc
+    try:
+        from zoneinfo import ZoneInfo
+
+        display = ZoneInfo(os.environ.get("CODE_INSPECTOR_TIMEZONE", "Asia/Shanghai"))
+    except Exception:  # noqa: BLE001 - 时区数据缺失时退回 UTC，不影响简报内容
+        pass
+    return parsed.astimezone(display).strftime("%Y-%m-%d %H:%M")
+
+
+def _human_one_line(value: Any, limit: int) -> str:
+    text = " ".join(str(value or "").split())
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _human_reference_text(item: Any) -> str:
+    """把证据项渲染成一行：字符串原样，代码定位转成 文件:行 形式。"""
+    if isinstance(item, str):
+        return item
+    if isinstance(item, dict):
+        location = _human_text(item.get("file_path") or item.get("path"))
+        if not location:
+            return json.dumps(item, ensure_ascii=False)
+        start, end = item.get("line_start"), item.get("line_end")
+        if start and end:
+            location += f":{start}-{end}"
+        elif start:
+            location += f":{start}"
+        symbol = _human_text(item.get("symbol"))
+        if symbol:
+            location += f" ({symbol})"
+        note = _human_text(item.get("note") or item.get("summary"))
+        return f"{location} —— {note}" if note else location
+    return str(item)
+
+
+def render_human_request_brief(
+    reason: str, question: str, options: list[dict[str, Any]], evidence: list[Any],
+    unknown_facts: list[str], recommended_option: str | None, recommended_reason: str | None,
+) -> str:
+    """把升级整理成自包含的人话简报，写进 activity content。
+
+    这样任何展示活动正文的界面（WebApp 活动流、issue context 摘要）都能看到
+    选项与影响，而不必再去翻 metadata JSON。
+    """
+    lines = [f"为什么必须人工决定：{reason}", "", f"Human 只需回答：{question}"]
+    if evidence:
+        lines += ["", "已验证事实："] + [f"- {_human_reference_text(item)}" for item in evidence]
+    if unknown_facts:
+        lines += ["", "无法确认的事实："] + [f"- {item}" for item in unknown_facts]
+    if options:
+        lines += ["", "可选方案及影响："]
+        for option in options:
+            lines.append(f"{option['id']}. {option['label']}")
+            if option.get("purpose"):
+                lines.append(f"   改动目的：{option['purpose']}")
+            if option.get("reason"):
+                lines.append(f"   原因：{option['reason']}")
+            lines.append(f"   影响：{option.get('impact') or '未说明'}")
+    if recommended_option:
+        matched = match_human_option(options, recommended_option)
+        shown = f"{matched['id']}. {matched['label']}" if matched else recommended_option
+        suffix = f" —— {recommended_reason}" if recommended_reason else ""
+        lines += ["", f"Inspector 推荐方案：{shown}{suffix}"]
+    return "\n".join(lines)
+
+
+def human_request_view(conn: sqlite3.Connection, issue_id: int) -> dict[str, Any] | None:
+    """读取最近一次人工升级，供 issue context 与 human brief 复用。"""
+    row = conn.execute(
+        """SELECT id, content, metadata_json, COALESCE(amended_at, created_at) AS requested_at
+           FROM issue_activity
+           WHERE issue_id = ? AND activity_type = 'HUMAN_CONFIRMATION_REQUESTED'
+           ORDER BY id DESC LIMIT 1""",
+        (issue_id,),
+    ).fetchone()
+    if not row:
+        return None
+    metadata = loads(row["metadata_json"], {})
+    if not isinstance(metadata, dict):
+        metadata = {}
+    unknown_facts = metadata.get("unknown_facts")
+    return {
+        "activity_id": row["id"],
+        "requested_at": row["requested_at"],
+        "reason": _human_text(metadata.get("reason")),
+        "question": _human_text(metadata.get("question")),
+        "options": normalize_human_options(metadata.get("options")),
+        "unknown_facts": [str(item) for item in unknown_facts if str(item).strip()]
+        if isinstance(unknown_facts, list) else [],
+        "recommended_option": _human_text(metadata.get("recommended_option")) or None,
+        "recommended_reason": _human_text(metadata.get("recommended_reason")) or None,
+        "evidence": metadata.get("evidence") if isinstance(metadata.get("evidence"), list) else [],
+        "content": row["content"],
+    }
+
+
 def human_escalate(args: argparse.Namespace) -> None:
     require_agent(args.agent)
     reason = (args.reason or "").strip()
     question = (args.question or "").strip()
     if not reason or not question:
         raise ValueError("human-escalate 的 --reason 和 --question 均不能为空")
-    options = json.loads(args.options)
+    options = validate_human_options(json.loads(args.options))
     evidence = json.loads(args.evidence)
-    if not isinstance(options, list):
-        raise ValueError("options 必须是 JSON 数组")
     if not isinstance(evidence, list):
         raise ValueError("evidence 必须是 JSON 数组")
+    unknown_facts = json.loads(args.unknown_facts)
+    if not isinstance(unknown_facts, list) or not all(isinstance(item, str) for item in unknown_facts):
+        raise ValueError("unknown-facts 必须是字符串数组")
+    unknown_facts = [item.strip() for item in unknown_facts if item.strip()]
+    recommended_option = (args.recommended_option or "").strip() or None
+    recommended_reason = (args.recommended_reason or "").strip() or None
+    if recommended_option and match_human_option(options, recommended_option) is None:
+        choices = "、".join(f"{option['id']}={option['label']}" for option in options)
+        raise ValueError(
+            f"recommended-option {recommended_option!r} 无法对应任何选项；可选: {choices}"
+        )
     metadata = {
         "reason": reason,
         "question": question,
         "options": options,
-        "recommended_option": args.recommended_option,
+        "unknown_facts": unknown_facts,
+        "recommended_option": recommended_option,
+        "recommended_reason": recommended_reason,
         "evidence": evidence,
     }
     with connect() as conn:
@@ -2697,7 +2984,10 @@ def human_escalate(args: argparse.Namespace) -> None:
         if not row:
             raise KeyError(f"问题不存在: {args.issue_key}")
         require_issue_action("human-escalate", args.agent, row["status"])
-        content = f"为什么必须人工决定：{reason}\n\nHuman 只需回答：{question}"
+        content = render_human_request_brief(
+            reason, question, options, evidence, unknown_facts,
+            recommended_option, recommended_reason,
+        )
         conn.execute(
             """INSERT INTO issue_activity(
                 issue_id, attempt_no, activity_type, operator_type, operator_id,
@@ -2769,6 +3059,109 @@ def human_confirmation_resolve(args: argparse.Namespace) -> None:
         "issue_key": args.issue_key, "status": next_status, "decision": decision,
         "attempt_no": row["current_attempt_no"], "activity_type": "HUMAN_CONFIRMATION_PROVIDED",
     })
+
+
+def render_human_brief(
+    issue: sqlite3.Row, projection: dict[str, Any], human_request: dict[str, Any] | None,
+    milestones: list[sqlite3.Row], decisions: list[sqlite3.Row],
+) -> str:
+    """把 Issue 渲染成一段面向人的简报：有待决升级时是决策简报，否则是进展摘要。
+
+    输出纯文本而不是 JSON：这是给人在 CLI 里直接读的内容，字段名和枚举不出现。
+    """
+    status = issue["status"]
+    lines = [
+        f"{issue['issue_key']} · {HUMAN_STATUS_LABELS.get(status, status)}（{status}）",
+        f"标题：{issue['title']}",
+    ]
+    if issue["project_name"]:
+        lines.append(f"项目：{issue['project_name']}　审核级别：{issue['review_level']}")
+    if human_request:
+        lines += [
+            "",
+            "—— 需要你决定（自动流程已暂停）——",
+            f"为什么必须人工决定：{human_request['reason'] or '未提供'}",
+            f"你只需回答：{human_request['question'] or '请结合最近进展给出明确边界。'}",
+        ]
+        if human_request["evidence"]:
+            lines.append("已验证事实：")
+            lines += [f"  - {_human_reference_text(item)}" for item in human_request["evidence"]]
+        if human_request["unknown_facts"]:
+            lines.append("无法确认的事实：")
+            lines += [f"  - {item}" for item in human_request["unknown_facts"]]
+        if human_request["options"]:
+            lines.append("可选方案及影响：")
+            for option in human_request["options"]:
+                lines.append(f"  {option['id']}. {option['label']}")
+                if option.get("purpose"):
+                    lines.append(f"     改动目的：{option['purpose']}")
+                if option.get("reason"):
+                    lines.append(f"     原因：{option['reason']}")
+                lines.append(f"     影响：{option.get('impact') or '未说明'}")
+        if human_request["recommended_option"]:
+            matched = match_human_option(human_request["options"], human_request["recommended_option"])
+            shown = f"{matched['id']}. {matched['label']}" if matched else human_request["recommended_option"]
+            suffix = (
+                f" —— {human_request['recommended_reason']}"
+                if human_request["recommended_reason"] else ""
+            )
+            lines.append(f"Inspector 推荐：{shown}{suffix}")
+        lines += ["", "提交决定：WebApp → 该 Issue 的「最终边界 / 安全确认」（人工决定只在 WebApp 提交）"]
+    else:
+        pending = projection.get("pending_action")
+        lines += ["", f"下一步：{HUMAN_PENDING_ACTION_LABELS.get(pending or '', '当前没有自动待办')}"]
+    if milestones:
+        lines += ["", "—— 最近进展 ——"]
+        for item in reversed(milestones):
+            label = HUMAN_ACTIVITY_LABELS.get(item["activity_type"], item["activity_type"])
+            summary = _human_one_line(item["content"], 70)
+            lines.append(
+                f"  {_human_local_time(item['time'])}  {label}" + (f"：{summary}" if summary else "")
+            )
+    if decisions:
+        lines += ["", "—— 当前有效结论 ——"]
+        for item in decisions:
+            label = HUMAN_DECISION_LABELS.get(item["decision_type"], item["decision_type"])
+            summary = _human_one_line(item["content"], 90)
+            lines.append(f"  {_human_local_time(item['time'])}  {label}（{item['outcome']}）：{summary}")
+    return "\n".join(lines)
+
+
+def human_brief(args: argparse.Namespace) -> None:
+    """输出面向人的 Issue 简报：等待人工决定时给出决策简报，否则给出最近进展。"""
+    require_agent(args.agent)
+    with connect() as conn:
+        conn.execute("BEGIN")
+        projection = current_projection(conn, args.issue_key, args.agent)
+        issue = conn.execute(
+            """SELECT i.issue_key, i.title, i.status, t.project_name, t.review_level
+               FROM review_issue i JOIN review_task t ON t.id = i.task_id
+               WHERE i.issue_key = ?""",
+            (args.issue_key,),
+        ).fetchone()
+        if not issue:
+            raise KeyError(f"问题不存在: {args.issue_key}")
+        human_request = (
+            human_request_view(conn, projection["issue_id"])
+            if issue["status"] == "HUMAN_CONFIRMATION_REQUIRED" else None
+        )
+        milestones = conn.execute(
+            """SELECT activity_type, result_status, COALESCE(amended_at, created_at) AS time, content
+               FROM issue_activity WHERE issue_id = ?
+               ORDER BY id DESC LIMIT 8""",
+            (projection["issue_id"],),
+        ).fetchall()
+        decisions = conn.execute(
+            """SELECT decision_type, outcome, created_at AS time, content
+               FROM issue_decision WHERE issue_id = ? AND effective = 1
+               ORDER BY id DESC LIMIT 5""",
+            (projection["issue_id"],),
+        ).fetchall()
+        conn.commit()
+    with connect() as conn:
+        audit(conn, actor_id(args), "human.brief", "review_issue", args.issue_key, True)
+    print(render_human_brief(issue, projection, human_request, milestones, decisions))
+
 
 def implementation_submit(args: argparse.Namespace) -> None:
     require_agent(args.agent)
@@ -3775,10 +4168,21 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--issue-key", required=True)
     p.add_argument("--reason", required=True)
     p.add_argument("--question", required=True)
-    p.add_argument("--options", default="[]", help='JSON 数组；可选方案，如 ["方案A：保留现库表并双写","方案B：直接迁移"]')
-    p.add_argument("--evidence", default="[]", help='JSON 数组；已验证事实，如 ["订单表存在无校验写入路径"]')
-    p.add_argument("--recommended-option")
+    p.add_argument(
+        "--options", default="[]",
+        help='JSON 数组；每个选项必须给出影响，可补改动目的与原因，如 '
+             '[{"label":"保留现库表并双写","purpose":"不改读路径地引入新事实源",'
+             '"reason":"存量读方无法短期切换","impact":"读路径不变，写入翻倍"}]',
+    )
+    p.add_argument("--evidence", default="[]", help='JSON 数组；已验证事实或代码定位，如 ["订单表存在无校验写入路径"]')
+    p.add_argument("--unknown-facts", default="[]", help="JSON 数组；无法确认的事实，Human 需要知道这些空白")
+    p.add_argument("--recommended-option", help="推荐选项的 id 或 label")
+    p.add_argument("--recommended-reason", help="为什么推荐该选项")
     p.set_defaults(func=human_escalate)
+
+    p = sub.add_parser("human-brief")
+    p.add_argument("--issue-key", required=True)
+    p.set_defaults(func=human_brief)
 
     p = sub.add_parser("human-confirmation-resolve")
     p.add_argument("--issue-key", required=True)

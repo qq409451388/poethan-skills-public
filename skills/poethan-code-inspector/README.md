@@ -182,6 +182,8 @@ COMPLEX     Inspector(五段式含架构方向) → Developer(方案) → Inspec
 
 `INSPECTOR_CONFIRMATION_REQUIRED` 是 Developer 向 Inspector 请求技术边界的正常协作状态，不会通知 Human。`HUMAN_CONFIRMATION_REQUIRED` 是异常升级：只有 Inspector 在穷尽可得证据后，确认缺少只能由 Human 提供的关键业务事实，或存在重大且不可逆的数据安全风险时，才能用 `human-escalate` 进入。普通技术分歧、架构选择、方案驳回、实现或测试失败不得升级。
 
+升级必须自包含：每个选项都要给出 `label` 与 `impact`，并建议补 `purpose`（改动目的）与 `reason`（原因），附已验证事实与未知事实；只给标题的选项会被 Runtime 拒绝。因为 Human 通常没有全程跟进，升级后 Inspector 必须运行 `human brief <issue_key>` 并把输出贴进对话——它输出一段人话简报（为什么必须你定、已验证/未知事实、选项与影响、推荐、你只需回答什么），没有待决升级时则输出该 Issue 的最近进展摘要。同一份决策信息也随 `issue context` 的 `human_request` 返回，WebApp 的「最终边界 / 安全确认」会展示同样的选项与影响。Human 的决定仍然只在 WebApp 提交。
+
 Human 可使用 `human-confirmation-resolve` 原子记录业务边界或风险决定，并恢复到 `DESIGN_REQUIRED`、`IN_PROGRESS`、`ON_HOLD`、`BLOCKED` 或 `CANCELLED`；也可用通用状态命令直接指定任一合法状态。未来若启用 Orchestrator，Resolver 应在该状态返回 `HUMAN / needs_human` 并暂停 Task 自动调度；本仓库当前升级不修改 Orchestrator。
 
 ## Git 更新后的行为
