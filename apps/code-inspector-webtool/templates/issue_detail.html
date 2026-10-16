@@ -3,28 +3,33 @@
 {% from "components/evidence.html" import render_references %}
 {% from "components/issue_copy_button.html" import issue_copy_button %}
 {% macro render_collaboration_record(record, compact=false) %}
-<article class="event{% if record.record_kind == 'discussion' %} discussion-item{% endif %} record-role-{{ (record.operator_type or 'unknown')|lower }}" data-record-kind="{{ record.record_kind }}"{% if record.record_kind == 'activity' %} data-activity-type="{{ record.activity_type }}"{% endif %}{% if record.record_kind == 'discussion' or record.is_collaborative_submission %} data-in-discussion="1"{% endif %}{% if record.record_kind == 'activity' %} data-in-history="1"{% endif %}>
+<article class="event{% if record.record_kind == 'discussion' %} discussion-item{% endif %} record-role-{{ (record.operator_type or 'system')|lower }}" data-record-kind="{{ record.record_kind }}" data-in-all="1"{% if record.record_kind == 'activity' %} data-activity-type="{{ record.activity_type }}"{% endif %}{% if record.record_kind == 'discussion' or record.is_collaborative_submission %} data-in-discussion="1"{% endif %}{% if record.in_history %} data-in-history="1"{% endif %}>
+  {% if record.discussion_topic %}{% set topic = record.discussion_topic %}
+  <div class="record-topic-head"><span class="badge badge-blue">{{ topic.category|topic_label }}</span><span class="record-topic">话题 #{{ topic.id }} · {{ topic.title }}</span>{% if topic.plan_no is not none %}<span class="muted">计划 {{ topic.plan_no }}{% if topic.stage_no is not none %} · Stage {{ topic.stage_no }}{% endif %}</span>{% endif %}</div>
+  {% endif %}
   <div class="event-head"><div>
-    {% if record.record_kind == 'activity' %}<strong>{{ record.activity_type|label }}</strong>{% endif %}
-    {% set attempt_no = record.get('attempt_no') if record is mapping else none %}
-    {% if record.record_kind == 'activity' and attempt_no is not none %}<span class="badge badge-round">{% if attempt_no == 0 %}初始{% else %}第 {{ attempt_no }} 轮{% endif %}</span>{% endif %}
-    <span class="event-operator">提交人 <b class="mono">{{ record.operator_id or '—' }}</b> · {{ record.operator_type|label }}</span>
-    {% if record.record_kind == 'discussion' %}<span class="badge badge-blue">{{ record.topic|topic_label }}</span>{% endif %}
+    {% if record.record_kind == 'activity' %}<strong>{{ record.activity_type|label }}</strong>{% elif record.record_kind == 'change' %}<strong>字段变更</strong>{% endif %}
+    {% if record.attempt_no is defined and record.attempt_no is not none %}<span class="badge badge-round">{% if record.attempt_no == 0 %}初始{% else %}第 {{ record.attempt_no }} 轮{% endif %}</span>{% endif %}
+    {% if record.operator_id %}<span class="event-operator">提交人 <b class="mono">{{ record.operator_id }}</b> · {{ record.operator_type|label }}</span>{% endif %}
+    {% if not record.discussion_topic and record.record_kind == 'discussion' %}<span class="badge badge-blue">{{ record.topic|topic_label }}</span>{% endif %}
     {% if record.result_status %}<span>→ <span class="badge badge-status-{{ record.result_status }}">{{ record.result_status|label }}</span></span>{% endif %}
     {% if record.amendment_count %}<span class="muted">已修订 {{ record.amendment_count }} 次</span>{% endif %}
   </div><time class="mono">{{ (record.amended_at or record.created_at)|localtime }}</time></div>
-  {% if compact and record.record_kind == 'activity' %}
-  <p class="record-summary">{{ record|activity_history_summary }}</p>
-  {% else %}
-  <div class="markdown-body">{{ record.content|markdown }}</div>
-  {% if record.code_reference %}<details class="collapsible event-details"><summary>代码引用</summary><div class="details-body">{{ render_references(record.code_reference) }}</div></details>{% endif %}
+  <div class="record-all-content">
+    {% if record.human_summary %}<div class="markdown-body record-summary">{{ record.human_summary|markdown }}</div>
+    {% elif compact and record.record_kind == 'activity' %}<p class="record-summary">{{ record|activity_history_summary }}</p>
+    {% else %}<div class="markdown-body">{{ record.content|markdown }}</div>{% if record.code_reference %}<details class="collapsible event-details"><summary>代码引用</summary><div class="details-body">{{ render_references(record.code_reference) }}</div></details>{% endif %}{% endif %}
+  </div>
+  {% if record.record_kind == 'discussion' or record.is_collaborative_submission %}
+  <div class="record-discussion-content"><div class="markdown-body">{{ record.content|markdown }}</div>{% if record.code_reference %}<details class="collapsible event-details"><summary>代码引用</summary><div class="details-body">{{ render_references(record.code_reference) }}</div></details>{% endif %}</div>
   {% endif %}
+  {% if record.in_history %}<p class="record-summary record-history-content">{{ record|action_summary }}</p>{% endif %}
 </article>
 {% endmacro %}
 {% macro decision_item(decision) %}
 <article class="decision-item">
-  <div class="event-head"><div><strong>{{ decision.decision_type|decision_label }}</strong><span class="badge badge-status-{{ decision.outcome }}">{{ decision.outcome|label }}</span>{% if decision.scope_key %}<span class="mono">{{ decision.scope_key }}</span>{% endif %}</div><time class="mono">{{ decision.created_at|localtime }}</time></div>
-  <p class="record-summary">{{ decision.content|brief }}</p>
+  <div class="event-head"><div><strong>{{ decision.decision_type|decision_label }}</strong><span class="badge badge-status-{{ decision.outcome }}">{{ decision.outcome|label }}</span>{% if decision.scope_key %}<span class="mono">{{ decision.scope_key|decision_scope_label }}</span>{% endif %}</div><time class="mono">{{ decision.created_at|localtime }}</time></div>
+  <div class="markdown-body record-summary">{{ (decision.human_summary or decision.content)|markdown }}</div>
 </article>
 {% endmacro %}
 {% macro render_json_value(value) %}
@@ -75,37 +80,18 @@
       <div class="markdown-body issue-summary">{{ issue.summary|markdown }}</div>
       {% if issue.expected_outcome %}<div class="outcome-box"><strong>处理到什么程度算完成</strong><div class="markdown-body">{{ issue.expected_outcome|markdown }}</div></div>{% endif %}
       {% if issue.local_terms %}<dl class="keybox local-terms"><dt>本项目术语</dt><dd><ul class="value-list">{% for term, meaning in issue.local_terms.items() %}<li><strong>{{ term }}</strong>：{{ meaning }}</li>{% endfor %}</ul></dd></dl>{% endif %}
-      {% if issue.technical_note %}<details class="collapsible"><summary>技术补充（需要时再看）</summary><div class="details-body markdown-body">{{ issue.technical_note|markdown }}</div></details>{% endif %}
+      <div data-live-region="evidence">{% if issue.technical_note or issue.evidence %}<details class="collapsible"><summary>技术补充（需要时再看）</summary><div class="details-body">{% if issue.technical_note %}<div class="markdown-body">{{ issue.technical_note|markdown }}</div>{% endif %}{% if issue.evidence %}<h3>关键证据</h3>{{ render_references(issue.evidence) }}{% endif %}</div></details>{% endif %}</div>
     </section>
 
-    <div data-live-region="evidence">{% if issue.evidence %}<section class="panel"><h2>关键证据</h2>{{ render_references(issue.evidence) }}</section>{% endif %}</div>
+
 
     {% if latest_design_submission %}
     <section class="panel design-brief-panel" data-live-region="design-brief">
       <div class="section-head"><div><h2>方案概要</h2><p class="section-sub">这里只说明改哪里、大概怎么改、有什么影响。</p></div><span class="badge badge-blue">设计</span></div>
-      <p class="record-summary">{{ (latest_design_submission.metadata.human_summary or latest_design_submission.content)|brief }}</p>
+      <div class="markdown-body record-summary">{{ (latest_design_submission.human_summary or latest_design_submission.metadata.human_summary or latest_design_submission.content)|markdown }}</div>
       <p class="muted">完整技术方案保留在下方“协作记录 → 讨论”中。</p>
     </section>
     {% endif %}
-
-    <div data-live-region="decisions">
-    {% if decisions %}
-    <section class="panel decision-panel">
-      <div class="section-head"><div><h2>当前有效结论</h2><p class="section-sub">这里只保留后续处理仍应遵守的结论。</p></div><span class="badge badge-blue">{{ decisions|length }} 条</span></div>
-      <div class="decision-list">
-      {% for decision in decisions[:3] %}{{ decision_item(decision) }}{% endfor %}
-      </div>
-      {% if decisions|length > 3 %}
-      <details class="collapsible decision-more">
-        <summary>查看全部 {{ decisions|length }} 条结论（另有 {{ decisions|length - 3 }} 条）</summary>
-        <div class="details-body decision-list">
-        {% for decision in decisions[3:] %}{{ decision_item(decision) }}{% endfor %}
-        </div>
-      </details>
-      {% endif %}
-    </section>
-    {% endif %}
-    </div>
 
     <details class="panel stage-plan-panel collapsible-panel" id="execution-plan" data-live-region="execution-plan">
       <summary><span><strong>执行计划</strong><small>复杂 Issue 按 Stage 串行开发与验收；简单 Issue 可以没有执行计划。</small></span>{% if active_stage_plan %}<span class="badge badge-blue">执行计划 {{ current_execution_stage.stage_no if current_execution_stage else active_stage_plan|length }} / {{ active_stage_plan|length }}</span>{% endif %}</summary>
@@ -183,11 +169,11 @@
     </div>
 
     <details class="panel record-panel collapsible-panel" data-live-region="collaboration-records" data-records-view="all" open>
-      <summary><span><strong>协作记录</strong><small>全部记录按最新优先汇总；用标签在讨论与处理历史之间筛选。</small></span></summary>
+      <summary><span><strong>协作记录</strong><small>全部看摘要，讨论看话题正文，处理历史看动作，有效结论看当前决定。</small></span></summary>
       <div class="collapsible-panel-body">
-      <div class="tabs" role="tablist"><button type="button" class="tab active" data-tab-target="all">全部 {{ all_records|length }}</button><button type="button" class="tab" data-tab-target="discussion">讨论 {{ discussion_records|length }}</button><button type="button" class="tab" data-tab-target="history">处理历史 {{ activities|length }}</button></div>
-      <div class="record-stream">{% for record in all_records %}{{ render_collaboration_record(record, record.record_kind == 'activity' and not record.is_collaborative_submission) }}{% else %}<div class="empty">暂无协作记录。</div>{% endfor %}</div>
-      <div class="record-foot"><span class="muted">系统提交记录不可覆盖；人工讨论会追加到队列。</span><button type="button" class="btn btn-soft" data-modal-open="issue-discussion-modal">＋ 追加讨论</button></div>
+      <div class="tabs" role="tablist"><button type="button" class="tab active" data-tab-target="all">全部 {{ all_records|length }}</button><button type="button" class="tab" data-tab-target="discussion">讨论 {{ discussion_records|length }}</button><button type="button" class="tab" data-tab-target="history">处理历史 {{ history_records|length }}</button><button type="button" class="tab" data-tab-target="decisions">有效结论 {{ decisions|length }}</button></div>
+      <div class="record-stream">{% for record in all_records %}{{ render_collaboration_record(record, record.record_kind == 'activity' and not record.is_collaborative_submission) }}{% endfor %}{% for decision in decisions %}<article class="event record-decision" data-in-decisions="1">{{ decision_item(decision) }}</article>{% endfor %}<div class="empty record-empty" hidden>暂无记录。</div></div>
+      <div class="record-foot"><span class="muted">AI 摘要供快速阅读；完整技术内容保留在讨论话题中。</span><button type="button" class="btn btn-soft" data-modal-open="issue-discussion-modal">＋ 追加讨论</button></div>
       </div>
     </details>
   </div>
@@ -367,7 +353,15 @@
   <div class="modal-card">
     <div class="modal-head"><div><h2 class="modal-title" id="issue-discussion-title">追加讨论</h2><div class="modal-sub mono">{{ issue.issue_key }}</div></div><button type="button" class="modal-close" data-modal-close aria-label="关闭">×</button></div>
     <div class="modal-body">
-      <form method="post" action="{{ url_for('issue_add_activity', issue_key=issue.issue_key) }}"><div class="field"><label>讨论主题</label><select name="topic">{% for value, name in discussion_topics %}<option value="{{ value }}">{{ name }}</option>{% endfor %}</select></div><div class="field"><label>内容</label><textarea name="content" required placeholder="直说问题、建议或待确认点；可使用列表和行内代码"></textarea></div><p class="form-note">支持轻量 Markdown。讨论不会混入处理历史；达成一致后由 Inspector 另行记录有效结论。</p><div class="modal-actions"><button type="button" class="btn" data-modal-close>取消</button><button type="submit" class="btn btn-primary">追加讨论</button></div></form>
+      <form method="post" action="{{ url_for('issue_add_activity', issue_key=issue.issue_key) }}">
+        <div class="field"><label>已有话题</label><select name="topic_id"><option value="">新建话题</option>{% for topic in issue_topics %}<option value="{{ topic.id }}">#{{ topic.id }} · {{ topic.category|topic_label }} · {{ topic.title }}</option>{% endfor %}</select></div>
+        <div class="field"><label>新话题标题（选择已有话题时无需填写）</label><input name="topic_title" maxlength="160" placeholder="例如：Stage 2 并发校验阻断"></div>
+        <div class="field"><label>新话题分类</label><select name="topic">{% for value, name in discussion_topics %}<option value="{{ value }}">{{ name }}</option>{% endfor %}</select></div>
+        <div class="field"><label>人类可读摘要（选填）</label><textarea name="human_summary" maxlength="600" rows="3" placeholder="先讲结论、影响和下一步，支持 Markdown"></textarea></div>
+        <div class="field"><label>讨论正文</label><textarea name="content" required placeholder="详细问题、建议、证据与待确认点，支持 Markdown"></textarea></div>
+        <p class="form-note">摘要在“全部”展示，正文在“讨论”展示；达成一致后由 Inspector 记录有效结论。</p>
+        <div class="modal-actions"><button type="button" class="btn" data-modal-close>取消</button><button type="submit" class="btn btn-primary">追加讨论</button></div>
+      </form>
     </div>
   </div>
 </div>

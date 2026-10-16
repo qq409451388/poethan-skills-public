@@ -99,11 +99,12 @@ ACTIVITY_TYPES = [
 ]
 DISCUSSION_TOPICS = [
     ("GENERAL", "一般讨论"), ("DESIGN", "方案讨论"),
-    ("IMPLEMENTATION", "实现讨论"), ("VERIFICATION", "验证讨论"),
+    ("IMPLEMENTATION", "实现问题"), ("VERIFICATION", "验证问题"),
+    ("BLOCKER", "阻断项"), ("REVIEW", "审核反馈"), ("SCOPE", "范围确认"),
 ]
 HISTORY_MILESTONE_TYPES = {
     "ISSUE_CREATED", "DESIGN_REQUESTED", "DESIGN_SUBMITTED", "REDESIGN_SUBMITTED",
-    "DESIGN_APPROVED", "DESIGN_REJECTED", "STAGE_PLAN_CREATED", "STAGE_SUBMITTED",
+    "DESIGN_APPROVED", "DESIGN_REJECTED", "STAGE_PLAN_CREATED", "STAGE_SCOPE_DECLARED", "STAGE_SUBMITTED",
     "STAGE_APPROVED", "STAGE_REJECTED", "STAGE_PLAN_SUPERSEDED",
     "IMPLEMENTATION_SUBMITTED", "REVIEW_APPROVED", "REVIEW_REJECTED",
     "VERIFICATION_PASSED", "VERIFICATION_FAILED", "INSPECTOR_CONFIRMATION_PROVIDED",
@@ -114,12 +115,14 @@ COLLABORATIVE_SUBMISSION_TYPES = {
 }
 TOPIC_LABELS = dict(DISCUSSION_TOPICS)
 DECISION_LABELS = {
+    "CLI_DESIGN_CONFIRMATION": "开发范围授权", "INSPECTOR_CONFIRMATION": "审核边界确认",
     "DESIGN_REVIEW": "设计结论", "STAGE_REVIEW": "阶段验收结论",
     "IMPLEMENTATION_REVIEW": "实现审核结论", "SCOPE_CONFIRMATION": "边界确认",
     "HUMAN_CONFIRMATION": "人工决定", "DISCUSSION_CONCLUSION": "讨论结论",
     "VERIFICATION": "验证结论",
 }
 LABELS = {
+    "BOUNDARY_CONFIRMED": "边界已确认",
     **dict(DIMENSIONS), **dict(SEVERITIES), **dict(BENEFITS), **dict(COSTS),
     **dict(CONFIDENCE), **dict(DISPOSITIONS),
     "PENDING": "待开始", "IN_PROGRESS": "进行中", "ON_HOLD": "已搁置", "BLOCKED": "受阻",
@@ -258,6 +261,8 @@ def activity_history_summary(activity: dict) -> str:
     }
     if activity_type in {"DESIGN_SUBMITTED", "REDESIGN_SUBMITTED"}:
         return metadata.get("human_summary") or "修改方案已提交，具体做法可在 AI 讨论中查看。"
+    if activity_type == "STAGE_SCOPE_DECLARED":
+        return f"第 {stage_no} 阶段已声明开发影响范围。" if stage_no else "当前阶段已声明开发影响范围。"
     if activity_type == "STAGE_SUBMITTED":
         return f"第 {stage_no} 阶段已提交，等待验收。" if stage_no else "当前阶段已提交，等待验收。"
     if activity_type == "STAGE_APPROVED":
@@ -267,6 +272,56 @@ def activity_history_summary(activity: dict) -> str:
     if activity_type == "STATUS_CHANGED":
         return f"问题状态已变更为“{label(activity.get('result_status'))}”。"
     return fixed.get(activity_type, label(activity_type))
+
+
+
+CHANGE_FIELD_LABELS = {
+    "title": "标题", "summary": "问题摘要", "expected_outcome": "完成标准", "technical_note": "技术补充",
+    "local_terms_json": "项目术语", "status": "状态", "current_attempt_no": "实现轮次", "severity": "严重度",
+    "dimension": "检查维度", "disposition": "处理安排", "difficulty": "难度", "assignment_json": "执行者",
+    "progress": "进度", "progress_reason": "进度依据", "objective": "目标", "acceptance_criteria": "验收标准",
+    "plan_status": "计划状态", "planned_change_scope_json": "修改范围", "change_reason": "修改原因",
+    "protected_behaviors_json": "保护项", "submitted_commit_sha": "提交版本", "diff_summary": "改动说明",
+    "baseline_status": "基线状态",
+}
+
+def issue_change_summary(change: dict) -> str:
+    values = change["changes"]
+    if change["action"] in {"STAGE_CREATED", "STAGE_DELETED"}:
+        verb = "创建" if change["action"] == "STAGE_CREATED" else "删除"
+        return f"{verb}执行计划 {values.get('plan_no')} 的 Stage {values.get('stage_no')}：{values.get('title')}"
+    field = values.get("field", "")
+    target = (f"计划 {values.get('plan_no')} / Stage {values.get('stage_no')} 的"
+              if change["entity_type"] == "stage" else "")
+    def display(value):
+        if value is None or value == "":
+            return "未设置"
+        if field == "progress":
+            return f"{value}%"
+        if field in {"status", "plan_status", "severity", "dimension", "disposition", "baseline_status"}:
+            return label(str(value))
+        return brief_text(str(value), 90)
+    return f"修改{target}{CHANGE_FIELD_LABELS.get(field, field)}：{display(values.get('before'))} → {display(values.get('after'))}"
+
+@app.template_filter("action_summary")
+def action_summary(record: dict) -> str:
+    if record.get("record_kind") == "change":
+        return record["human_summary"]
+    activity_type = record.get("activity_type")
+    fixed = {"DESIGN_SUBMITTED": "提交设计方案。", "REDESIGN_SUBMITTED": "提交重新设计方案。"}
+    return fixed.get(activity_type) or activity_history_summary({**record, "metadata": {k: v for k, v in (record.get("metadata") or {}).items() if k != "human_summary"}})
+
+@app.template_filter("decision_scope_label")
+def decision_scope_label(scope: str | None) -> str:
+    if not scope:
+        return ""
+    if match := re.fullmatch(r"(\d+):(\d+)", scope):
+        return f"执行计划 {match[1]} · Stage {match[2]}"
+    if match := re.match(r"stage(\d+):", scope):
+        return f"Stage {match[1]}"
+    if match := re.fullmatch(r"attempt:(\d+)", scope):
+        return f"第 {match[1]} 轮"
+    return scope
 
 
 @app.template_filter("json_pretty")
@@ -813,24 +868,43 @@ def issue_detail(issue_key: str):
         """SELECT * FROM issue_decision
            WHERE issue_id = ? AND effective = 1 ORDER BY created_at DESC, id DESC""", (issue["id"],)
     )]
+    topics = query_all("SELECT * FROM issue_discussion_topic WHERE issue_id=? ORDER BY id DESC", (issue["id"],))
+    topic_by_id = {topic["id"]: topic for topic in topics}
     discussions = query_all(
-        """SELECT * FROM issue_discussion
-           WHERE issue_id = ? ORDER BY created_at ASC, id ASC""", (issue["id"],)
+        "SELECT * FROM issue_discussion WHERE issue_id=? ORDER BY created_at ASC,id ASC", (issue["id"],)
     )
     for discussion in discussions:
         discussion["record_kind"] = "discussion"
-    history_activities = [
-        activity for activity in activities
-        if activity["activity_type"] in HISTORY_MILESTONE_TYPES
-    ]
+    for record in [*discussions, *activities]:
+        topic = topic_by_id.get(record.get("topic_id"))
+        record["discussion_topic"] = topic
+    history_activities = [activity for activity in activities if activity["activity_type"] in HISTORY_MILESTONE_TYPES]
     discussion_records = sorted(
-        [*discussions, *(activity for activity in history_activities
-                          if activity["activity_type"] in COLLABORATIVE_SUBMISSION_TYPES)],
+        [*discussions, *(activity for activity in activities if activity["is_collaborative_submission"])],
         key=record_sort_key, reverse=True,
     )
+    changes = query_all("SELECT * FROM issue_change WHERE issue_id=? ORDER BY id DESC", (issue["id"],))
+    for change in changes:
+        change["record_kind"] = "change"
+        change["changes"] = parse_json_field(change["changes_json"], {})
+        change["human_summary"] = issue_change_summary(change)
+    # 已迁入讨论的遗留活动不再重复展示。
+    migrated_ids = {record.get("source_activity_id") for record in discussions if record.get("source_activity_id")}
     all_records = sorted(
-        [*discussions, *history_activities], key=record_sort_key, reverse=True,
+        [*discussions, *(activity for activity in activities if activity["id"] not in migrated_ids), *changes],
+        key=record_sort_key, reverse=True,
     )
+    # 字段变化由 journal 精确记录；有对应 journal 时不再重复列出状态通知。
+    has_status_changes = any(change["changes"].get("field") == "status" and change["entity_type"] == "issue" for change in changes)
+    history_records = sorted(
+        [*changes, *(activity for activity in history_activities
+                    if activity["activity_type"] != "STATUS_CHANGED" or not has_status_changes
+                    or activity["created_at"] < min((change["created_at"] for change in changes), default=""))],
+        key=record_sort_key, reverse=True,
+    )
+    history_keys = {(record["record_kind"], record["id"]) for record in history_records}
+    for record in all_records:
+        record["in_history"] = (record["record_kind"], record["id"]) in history_keys
     grouped: OrderedDict[int, list[dict]] = OrderedDict()
     for activity in history_activities:
         grouped.setdefault(activity["attempt_no"], []).append(activity)
@@ -863,7 +937,7 @@ def issue_detail(issue_key: str):
     return render_template(
         "issue_detail.html", issue=issue, activities=history_activities, activity_groups=grouped,
         decisions=decisions, discussions=discussions, discussion_records=discussion_records,
-        all_records=all_records,
+        all_records=all_records, history_records=history_records, issue_topics=topics,
         latest_implementation=latest_implementation, latest_design_submission=latest_design_submission,
         verification_activities=verification_activities,
         latest_human_request=latest_human_request,
@@ -1084,11 +1158,21 @@ def issue_human_confirmation_resolve(issue_key: str):
 @app.route("/issues/<issue_key>/activities", methods=["POST"])
 def issue_add_activity(issue_key: str):
     try:
-        run_human_command(
-            "discussion", "add", issue_key,
-            "--topic", request.form.get("topic", "GENERAL"),
-            "--content", request.form.get("content", ""),
-        )
+        if not request.form.get("content", "").strip():
+            raise ValueError("讨论正文不能为空")
+        topic_id = request.form.get("topic_id", "").strip()
+        title = request.form.get("topic_title", "").strip()
+        if not topic_id:
+            if not title:
+                raise ValueError("请选择已有话题，或填写新话题标题")
+            result = run_human_command("discussion", "topic-create", issue_key,
+                                      "--category", request.form.get("topic", "GENERAL"), "--title", title)
+            topic_id = str(result["topic_id"])
+        args = ["discussion", "add", issue_key, "--topic-id", topic_id,
+                "--content", request.form.get("content", "")]
+        if summary := request.form.get("human_summary", "").strip():
+            args.extend(["--human-summary", summary])
+        run_human_command(*args)
         return redirect_back("issue_detail", issue_key=issue_key, msg="讨论内容已追加")
     except Exception as exc:  # noqa: BLE001
         return redirect_back("issue_detail", issue_key=issue_key, err=str(exc))

@@ -1219,11 +1219,12 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 "V020__routing_revision_and_assignment.sql",
                 "V021__routing_decoupled_from_projection.sql",
                 "V022__issue_progress.sql",
+                "V023__collaboration_topics_summaries_and_changes.sql",
             ])
             self.assertIsNotNone(upgraded["backup"])
             with sqlite3.connect(database) as conn:
                 conn.row_factory = sqlite3.Row
-                self.assertEqual(conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0], 22)
+                self.assertEqual(conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0], 23)
                 task = conn.execute("SELECT * FROM review_task WHERE id = 41").fetchone()
                 self.assertEqual((task["task_key"], task["task_type"], task["scope_fingerprint"]),
                                  ("RT-OLD", "REVIEW", "old-fingerprint"))
@@ -1319,6 +1320,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 "V020__routing_revision_and_assignment.sql",
                 "V021__routing_decoupled_from_projection.sql",
                 "V022__issue_progress.sql",
+                "V023__collaboration_topics_summaries_and_changes.sql",
             ])
             with sqlite3.connect(database) as conn:
                 conn.row_factory = sqlite3.Row
@@ -1376,6 +1378,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 "V020__routing_revision_and_assignment.sql",
                 "V021__routing_decoupled_from_projection.sql",
                 "V022__issue_progress.sql",
+                "V023__collaboration_topics_summaries_and_changes.sql",
             ])
             with closing(sqlite3.connect(database)) as conn, conn:
                 conn.row_factory = sqlite3.Row
@@ -2836,7 +2839,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 )
                 activity = client.post(
                     f"/issues/{issue_key}/activities",
-                    data={"topic": "VERIFICATION", "content": "回归项\n\n```python\nassert safe\n```"},
+                    data={"topic": "VERIFICATION", "topic_title": "回归项确认", "content": "回归项\n\n```python\nassert safe\n```"},
                     follow_redirects=False,
                 )
                 self.assertEqual(activity.status_code, 302)
@@ -3286,7 +3289,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 )
             recent = db("developer", "discussion-list", "--issue-key", "RI-DISCUSSION-BOUND")
             self.assertEqual(len(recent), 20)
-            self.assertEqual(set(recent[0]), {"id", "topic", "time", "summary"})
+            self.assertEqual(set(recent[0]), {"id", "topic", "topic_id", "time", "summary"})
             self.assertIn("讨论 204", recent[0]["summary"])
             self.assertNotIn("content", recent[0])
             older = db(
@@ -3328,7 +3331,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             self.assertNotIn("content", context["latest_activities"][0])
             self.assertEqual(len(context["latest_discussions"]), 8)
             self.assertEqual(
-                set(context["latest_discussions"][0]), {"id", "topic", "time", "summary"},
+                set(context["latest_discussions"][0]), {"id", "topic", "topic_id", "time", "summary"},
             )
             self.assertIn("讨论 204", context["latest_discussions"][0]["summary"])
 

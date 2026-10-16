@@ -52,7 +52,9 @@
         "activity-append",
         "activity-amend",
         "candidate-submit",
-        "candidate-list"
+        "candidate-list",
+        "discussion-topic-create",
+        "discussion-topic-list"
       ],
       "responsibilities": [
         "在设计状态只分析代码和提交具体方案，并结构化声明超出用户目标的变化",
@@ -137,7 +139,9 @@
         "candidate-update-status",
         "issue-set-progress",
         "issue-set-difficulty",
-        "issue-set-assignment"
+        "issue-set-assignment",
+        "discussion-topic-create",
+        "discussion-topic-list"
       ],
       "responsibilities": [
         "创建或复用 REVIEW/CONTINUOUS 任务",
@@ -228,7 +232,9 @@
         "candidate-list",
         "candidate-update-status",
         "issue-set-difficulty",
-        "issue-set-assignment"
+        "issue-set-assignment",
+        "discussion-topic-create",
+        "discussion-topic-list"
       ],
       "responsibilities": [
         "监督异常流程",

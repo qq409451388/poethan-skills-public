@@ -417,8 +417,8 @@ def supersede_active_stage_plan(
              AND plan_status = 'ACTIVE'""",
         (reason, row["id"], plan_no),
     )
-    conn.execute(
-        """INSERT INTO issue_activity(
+    insert_activity(
+        conn, args, """INSERT INTO issue_activity(
             issue_id, attempt_no, activity_type, operator_type, operator_id,
             content, result_status, metadata_json
         ) VALUES (?, ?, 'STAGE_PLAN_SUPERSEDED', ?, ?, ?, 'SUPERSEDED', ?)""",
@@ -697,8 +697,8 @@ def cancel_open_issues_for_closed_task(
                WHERE id = ?""",
             (issue["id"],),
         )
-        conn.execute(
-            """INSERT INTO issue_activity(
+        insert_activity(
+            conn, args, """INSERT INTO issue_activity(
                 issue_id, attempt_no, activity_type, operator_type, operator_id,
                 content, result_status, metadata_json
             ) VALUES (?, ?, 'STATUS_CHANGED', ?, ?, ?, 'CANCELLED', ?)""",
@@ -848,8 +848,8 @@ def issue_create(args: argparse.Namespace) -> None:
             ),
         )
         issue_id = conn.execute("SELECT id FROM review_issue WHERE issue_key = ?", (issue_key,)).fetchone()["id"]
-        activity_cursor = conn.execute(
-            """INSERT INTO issue_activity(
+        activity_cursor = insert_activity(
+            conn, args, """INSERT INTO issue_activity(
                 issue_id, attempt_no, activity_type, operator_type, operator_id, content
             ) VALUES (?, 0, 'ISSUE_CREATED', ?, ?, ?)""",
             (issue_id, {"inspector": "INSPECTOR_AGENT", "human": "HUMAN"}[args.agent], actor_id(args), payload["summary"]),
@@ -941,8 +941,8 @@ def issue_create_batch(args: argparse.Namespace) -> None:
                 ),
             )
             issue_id = conn.execute("SELECT id FROM review_issue WHERE issue_key = ?", (issue_key,)).fetchone()["id"]
-            activity_cursor = conn.execute(
-                """INSERT INTO issue_activity(issue_id, attempt_no, activity_type, operator_type, operator_id, content)
+            activity_cursor = insert_activity(
+                conn, args, """INSERT INTO issue_activity(issue_id, attempt_no, activity_type, operator_type, operator_id, content)
                    VALUES (?, 0, 'ISSUE_CREATED', ?, ?, ?)""",
                 (issue_id, operator_type(args.agent), actor_id(args), payload["summary"]),
             )
@@ -1463,8 +1463,8 @@ def apply_status_update(
            WHERE issue_key = ?""",
         (status, attempt_no, status, status, issue_key),
     )
-    activity_cursor = conn.execute(
-        """INSERT INTO issue_activity(
+    activity_cursor = insert_activity(
+        conn, args, """INSERT INTO issue_activity(
             issue_id, attempt_no, activity_type, operator_type, operator_id, content, result_status
         ) VALUES (?, ?, 'STATUS_CHANGED', ?, ?, ?, ?)""",
         (
@@ -1531,8 +1531,8 @@ def apply_design_transition(
         args.command, args.agent, row["status"],
         redesign_guidance_required=redesign_guidance_required(conn, row["id"], row["status"]),
     )
-    activity_cursor = conn.execute(
-        """INSERT INTO issue_activity(
+    activity_cursor = insert_activity(
+        conn, args, """INSERT INTO issue_activity(
             issue_id, attempt_no, activity_type, operator_type, operator_id,
             content, result_status, code_reference_json, metadata_json
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -1589,7 +1589,7 @@ def current_design_submission(
     conn: sqlite3.Connection, issue_id: int, design_activity_id: int,
 ) -> sqlite3.Row:
     submission = conn.execute(
-        """SELECT id, issue_id, activity_type, attempt_no, created_at, amended_at, metadata_json
+        """SELECT id, issue_id, activity_type, attempt_no, created_at, amended_at, metadata_json, human_summary
            FROM issue_activity WHERE id = ?""",
         (design_activity_id,),
     ).fetchone()
@@ -1820,7 +1820,7 @@ def design_preview(args: argparse.Namespace) -> None:
     print_json({
         "issue_key": args.issue_key,
         "user_goal": issue_content["summary"] or issue_content["description"],
-        "design_summary": metadata.get("human_summary", ""),
+        "design_summary": submission["human_summary"] or metadata.get("human_summary", ""),
         "scope_changes": [
             {**item, "confirmed": item["id"] in covered} for item in changes
         ],
@@ -1896,8 +1896,8 @@ def create_stage_plan(
                 item["objective"], item["acceptance_criteria"],
             ),
         )
-    conn.execute(
-        """INSERT INTO issue_activity(
+    insert_activity(
+        conn, args, """INSERT INTO issue_activity(
             issue_id, attempt_no, activity_type, operator_type, operator_id,
             content, result_status, metadata_json
         ) VALUES (?, ?, 'STAGE_PLAN_CREATED', ?, ?, ?, 'PLANNED', ?)""",
@@ -2321,10 +2321,10 @@ def issue_context_get(args: argparse.Namespace) -> None:
             (projection["issue_id"],),
         ).fetchall()
         discussions = conn.execute(
-            """SELECT id, topic, COALESCE(amended_at, created_at) AS time,
-                      CASE WHEN length(trim(content)) > 160
+            """SELECT id, topic, topic_id, COALESCE(amended_at, created_at) AS time,
+                      COALESCE(NULLIF(human_summary,''), CASE WHEN length(trim(content)) > 160
                         THEN substr(trim(replace(replace(replace(content,char(13),' '),char(10),' '),char(9),' ')),1,157) || '...'
-                        ELSE trim(replace(replace(replace(content,char(13),' '),char(10),' '),char(9),' ')) END AS summary
+                        ELSE trim(replace(replace(replace(content,char(13),' '),char(10),' '),char(9),' ')) END) AS summary
                FROM issue_discussion WHERE issue_id=?
                ORDER BY id DESC LIMIT ?""",
             (projection["issue_id"], DISCUSSION_CONTEXT_LIMIT),
@@ -2440,8 +2440,8 @@ def stage_prepare(args: argparse.Namespace) -> None:
             (dumps(change_scope), reason, dumps(protected_behaviors), stage["id"]),
         )
         constraint_summary = historical_constraint_summary(previous)
-        conn.execute(
-            """INSERT INTO issue_activity(
+        insert_activity(
+            conn, args, """INSERT INTO issue_activity(
                 issue_id, attempt_no, activity_type, operator_type, operator_id,
                 content, result_status, metadata_json
             ) VALUES (?, ?, 'STAGE_SCOPE_DECLARED', ?, ?, ?, 'IN_PROGRESS', ?)""",
@@ -2532,8 +2532,8 @@ def stage_submit(args: argparse.Namespace) -> None:
         activity_metadata = {**metadata, "plan_no": plan_no, "stage_no": args.stage_no,
                              "commit_sha": commit_sha, "diff_summary": diff_summary,
                              "test_evidence": test_evidence, "resolved_findings": resolved_findings}
-        activity_cursor = conn.execute(
-            """INSERT INTO issue_activity(
+        activity_cursor = insert_activity(
+            conn, args, """INSERT INTO issue_activity(
                 issue_id, attempt_no, activity_type, operator_type, operator_id,
                 content, result_status, code_reference_json, metadata_json
             ) VALUES (?, ?, 'STAGE_SUBMITTED', ?, ?, ?, 'PENDING_REVIEW', ?, ?)""",
@@ -2675,8 +2675,8 @@ def stage_review(args: argparse.Namespace) -> None:
             activity_metadata["baseline"] = baseline
         short_summary = decision_summary(args.summary, content, "stage-review 的 --summary")
         activity_metadata["decision_summary"] = short_summary
-        activity_cursor = conn.execute(
-            """INSERT INTO issue_activity(
+        activity_cursor = insert_activity(
+            conn, args, """INSERT INTO issue_activity(
                 issue_id, attempt_no, activity_type, operator_type, operator_id,
                 content, result_status, metadata_json
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -3022,8 +3022,8 @@ def human_escalate(args: argparse.Namespace) -> None:
             reason, question, options, evidence, unknown_facts,
             recommended_option, recommended_reason,
         )
-        conn.execute(
-            """INSERT INTO issue_activity(
+        insert_activity(
+            conn, args, """INSERT INTO issue_activity(
                 issue_id, attempt_no, activity_type, operator_type, operator_id,
                 content, result_status, code_reference_json, metadata_json
             ) VALUES (?, ?, 'HUMAN_CONFIRMATION_REQUESTED', ?, ?, ?,
@@ -3068,8 +3068,8 @@ def human_confirmation_resolve(args: argparse.Namespace) -> None:
                 f"只有 HUMAN_CONFIRMATION_REQUIRED 可以提交人工决定，当前为 {row['status']}"
             )
         metadata = {"decision": decision, "next_status": next_status}
-        activity_cursor = conn.execute(
-            """INSERT INTO issue_activity(
+        activity_cursor = insert_activity(
+            conn, args, """INSERT INTO issue_activity(
                 issue_id, attempt_no, activity_type, operator_type, operator_id,
                 content, result_status, metadata_json
             ) VALUES (?, ?, 'HUMAN_CONFIRMATION_PROVIDED', ?, ?, ?, ?, ?)""",
@@ -3233,8 +3233,8 @@ def implementation_submit(args: argparse.Namespace) -> None:
             has_active_plan=plan_no is not None, active_plan_complete=active_plan_complete,
         )
         next_attempt = row["current_attempt_no"] + 1
-        activity_cursor = conn.execute(
-            """INSERT INTO issue_activity(
+        activity_cursor = insert_activity(
+            conn, args, """INSERT INTO issue_activity(
                 issue_id, attempt_no, activity_type, operator_type, operator_id,
                 content, code_reference_json, metadata_json
             ) VALUES (?, ?, 'IMPLEMENTATION_SUBMITTED', ?, ?, ?, ?, ?)""",
@@ -3298,20 +3298,114 @@ def record_issue_decision(
         )
     return decision_id
 
+
+TOPIC_CATEGORIES = {"GENERAL", "DESIGN", "IMPLEMENTATION", "BLOCKER", "REVIEW", "VERIFICATION", "SCOPE"}
+COLLABORATION_SUBMISSIONS = {"DESIGN_SUBMITTED", "REDESIGN_SUBMITTED", "STAGE_SUBMITTED", "IMPLEMENTATION_SUBMITTED"}
+
+def supplied_human_summary(args: argparse.Namespace) -> str | None:
+    summary = getattr(args, "human_summary", None)
+    if summary is None and getattr(args, "command", "") in {
+        "design-submit", "stage-review", "activity-append", "activity-amend", "discussion-append", "discussion-amend",
+        "implementation-submit", "stage-submit",
+    }:
+        summary = getattr(args, "summary", None)
+    if summary is None:
+        return None
+    text = summary.strip()
+    if not text or len(text) > 600 or len(text.splitlines()) > 12:
+        raise ValueError("human-summary 须为非空人类可读摘要，最多 600 字、12 行，可用 Markdown")
+    return text
+
+def resolve_discussion_topic(conn: sqlite3.Connection, args: argparse.Namespace, issue_id: int,
+                             *, required: bool = False) -> int | None:
+    topic_id = getattr(args, "topic_id", None)
+    if topic_id is None:
+        if required and args.agent != "human":
+            raise ValueError("AI 讨论必须先创建话题，并通过 --topic-id 指定归属")
+        return None
+    row = conn.execute("SELECT id FROM issue_discussion_topic WHERE id=? AND issue_id=?", (topic_id, issue_id)).fetchone()
+    if not row:
+        raise ValueError("topic-id 不存在或不属于当前 Issue")
+    return int(row["id"])
+
+def insert_activity(conn: sqlite3.Connection, args: argparse.Namespace, sql: str,
+                    parameters: tuple) -> sqlite3.Cursor:
+    # 每条正式记录均有独立摘要列；自动动作不冒充 AI 撰写的摘要。
+    summary = supplied_human_summary(args)
+    cursor = conn.execute(sql, parameters)
+    if summary is not None:
+        conn.execute("UPDATE issue_activity SET human_summary=? WHERE id=?", (summary, cursor.lastrowid))
+    row = conn.execute("SELECT * FROM issue_activity WHERE id=?", (cursor.lastrowid,)).fetchone()
+    if row["activity_type"] in COLLABORATION_SUBMISSIONS:
+        topic_id = resolve_discussion_topic(conn, args, row["issue_id"])
+        if topic_id is None:
+            metadata = loads(row["metadata_json"], {})
+            category = "DESIGN" if row["activity_type"] in {"DESIGN_SUBMITTED", "REDESIGN_SUBMITTED"} else "IMPLEMENTATION"
+            title = {"DESIGN_SUBMITTED": "设计方案", "REDESIGN_SUBMITTED": "重新设计", "STAGE_SUBMITTED": "阶段实现", "IMPLEMENTATION_SUBMITTED": "实现交付"}[row["activity_type"]]
+            stage_no = metadata.get("stage_no")
+            title = f"第 {row['attempt_no']} 轮 · " + (f"Stage {stage_no} · " if stage_no is not None else "") + title
+            topic_id = conn.execute(
+                """INSERT INTO issue_discussion_topic(issue_id,category,title,attempt_no,plan_no,stage_no,created_by)
+                   VALUES(?,?,?,?,?,?,?)""",
+                (row["issue_id"], category, title, row["attempt_no"], metadata.get("plan_no"), stage_no, actor_id(args)),
+            ).lastrowid
+        conn.execute("UPDATE issue_activity SET topic_id=? WHERE id=?", (topic_id, row["id"]))
+    return cursor
+
+def discussion_topic_create(args: argparse.Namespace) -> None:
+    require_agent(args.agent)
+    require_choice(args.category, TOPIC_CATEGORIES, "category")
+    title = args.title.strip()
+    if not title or len(title) > 160:
+        raise ValueError("话题标题须为 1–160 字")
+    with connect() as conn:
+        issue = issue_row(conn, args.issue_key)
+        require_issue_action("discussion-append", args.agent, issue["status"])
+        if args.plan_no is not None and not conn.execute(
+            "SELECT 1 FROM issue_stage WHERE issue_id=? AND plan_no=?", (issue["id"], args.plan_no),
+        ).fetchone():
+            raise ValueError("plan-no 不属于当前 Issue")
+        if args.stage_no is not None:
+            if args.plan_no is None or not conn.execute(
+                "SELECT 1 FROM issue_stage WHERE issue_id=? AND plan_no=? AND stage_no=?",
+                (issue["id"], args.plan_no, args.stage_no),
+            ).fetchone():
+                raise ValueError("stage-no 必须关联当前 Issue 下实际存在的 plan-no / stage-no")
+        topic_id = conn.execute(
+            """INSERT INTO issue_discussion_topic(issue_id,category,title,attempt_no,plan_no,stage_no,created_by)
+               VALUES(?,?,?,?,?,?,?)""",
+            (issue["id"], args.category, title, issue["current_attempt_no"], args.plan_no, args.stage_no, actor_id(args)),
+        ).lastrowid
+        audit(conn, actor_id(args), "discussion.topic-create", "review_issue", args.issue_key, True)
+    print_json({"topic_id": topic_id, "issue_key": args.issue_key, "category": args.category, "title": title})
+
+def discussion_topic_list(args: argparse.Namespace) -> None:
+    require_agent(args.agent)
+    with connect() as conn:
+        issue = issue_row(conn, args.issue_key)
+        rows = conn.execute("SELECT * FROM issue_discussion_topic WHERE issue_id=? ORDER BY id DESC", (issue["id"],)).fetchall()
+    print_json([dict(row) for row in rows])
+
 def discussion_append(args: argparse.Namespace) -> None:
     require_agent(args.agent)
     require_choice(args.topic, DISCUSSION_TOPICS, "topic")
+    human_summary = supplied_human_summary(args)
     content = (args.content or "").strip()
     if not content:
         raise ValueError("discussion-append 的 --content 不能为空")
     with connect() as conn:
         issue = issue_row(conn, args.issue_key)
         require_issue_action("discussion-append", args.agent, issue["status"])
+        topic_id = resolve_discussion_topic(conn, args, issue["id"])
+        legacy_topic = args.topic
+        if topic_id is not None:
+            category = conn.execute("SELECT category FROM issue_discussion_topic WHERE id=?", (topic_id,)).fetchone()["category"]
+            legacy_topic = category if category in DISCUSSION_TOPICS else "GENERAL"
         cursor = conn.execute(
             """INSERT INTO issue_discussion(
-                   issue_id, topic, operator_type, operator_id, content
-               ) VALUES (?, ?, ?, ?, ?)""",
-            (issue["id"], args.topic, operator_type(args.agent), actor_id(args), content),
+                   issue_id, topic, operator_type, operator_id, content, human_summary, topic_id
+               ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (issue["id"], legacy_topic, operator_type(args.agent), actor_id(args), content, human_summary, topic_id),
         )
         conn.execute(
             "UPDATE review_issue SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",
@@ -3325,6 +3419,7 @@ def discussion_append(args: argparse.Namespace) -> None:
 
 def discussion_amend(args: argparse.Namespace) -> None:
     require_agent(args.agent)
+    human_summary = supplied_human_summary(args)
     content = (args.content or "").strip()
     if not content:
         raise ValueError("discussion-amend 的 --content 不能为空")
@@ -3339,7 +3434,7 @@ def discussion_amend(args: argparse.Namespace) -> None:
             raise KeyError(f"讨论不存在或不属于问题 {args.issue_key}: {args.discussion_id}")
         if row["operator_type"] != operator_type(args.agent) or row["operator_id"] != actor_id(args):
             raise PermissionError("只能修订当前逻辑身份自己的讨论消息")
-        if row["content"] == content:
+        if row["content"] == content and row["human_summary"] == human_summary:
             audit(
                 conn, actor_id(args), "discussion.amend", "issue_discussion", str(args.discussion_id), True,
                 dumps({"issue_key": args.issue_key, "unchanged": True}),
@@ -3350,14 +3445,14 @@ def discussion_amend(args: argparse.Namespace) -> None:
         revision_no = int(row["amendment_count"]) + 1
         conn.execute(
             """INSERT INTO issue_discussion_revision(
-                   discussion_id, revision_no, previous_content, replacement_content, reason, amended_by
-               ) VALUES (?, ?, ?, ?, ?, ?)""",
-            (args.discussion_id, revision_no, row["content"], content, args.reason, actor_id(args)),
+                   discussion_id, revision_no, previous_content, replacement_content, reason, amended_by, previous_summary, replacement_summary
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (args.discussion_id, revision_no, row["content"], content, args.reason, actor_id(args), row["human_summary"], human_summary),
         )
         conn.execute(
             """UPDATE issue_discussion
-               SET content = ?, amended_at = CURRENT_TIMESTAMP, amendment_count = ? WHERE id = ?""",
-            (content, revision_no, args.discussion_id),
+               SET content = ?, human_summary = ?, amended_at = CURRENT_TIMESTAMP, amendment_count = ? WHERE id = ?""",
+            (content, human_summary, revision_no, args.discussion_id),
         )
         conn.execute(
             "UPDATE review_issue SET updated_at = CURRENT_TIMESTAMP WHERE id = ?", (row["issue_id"],),
@@ -3372,19 +3467,22 @@ def discussion_list(args: argparse.Namespace) -> None:
         raise ValueError("limit 必须在 1 到 100 之间")
     if args.cursor is not None and args.cursor < 1:
         raise ValueError("cursor 必须是正整数 discussion id")
-    sql = """SELECT d.id, d.topic,
+    sql = """SELECT d.id, d.topic, d.topic_id,
                     COALESCE(d.amended_at, d.created_at) AS time,
-                    CASE
+                    COALESCE(NULLIF(d.human_summary,''), CASE
                       WHEN length(trim(d.content)) > 160
                         THEN substr(trim(replace(replace(replace(d.content, char(13), ' '), char(10), ' '), char(9), ' ')), 1, 157) || '...'
                       ELSE trim(replace(replace(replace(d.content, char(13), ' '), char(10), ' '), char(9), ' '))
-                    END AS summary
+                    END) AS summary
              FROM issue_discussion d JOIN review_issue i ON i.id = d.issue_id
              WHERE i.issue_key = ?"""
     params: list[Any] = [args.issue_key]
     if args.topic:
         sql += " AND d.topic = ?"
         params.append(args.topic)
+    if getattr(args, "topic_id", None):
+        sql += " AND d.topic_id = ?"
+        params.append(args.topic_id)
     if args.since:
         sql += " AND COALESCE(d.amended_at, d.created_at) >= ?"
         params.append(normalize_since(args.since))
@@ -3493,8 +3591,8 @@ def fast_review_record(args: argparse.Namespace) -> None:
         issue = issue_row(conn, args.issue_key)
         evidence_activity_id = None
         if evidence:
-            evidence_cursor = conn.execute(
-                """INSERT INTO issue_activity(
+            evidence_cursor = insert_activity(
+                conn, args, """INSERT INTO issue_activity(
                      issue_id,attempt_no,activity_type,operator_type,operator_id,
                      content,result_status,code_reference_json,metadata_json
                    ) VALUES(?,?,'VERIFICATION_EVIDENCE_ADDED','INSPECTOR_AGENT',?,?,?, '[]',?)""",
@@ -3504,8 +3602,8 @@ def fast_review_record(args: argparse.Namespace) -> None:
                 ),
             )
             evidence_activity_id = int(evidence_cursor.lastrowid)
-        conclusion_cursor = conn.execute(
-            """INSERT INTO issue_activity(
+        conclusion_cursor = insert_activity(
+            conn, args, """INSERT INTO issue_activity(
                  issue_id,attempt_no,activity_type,operator_type,operator_id,
                  content,result_status,code_reference_json,metadata_json
                ) VALUES(?, ?, ?, 'INSPECTOR_AGENT', ?, ?, ?, '[]', ?)""",
@@ -3559,8 +3657,8 @@ def activity_append(args: argparse.Namespace) -> None:
         if attempt_no > row["current_attempt_no"]:
             raise ValueError("attempt_no 不能大于当前尝试次数")
 
-        activity_cursor = conn.execute(
-            """INSERT INTO issue_activity(
+        activity_cursor = insert_activity(
+            conn, args, """INSERT INTO issue_activity(
                 issue_id, attempt_no, activity_type, operator_type, operator_id,
                 content, result_status, code_reference_json, metadata_json
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -3596,6 +3694,7 @@ def activity_amend(args: argparse.Namespace) -> None:
     require_agent(args.agent)
     if args.agent not in {"inspector", "developer"}:
         raise PermissionError("只有 inspector 或 developer 可以修订自己的活动文案")
+    human_summary = supplied_human_summary(args)
     content = (args.content or "").strip()
     if not content:
         raise ValueError("activity-amend 的 --content 不能为空")
@@ -3624,7 +3723,7 @@ def activity_amend(args: argparse.Namespace) -> None:
             raise RuntimeError("实现提交已被审核或工作流已继续，不能 amend；请提交新 attempt")
 
         previous = row["content"]
-        if previous == content:
+        if previous == content and row["human_summary"] == human_summary:
             audit(
                 conn, actor_id(args), "activity.amend", "issue_activity", str(args.activity_id), True,
                 dumps({"issue_key": args.issue_key, "unchanged": True}),
@@ -3639,15 +3738,15 @@ def activity_amend(args: argparse.Namespace) -> None:
         revision_no = int(row["amendment_count"]) + 1
         conn.execute(
             """INSERT INTO issue_activity_revision(
-                   activity_id, revision_no, previous_content, replacement_content, reason, amended_by
-               ) VALUES (?, ?, ?, ?, ?, ?)""",
-            (args.activity_id, revision_no, previous, content, args.reason, actor_id(args)),
+                   activity_id, revision_no, previous_content, replacement_content, reason, amended_by, previous_summary, replacement_summary
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (args.activity_id, revision_no, previous, content, args.reason, actor_id(args), row["human_summary"], human_summary),
         )
         conn.execute(
             """UPDATE issue_activity
-               SET content = ?, amended_at = CURRENT_TIMESTAMP, amendment_count = ?
+               SET content = ?, human_summary = ?, amended_at = CURRENT_TIMESTAMP, amendment_count = ?
                WHERE id = ?""",
-            (content, revision_no, args.activity_id),
+            (content, human_summary, revision_no, args.activity_id),
         )
 
         # Stage 表保存当前提交/验收文案的投影。修订旧 review round 时不能覆盖新结论。
@@ -4393,6 +4492,24 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--status", required=True, choices=["UNDER_REVIEW", "ACCEPTED", "REJECTED"])
     p.add_argument("--content")
     p.set_defaults(func=candidate_update_status)
+
+    p = sub.add_parser("discussion-topic-create")
+    p.add_argument("--issue-key", required=True)
+    p.add_argument("--category", choices=sorted(TOPIC_CATEGORIES), required=True)
+    p.add_argument("--title", required=True)
+    p.add_argument("--plan-no", type=int)
+    p.add_argument("--stage-no", type=int)
+    p.set_defaults(func=discussion_topic_create)
+
+    p = sub.add_parser("discussion-topic-list")
+    p.add_argument("--issue-key", required=True)
+    p.set_defaults(func=discussion_topic_list)
+
+    for name, command_parser in sub.choices.items():
+        if "--content" in command_parser._option_string_actions:
+            command_parser.add_argument("--human-summary", help="AI 撰写的独立人类摘要，最多 600 字、12 行；可用 Markdown，不截取正文")
+        if name in {"discussion-append", "discussion-list", "design-submit", "implementation-submit", "stage-submit"}:
+            command_parser.add_argument("--topic-id", type=int, help="当前 Issue 下的讨论话题 ID")
 
     return parser
 

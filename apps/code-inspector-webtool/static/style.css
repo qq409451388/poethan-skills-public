@@ -714,3 +714,16 @@ button.queue-pill { font: inherit; cursor: pointer; }
   .is-event-active .issue-ranking-row, .is-event-active .issue-progress-track, .is-event-active .issue-progress-track::after, .is-event-active .issue-progress-label strong, .workflow-edge.is-flowing, .issue-progress.is-damaged .issue-progress-track { animation: none; }
   .is-event-active .issue-progress-track::after, .progress-particle-layer, .progress-damage-trail, .stage-glass-overlay { display: none; }
 }
+
+/* 协作记录：摘要、技术正文、动作和有效结论分别呈现。 */
+.record-discussion-content, .record-history-content { display: none; }
+.record-panel[data-records-view="all"] .event:not([data-in-all]),
+.record-panel[data-records-view="decisions"] .event:not([data-in-decisions]) { display: none; }
+.record-panel[data-records-view="discussion"] .record-all-content,
+.record-panel[data-records-view="history"] .record-all-content { display: none; }
+.record-panel[data-records-view="discussion"] .record-discussion-content { display: block; }
+.record-panel[data-records-view="history"] .record-history-content { display: block; }
+.record-topic { font-weight: 600; color: var(--text); }
+
+.record-topic-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; margin-bottom: 8px; padding-bottom: 7px; border-bottom: 1px solid var(--border); font-size: 12px; line-height: 1.6; }
+.record-topic-head .record-topic { min-width: 0; overflow-wrap: anywhere; }

@@ -64,6 +64,8 @@ ALLOWED_ACTIVITY_BY_AGENT = {
 
 ACTION_ROLES = {
     "discussion-append": {"inspector", "developer", "human"},
+    "discussion-topic-create": {"inspector", "developer", "human"},
+    "discussion-topic-list": {"inspector", "developer", "human"},
     "activity-append": set(ALLOWED_ACTIVITY_BY_AGENT),
     "design-request": {"inspector", "human"},
     "design-submit": {"developer", "human"},

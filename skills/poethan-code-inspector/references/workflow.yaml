@@ -11,7 +11,7 @@ issue_content:
 
 collaboration_records:
   discussion:
-    commands: [discussion-append, discussion-list, discussion-amend]
+    commands: [discussion-topic-create, discussion-topic-list, discussion-append, discussion-list, discussion-amend]
     purpose: 保存尚未定论的方案、实现和验证交流；不进入默认处理历史。
     correction: 原作者必须 amend 原消息，不追加“更正”或“以此为准”。
     ui_projection:
@@ -277,7 +277,7 @@ design_workflow:
       满足方向、边界、验收且风险可控时，Inspector 必须允许 Developer 自主选择的具体实现通过；
       SHOULD/NIT 级别的实现偏好差异不构成驳回理由。
   guidance:
-    discussion_command: discussion-append --topic DESIGN
+    discussion_command: discussion-append --topic-id <方案话题ID> --human-summary <人类摘要>
     roles: [inspector, developer, human]
     status_effect: none
   coding_prohibited_in: [DESIGN_REQUIRED, DESIGN_PENDING_REVIEW, REDESIGN_REQUIRED]

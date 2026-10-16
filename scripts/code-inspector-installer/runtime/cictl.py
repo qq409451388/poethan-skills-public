@@ -1506,6 +1506,26 @@ COMMANDS: list[Command] = [
             transform=lambda payload, ctx: {"kind": "task-status"}),
 ]
 
+# 面向人的摘要与技术正文分开提交。保留底层旧命令的兼容读取。
+COMMANDS.extend([
+    Command("discussion", "topic-create", "discussion-topic-create", "创建具体讨论话题",
+            positionals=[_p("issue", legacy="issue-key")],
+            options=[_o("category", required=True, choices=tuple(sorted(review_db.TOPIC_CATEGORIES))),
+                     _o("title", required=True), _o("plan-no", kind="int"), _o("stage-no", kind="int")]),
+    Command("discussion", "topics", "discussion-topic-list", "列出 Issue 的讨论话题",
+            positionals=[_p("issue", legacy="issue-key")]),
+])
+SUMMARY_COMMANDS = {
+    "discussion-append", "discussion-amend", "activity-append", "activity-amend",
+    "design-request", "design-submit", "design-review", "stage-submit", "stage-review",
+    "implementation-submit", "fast-review-record",
+}
+for _command in COMMANDS:
+    if _command.legacy in SUMMARY_COMMANDS:
+        _command.options.append(_o("human-summary", help="面向初中级开发的独立 Markdown 摘要；AI 写入必填"))
+    if _command.legacy in {"discussion-append", "discussion-list", "design-submit", "stage-submit", "implementation-submit"}:
+        _command.options.append(_o("topic-id", kind="int", help="当前 Issue 下的具体讨论话题"))
+
 REGISTRY: dict[tuple[str, str], Command] = {(cmd.domain, cmd.action): cmd for cmd in COMMANDS}
 DOMAIN_ORDER: list[str] = []
 for _cmd in COMMANDS:
@@ -2021,6 +2041,12 @@ def main(argv: list[str] | None = None, trusted_operator_id: str | None = None) 
         errors.extend(auth_errors)
         return fail(errors)
 
+    if agent != "human" and command.legacy in SUMMARY_COMMANDS:
+        summary = values.get("human-summary") or values.get("summary")
+        if not summary:
+            errors.add("human-summary", "SUMMARY_REQUIRED", "AI 写入必须提供独立的人类可读摘要 --human-summary")
+    if agent != "human" and command.legacy == "discussion-append" and not values.get("topic-id"):
+        errors.add("topic-id", "TOPIC_REQUIRED", "先创建或选择话题，再通过 --topic-id 归属讨论")
     ctx = Context(command, values, payload, agent, operator_id)
 
     # stage review-template：只读生成动态模板

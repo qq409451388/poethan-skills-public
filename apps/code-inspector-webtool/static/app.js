@@ -469,10 +469,11 @@ document.querySelectorAll('form[method="post" i]').forEach((form) => {
   function recordInView(record, view) {
     if (view === 'discussion') return record.hasAttribute('data-in-discussion');
     if (view === 'history') return record.hasAttribute('data-in-history');
-    return true;
+    if (view === 'decisions') return record.hasAttribute('data-in-decisions');
+    return record.hasAttribute('data-in-all');
   }
 
-  // 三个标签共用同一份记录 DOM：切换视图只改 data-records-view，由 CSS 过滤，
+  // 四个标签共用同一份记录 DOM：切换视图只改 data-records-view，由 CSS 过滤，
   // 因此预览条数必须按"当前视图里可见的记录"重算，否则筛选后可能一条都看不到。
   function applyRecordView(panel) {
     const view = panel.dataset.recordsView || 'all';
@@ -480,6 +481,8 @@ document.querySelectorAll('form[method="post" i]').forEach((form) => {
     if (!stream) return;
     const records = Array.from(stream.querySelectorAll('.event'));
     const matching = records.filter((record) => recordInView(record, view));
+    const empty = stream.querySelector('.record-empty');
+    if (empty) empty.hidden = matching.length > 0;
     const expanded = panel.classList.contains('records-expanded');
     const expander = stream.querySelector(':scope > .record-expander');
     if (matching.length <= RECORD_PREVIEW_LIMIT) {

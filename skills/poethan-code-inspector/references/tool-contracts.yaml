@@ -418,7 +418,8 @@ commands:
   discussion-append:
     roles: [inspector, developer, human]
     required: [--issue-key, --content]
-    optional: [--topic]
+    optional: [--topic, --topic-id, --human-summary]
+    ai_required: [--topic-id, --human-summary]
     defaults: {topic: GENERAL}
     topic_values: [GENERAL, DESIGN, IMPLEMENTATION, VERIFICATION]
     purpose: 追加尚未定论的协作消息，不写入处理历史。
@@ -431,10 +432,10 @@ commands:
   discussion-list:
     roles: [inspector, developer, human]
     required: [--issue-key]
-    optional: [--topic, --since, --cursor, --limit]
+    optional: [--topic, --topic-id, --since, --cursor, --limit]
     defaults: {limit: 20, order: newest-first}
     constraints: {limit: 1..100, cursor: 读取 id 小于 cursor 的更早讨论}
-    returns: [id, time, topic, summary]
+    returns: [id, time, topic, topic_id, summary]
     excludes: [content, revision history, operator detail]
   discussion-get:
     roles: [inspector, developer, human]
@@ -503,3 +504,11 @@ activity_types:
   stage: [STAGE_PLAN_CREATED, STAGE_SCOPE_DECLARED, STAGE_SUBMITTED, STAGE_APPROVED, STAGE_REJECTED, STAGE_PLAN_SUPERSEDED]
   human_confirmation: [HUMAN_CONFIRMATION_REQUESTED, HUMAN_CONFIRMATION_PROVIDED]
   legacy_compatible: [REVIEW_APPROVED, REVIEW_REJECTED, REDESIGN_SUBMITTED]
+
+# Human 摘要与 Issue 内具体话题是独立字段，不复用技术正文。
+collaboration_records:
+  human_summary: AI 内容写入与修订必须主动提供 --human-summary；最多 600 字、12 行，支持 Markdown，面向初中级开发说明结论、影响、验证和下一步。已有 --summary 可提供短摘要。旧数据缺失时兼容旧展示。
+  topic_create: discussion topic-create <issue> --category <GENERAL|DESIGN|IMPLEMENTATION|BLOCKER|REVIEW|VERIFICATION|SCOPE> --title <具体事项> [--plan-no N --stage-no N]
+  topic_list: discussion topics <issue>
+  relation: issue_discussion_topic.issue_id 关联 Issue；issue_discussion.topic_id 与正式提交 issue_activity.topic_id 关联具体话题，禁止跨 Issue。
+  views: 全部展示摘要；讨论展示带话题分类及标题的技术正文；处理历史只展示动作及字段变化；有效结论展示当前生效决定。
