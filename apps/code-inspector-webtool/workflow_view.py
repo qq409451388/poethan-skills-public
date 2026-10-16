@@ -205,7 +205,35 @@ def workflow_graph(issue, activities, stages, current_execution_stage=None, disc
     for edge in graph["edges"]:
         edge["visited"] = edge["visited"] or f"{edge['source']}|{edge['target']}" in recorded_forward_edges
 
+    configure_flow_mode(graph, stages, trail)
+    result["flow_mode_label"] = "分阶段流程：创建计划 → 启动首阶段 → 逐阶段验收" if graph["staged"] else "直接开发流程：开发修复 → 提交整体实现 → 最终审核"
     return result
+
+
+def configure_flow_mode(graph, stages, trail):
+    """显示 Issue 实际采用的流程；底层完整节点保留历史事实与路径索引。"""
+    staged = any(stage.get("plan_status", "ACTIVE") == "ACTIVE" for stage in stages)
+    graph["staged"] = staged
+    hidden = {"IN_PROGRESS"} if staged else {
+        "STAGE_PLAN_CREATED", "STAGE_SCOPE_DECLARED", "STAGE_IN_PROGRESS",
+        "STAGE_SUBMITTED", "STAGE_APPROVED", "STAGE_REJECTED"}
+    graph["display_nodes"] = [node for node in graph["nodes"] if node["key"] not in hidden]
+    graph["display_edges"] = [dict(edge) for edge in graph["edges"]
+                              if edge["source"] not in hidden and edge["target"] not in hidden]
+    if staged:
+        plan = next(node for node in graph["nodes"] if node["key"] == "STAGE_PLAN_CREATED")
+        graph["display_edges"].append({
+            "source": "DESIGN_APPROVED", "target": "STAGE_PLAN_CREATED",
+            "path": "M1220,146 H1340 V365 H440 V448",
+            "label": "方案通过 → 创建计划并启动 Stage 1", "label_x": 900, "label_y": 356,
+            "visited": plan["visited"], "cross_layer": True})
+        for source, x, bottom in [("REVIEW_REJECTED", 195, 1200), ("VERIFICATION_FAILED", 505, 1220)]:
+            graph["display_edges"].append({"source": source, "target": "STAGE_IN_PROGRESS",
+                "path": f"M{x},1150 V{bottom} H55 V550 H685 V574",
+                "label": "返回阶段开发", "label_x": 350, "label_y": bottom-9,
+                "visited": False, "cross_layer": True})
+    graph["hover_paths"] = hover_paths({"nodes": graph["display_nodes"], "edges": graph["display_edges"]}, trail)
+    graph["layers"][1]["title"] = "分阶段开发与验收" if staged else "直接开发（无 Stage Plan）"
 
 
 # 主视图按人阅读的顺序展示；完成标记仍只消费原有事实，不由位置补齐历史。
@@ -434,6 +462,8 @@ def hover_paths(graph, trail):
                 ("STAGE_APPROVED", "STAGE_IN_PROGRESS"),
                 ("REVIEW_REJECTED", "IN_PROGRESS"),
                 ("VERIFICATION_FAILED", "IN_PROGRESS"),
+                ("REVIEW_REJECTED", "STAGE_IN_PROGRESS"),
+                ("VERIFICATION_FAILED", "STAGE_IN_PROGRESS"),
             }:
                 continue
             candidates.append(edge)
