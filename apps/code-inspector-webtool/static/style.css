@@ -801,3 +801,14 @@ button.queue-pill { font: inherit; cursor: pointer; }
 .workflow-map-node.is-current rect { fill: #edf3ff; stroke: #7395f0; stroke-width: 2; }
 .workflow-map-node.is-current text { fill: #315db6; }
 .workflow-map-node.is-current circle { fill: #3969e7; }
+
+.workflow-map-node { cursor: pointer; outline: none; }
+.workflow-connected-map.is-path-focused .workflow-map-node,
+.workflow-connected-map.is-path-focused .workflow-map-edge-group { opacity: .13; }
+.workflow-connected-map.is-path-focused .workflow-map-layer-title,
+.workflow-connected-map.is-path-focused .workflow-map-divider { opacity: .3; }
+.workflow-connected-map.is-path-focused .workflow-map-node.is-path-highlighted,
+.workflow-connected-map.is-path-focused .workflow-map-edge-group.is-path-highlighted { opacity: 1; }
+.workflow-map-edge-group.is-path-highlighted .workflow-diagram-edge { stroke: #315fd4; color: #315fd4; stroke-width: 2.8; stroke-dasharray: none; }
+.workflow-map-edge-group.is-path-highlighted .workflow-diagram-edge-label { fill: #3159ad; font-weight: 650; }
+.workflow-map-node.is-path-target rect, .workflow-map-node:focus-visible rect { stroke: #315fd4; stroke-width: 3; }

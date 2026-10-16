@@ -87,12 +87,15 @@ def workflow_graph(issue, activities, stages, current_execution_stage=None, disc
     by_key = {node["key"]: node for node in nodes}
     visited, traversed = set(), set()
     previous = None
+    trail = []
 
     def record(key):
         nonlocal previous
         if key not in by_key:
             return
         visited.add(key)
+        if not trail or trail[-1] != key:
+            trail.append(key)
         if previous and previous != key:
             traversed.add((previous, key))
         previous = key
@@ -145,6 +148,7 @@ def workflow_graph(issue, activities, stages, current_execution_stage=None, disc
     result["diagrams"] = diagram_sections(by_key, current, paused, traversed)
     result["diagram_secondary_open"] = any(diagram["open"] and diagram["secondary"] for diagram in result["diagrams"])
     result["connected_diagram"] = connected_diagram(result["diagrams"], traversed, current, paused)
+    result["connected_diagram"]["hover_paths"] = hover_paths(result["connected_diagram"], trail)
     return result
 
 
@@ -345,3 +349,42 @@ def connected_diagram(diagrams, traversed, current, paused):
                       "flowing":source == current and not paused and (source,target) in PATHS,
                       "cross_layer":True})
     return {"nodes":nodes,"edges":edges,"layers":layers,"width":1390,"height":1100}
+
+
+def hover_paths(graph, trail):
+    """截至该节点最近一次到达的已记录路线，避免把后续历史或未走过的捷径高亮。"""
+    result = {}
+    for node in graph["nodes"]:
+        key = node["key"]
+        arrivals = [index for index, event in enumerate(trail) if event == key]
+        if not arrivals:
+            result[key] = {"nodes": [key], "edges": []}
+            continue
+        prefix = trail[:arrivals[-1]+1]
+        observed = set(prefix)
+        candidates = []
+        for edge in graph["edges"]:
+            source, target = edge["source"], edge["target"]
+            if source not in observed or target not in observed:
+                continue
+            if (source, target) == ("PROPOSED", "IN_PROGRESS") and "DESIGN_REQUIRED" in observed:
+                continue
+            if (source, target) == ("IN_PROGRESS", "IMPLEMENTED_PENDING_REVIEW") and "STAGE_PLAN_CREATED" in observed:
+                continue
+            if (source, target) in {("STAGE_APPROVED", "STAGE_SCOPE_DECLARED"), ("REVIEW_REJECTED", "IN_PROGRESS"), ("VERIFICATION_FAILED", "IN_PROGRESS")}:
+                if not any(prefix.index(source) < index for index, event in enumerate(prefix) if event == target):
+                    continue
+            candidates.append(edge)
+        # 回溯目标的祖先；只使用在本次到达之前已有记录的节点。
+        ancestors = {key}
+        changed = True
+        while changed:
+            changed = False
+            for edge in candidates:
+                if edge["target"] in ancestors and edge["source"] not in ancestors:
+                    ancestors.add(edge["source"])
+                    changed = True
+        result[key] = {"nodes": sorted(ancestors),
+                       "edges": [f"{edge['source']}|{edge['target']}" for edge in candidates
+                                 if edge["source"] in ancestors and edge["target"] in ancestors]}
+    return result

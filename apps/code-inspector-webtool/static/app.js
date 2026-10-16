@@ -757,3 +757,47 @@ function animateStageReveal(snapshot, row) {
   });
   window.setInterval(refreshRanking, 1000);
 })();
+
+
+// 悬浮与键盘聚焦共用实际历史路径，事件委托兼容页面自动刷新。
+(() => {
+  const pathCache = new WeakMap();
+  function reset(map) {
+    map.classList.remove('is-path-focused');
+    delete map.dataset.pathTarget;
+    map.querySelectorAll('.is-path-highlighted, .is-path-target').forEach((item) => item.classList.remove('is-path-highlighted', 'is-path-target'));
+  }
+  function highlight(node) {
+    const map = node.closest('.workflow-connected-map');
+    if (!map) return;
+    let paths = pathCache.get(map);
+    if (!paths) {
+      const source = map.parentElement.querySelector('[data-workflow-hover-paths]');
+      try { paths = JSON.parse(source?.textContent || '{}'); } catch (_) { paths = {}; }
+      pathCache.set(map, paths);
+    }
+    const key = node.dataset.wfNode;
+    const path = paths[key] || { nodes: [key], edges: [] };
+    const nodes = new Set(path.nodes);
+    const edges = new Set(path.edges);
+    map.classList.add('is-path-focused');
+    map.dataset.pathTarget = key;
+    map.querySelectorAll('[data-wf-node]').forEach((item) => {
+      item.classList.toggle('is-path-highlighted', nodes.has(item.dataset.wfNode));
+      item.classList.toggle('is-path-target', item === node);
+    });
+    map.querySelectorAll('[data-wf-edge]').forEach((item) => item.classList.toggle('is-path-highlighted', edges.has(item.dataset.wfEdge)));
+  }
+  for (const eventName of ['pointerover', 'focusin']) {
+    document.addEventListener(eventName, (event) => {
+      const node = event.target.closest?.('[data-wf-node]');
+      if (node && !node.contains(event.relatedTarget)) highlight(node);
+    });
+  }
+  for (const eventName of ['pointerout', 'focusout']) {
+    document.addEventListener(eventName, (event) => {
+      const node = event.target.closest?.('[data-wf-node]');
+      if (node && !node.contains(event.relatedTarget)) reset(node.closest('.workflow-connected-map'));
+    });
+  }
+})();
