@@ -725,5 +725,8 @@ button.queue-pill { font: inherit; cursor: pointer; }
 .record-panel[data-records-view="history"] .record-history-content { display: block; }
 .record-topic { font-weight: 600; color: var(--text); }
 
-.record-topic-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; margin-bottom: 8px; padding-bottom: 7px; border-bottom: 1px solid var(--border); font-size: 12px; line-height: 1.6; }
-.record-topic-head .record-topic { min-width: 0; overflow-wrap: anywhere; }
+.record-topic-head { display: flex; flex-wrap: wrap; align-items: center; gap: 7px 10px; margin-bottom: 10px; padding: 10px 12px; border: 1px solid #b7c9f3; border-left: 4px solid var(--blue); border-radius: 7px; background: #e7eeff; line-height: 1.6; }
+.record-topic-head .record-topic { flex: 1; min-width: 160px; color: #17366e; font-size: 14px; font-weight: 750; overflow-wrap: anywhere; }
+.record-topic-head .badge { padding: 3px 8px; background: #355de6; color: #fff; font-size: 11px; font-weight: 700; }
+.record-topic-head > .muted { margin-left: auto; color: #40577b; font-size: 12px; white-space: nowrap; }
+.event-head > time { flex-shrink: 0; white-space: nowrap; }

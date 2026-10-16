@@ -230,10 +230,11 @@ def cictl_command_name(role: str) -> str:
         raise ValueError(f"不支持为角色生成 cictl 命令: {role}") from exc
 
 
-def cictl_launcher_path(home: Path, role: str, windows: bool | None = None) -> Path:
+def cictl_launcher_path(home: Path, role: str, windows: bool | None = None, platform: str | None = None) -> Path:
     windows = os.name == "nt" if windows is None else windows
     suffix = ".cmd" if windows else ""
-    return home / "bin" / f"{cictl_command_name(role)}{suffix}"
+    directory = home / "bin" / platform if platform else home / "bin"
+    return directory / f"{cictl_command_name(role)}{suffix}"
 
 
 def install_cictl_runtime(home: Path, force: bool) -> Path:
@@ -269,10 +270,10 @@ def write_cictl_adapter(home: Path, alias: str) -> Path:
     return wrapper
 
 
-def write_cictl_launcher(home: Path, role: str, alias: str, windows: bool | None = None) -> Path:
+def write_cictl_launcher(home: Path, role: str, alias: str, windows: bool | None = None, platform: str | None = None) -> Path:
     """安装全平台通用的角色 PATH 命令，避免依赖会话环境传递身份。"""
     windows = os.name == "nt" if windows is None else windows
-    launcher = cictl_launcher_path(home, role, windows)
+    launcher = cictl_launcher_path(home, role, windows, platform)
     tool = cictl_runtime_path(home)
     adapter = (
         "#!/usr/bin/env python3\n"
@@ -286,7 +287,7 @@ def write_cictl_launcher(home: Path, role: str, alias: str, windows: bool | None
         f"raise SystemExit(module.main(sys.argv[1:], trusted_operator_id={alias!r}))\n"
     )
     if windows:
-        py_launcher = home / "bin" / f"{cictl_command_name(role)}.py"
+        py_launcher = launcher.with_suffix(".py")
         atomic_write_text(py_launcher, adapter, executable=False)
         content = f'@echo off\npython "{py_launcher}" %*\nexit /b %errorlevel%\n'
         atomic_write_text(launcher, content, executable=False)
@@ -445,12 +446,15 @@ def generated_skill_text(platform: str, identities: list[dict[str, Any]], target
         role = item["role"]
         policy = item["role_policy"]
         tool = cictl_command_name(role)
+        fixed_path = item.get("fixed_tool_path", tool)
         rows.append(
             f"## {item['alias']} · {role} · {policy['session_selector']}\n\n"
-            f"固定工具：`{tool}`。当前 Session 的角色和逻辑身份由运行时私有绑定保证，"
+            f"固定工具：`{tool}`，本平台固定路径：`{fixed_path}`。执行时必须使用该绝对路径，"
+            "不得使用 PATH 上的平台未知旧入口。操作人是本段 alias，角色单独记录；"
+            "当前 Session 的角色和逻辑身份由运行时私有绑定保证，"
             f"命令统一使用 `{tool} <域> <动作>` 格式，"
             "不存在也不得另传 `--agent` 或 `--operator-id`。\n\n"
-            f"可执行命令：{role_commands(policy['commands'], tool)}。\n\n"
+            f"可执行命令：{role_commands(policy['commands'], fixed_path)}。\n\n"
             f"每轮角色强化块（每个 Action Turn 的输入侧都会重新注入，输出回复必须以 OUTPUT_PREFIX 开头）：\n\n"
             f"```\n{role_identity_block(role)}\n```\n\n"
             f"职责：{'；'.join(policy['responsibilities'])}。\n\n"
@@ -518,7 +522,11 @@ def generated_codex_rules(identities: list[dict[str, Any]], skill_target: Path) 
         if item["role"] in {"developer", "inspector"}:
             command = cictl_command_name(item["role"])
             launcher = str(skill_target.parents[2] / ".agent-review" / "bin" / command)
-            for pattern in ([command], [launcher]):
+            fixed_path = item.get("fixed_tool_path")
+            patterns = [[command], [launcher]]
+            if fixed_path and fixed_path != launcher:
+                patterns.append([fixed_path])
+            for pattern in patterns:
                 encoded_pattern = json.dumps(pattern, ensure_ascii=False, separators=(",", ":"))
                 encoded_justification = json.dumps(justification, ensure_ascii=False)
                 lines.append(
@@ -582,22 +590,31 @@ def remove_legacy_skill_dir(target_root: Path) -> None:
 def install_role_skills(
     tools_config: dict[str, Any], skill_config: dict[str, Any], source: Path, home: Path, force: bool
 ) -> None:
-    bindings: dict[str, Any] = {}
-    # 全平台统一身份：每个角色一个逻辑身份，所有启用平台安装同一份角色 Skill。
-    identities = [
-        {
-            "alias": binding["alias"],
-            "role": role,
+    # 角色通用入口保留兼容；平台 Skill 只使用绑定真实操作人的固定路径。
+    bindings: dict[str, Any] = {
+        binding["alias"]: {
+            "alias": binding["alias"], "agent": "legacy-unknown", "role": role,
             "role_policy": skill_config["roles"][role],
+            "fixed_tool_path": str(cictl_launcher_path(home, role)),
         }
         for role, binding in skill_config["bindings"].items()
-    ]
+    }
     for platform in skill_config["agents"]:
         tool = tools_config["tools"].get(platform)
         if tool is None:
             raise ValueError(f"Agent 所属工具未配置: {platform}")
         if not tool.get("enabled", False):
             continue
+        identities = []
+        for role, binding in skill_config["bindings"].items():
+            suffix = skill_config["roles"][role]["session_selector"]
+            alias = f"{platform}-{suffix}"
+            fixed_path = write_cictl_launcher(home, role, alias, platform=platform)
+            write_cictl_adapter(home, alias)
+            item = {"alias": alias, "role": role, "role_policy": skill_config["roles"][role],
+                    "fixed_tool_path": str(fixed_path)}
+            identities.append(item)
+            bindings[alias] = {**item, "agent": platform}
         target_root = expand_path(tool["skills_dir"])
         remove_legacy_skill_dir(target_root)
         target = target_root / skill_config["skill_name"]
@@ -606,12 +623,6 @@ def install_role_skills(
             rules_path = install_codex_rules(target_root.parent, identities, target, force)
             print(f"[rules] {rules_path}", file=sys.stderr)
         print(f"[skills] {target} ({platform}: {', '.join(i['alias'] for i in identities)})", file=sys.stderr)
-    for item in identities:
-        bindings[item["alias"]] = {
-            "alias": item["alias"], "agent": "any", "role": item["role"],
-            "role_policy": item["role_policy"],
-            "fixed_tool_path": str(cictl_launcher_path(home, item["role"])),
-        }
     bindings["web-human"] = {"alias": "web-human", "agent": "webapp", "role": "human"}
     (home / "config" / "agent-bindings.json").write_text(
         json.dumps(bindings, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
@@ -805,6 +816,8 @@ def main() -> int:
                 tool = config["tools"].get(platform, {})
                 if not tool.get("enabled", False):
                     continue
+                for role in skill_config["bindings"]:
+                    checks[f"platform-launcher:{platform}:{role}"] = cictl_launcher_path(home, role, platform=platform).exists()
                 target_root = expand_path(tool.get("skills_dir", "")) if tool else Path("/")
                 target = target_root / skill_config["skill_name"]
                 checks[f"skill:{platform}"] = target.is_dir() and (target / ".code-inspector-generated").exists()

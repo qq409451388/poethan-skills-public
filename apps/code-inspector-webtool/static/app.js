@@ -407,13 +407,19 @@ document.querySelectorAll('form[method="post" i]').forEach((form) => {
     return copy.innerHTML;
   }
 
+  function recordPanels(scope) {
+    const ownPanel = scope.matches?.('.record-panel') ? [scope] : [];
+    return [...ownPanel, ...scope.querySelectorAll('.record-panel')];
+  }
+
   function regionState(region) {
     return {
+      rootDetailsOpen: region.matches('details') ? region.open : null,
       openDetails: Array.from(region.querySelectorAll('details')).map((item) => item.open),
       activeTabs: Array.from(region.querySelectorAll('.tabs')).map(
         (tabs) => tabs.querySelector('.tab.active')?.dataset.tabTarget || null,
       ),
-      recordViews: Array.from(region.querySelectorAll('.record-panel')).map((panel) => ({
+      recordViews: recordPanels(region).map((panel) => ({
         view: panel.dataset.recordsView || 'all',
         expanded: panel.classList.contains('records-expanded'),
       })),
@@ -421,6 +427,7 @@ document.querySelectorAll('form[method="post" i]').forEach((form) => {
   }
 
   function restoreRegionState(region, state) {
+    if (state.rootDetailsOpen !== null && region.matches('details')) region.open = state.rootDetailsOpen;
     region.querySelectorAll('details').forEach((item, index) => {
       if (state.openDetails[index] !== undefined) item.open = state.openDetails[index];
     });
@@ -435,7 +442,7 @@ document.querySelectorAll('form[method="post" i]').forEach((form) => {
         pane.classList.toggle('active', pane.dataset.tabPane === target);
       });
     });
-    region.querySelectorAll('.record-panel').forEach((panel, index) => {
+    recordPanels(region).forEach((panel, index) => {
       const saved = state.recordViews?.[index];
       if (!saved) return;
       panel.dataset.recordsView = saved.view;
@@ -508,7 +515,7 @@ document.querySelectorAll('form[method="post" i]').forEach((form) => {
   }
 
   function renderRecordPreviews(scope) {
-    scope.querySelectorAll('.record-panel').forEach((panel) => applyRecordView(panel));
+    recordPanels(scope).forEach((panel) => applyRecordView(panel));
   }
 
   document.addEventListener('click', (event) => {
