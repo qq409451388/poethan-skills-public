@@ -1,27 +1,31 @@
 <div class="modal-backdrop workflow-modal" id="issue-workflow-modal" role="dialog" aria-modal="true" aria-labelledby="issue-workflow-title">
   <div class="modal-card">
-    <div class="modal-head"><div><h2 id="issue-workflow-title">Issue 工作流</h2><div class="modal-sub mono">{{ issue.issue_key }}</div></div><button type="button" class="modal-close" data-modal-close aria-label="关闭">×</button></div>
+    <div class="modal-head"><div><h2 id="issue-workflow-title">Issue 处理进展</h2><div class="modal-sub mono">{{ issue.issue_key }}</div></div><button type="button" class="modal-close" data-modal-close aria-label="关闭">×</button></div>
     <div class="modal-body" data-live-region="workflow-content">
-      <div class="workflow-current"><span class="badge badge-status-{{ issue.status }}">{{ issue.status|label }}</span><span>{{ status_explanation }}</span></div>
-      <div class="workflow-legend"><span class="legend-current">● 当前节点</span><span class="legend-visited">● 已走过</span><span>○ 未走过</span><span>流动虚线 · 可能的下一步</span></div>
-      <div class="workflow-scroll" tabindex="0" aria-label="完整工作流，可横向滚动">
-        <div class="workflow-canvas">
-          <svg class="workflow-edges" viewBox="0 0 1220 1000" aria-hidden="true">
-            <defs><marker id="wf-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10z" fill="context-stroke"/></marker></defs>
-            {% for edge in workflow.edges|sort(attribute='visited') %}<path d="{{ edge.path }}" class="workflow-edge{% if edge.visited %} is-visited{% endif %}{% if edge.flowing %} is-flowing{% endif %}" marker-end="url(#wf-arrow)"/>{% endfor %}
-          </svg>
-          {% for lane in workflow.lanes %}<div class="workflow-lane-title" style="top: {{ lane.y }}px">{{ lane.title }}</div>{% endfor %}
-          {% for node in workflow.nodes %}
-          <div class="workflow-graph-node{% if node.visited %} is-visited{% endif %}{% if node.current %} is-current{% endif %}" style="left: {{ node.x }}px; top: {{ node.y }}px">
-            <button type="button" class="workflow-graph-button" aria-describedby="workflow-tip-{{ node.key }}"{% if node.current %} aria-current="step"{% endif %}>
-              <span class="workflow-node-light"></span><strong>{{ node.title }}</strong><small>{{ node.owner }}</small><span class="workflow-node-state">{% if node.current %}当前节点{% elif node.visited %}已走过{% else %}未走过{% endif %}</span>
-            </button>
-            <div class="workflow-node-tooltip" id="workflow-tip-{{ node.key }}" role="tooltip"><strong>{{ node.title }}</strong><p>{{ node.description }}</p>{% if node.current %}<p>{{ status_explanation }}</p>{% if current_execution_stage %}<p>当前 Plan {{ current_execution_stage.plan_no }} · Stage {{ current_execution_stage.stage_no }} · {{ current_execution_stage.title }}</p>{% endif %}{% endif %}</div>
-          </div>
-          {% endfor %}
-        </div>
+      <div class="workflow-reading-head"><div><span class="workflow-eyebrow">当前进展</span><h3>{{ workflow.current_title }}</h3></div><span class="badge badge-status-{{ issue.status }}">{{ issue.status|label }}</span></div>
+      <div class="workflow-reading-layout">
+        <section class="workflow-main-route" aria-label="主流程">
+          <h3 class="workflow-section-title">处理路线 <span>从上到下阅读</span></h3>
+          <ol class="workflow-route">
+            {% for step in workflow.route %}
+            <li class="workflow-route-step is-{{ step.state }}"{% if step.current %} aria-current="step"{% endif %}>
+              <span class="workflow-route-marker" aria-hidden="true">{% if step.state == 'done' %}✓{% else %}{{ loop.index }}{% endif %}</span>
+              <div class="workflow-route-content"><div class="workflow-route-title"><strong>{{ step.title }}</strong><span>{{ step.state_label }}</span></div><p>{{ step.description }}</p>
+              {% if step.key == 'development' and workflow.stage_cards %}
+                <ol class="workflow-stage-list" aria-label="实际执行阶段">{% for stage in workflow.stage_cards %}<li class="is-{{ stage.state }}"><span class="workflow-stage-dot" aria-hidden="true"></span><span class="workflow-stage-number">Stage {{ stage.stage_no }}</span><strong>{{ stage.title }}</strong><span class="workflow-stage-state">{{ stage.status_label }}</span></li>{% endfor %}</ol>
+              {% endif %}
+              </div>
+            </li>
+            {% endfor %}
+          </ol>
+        </section>
+        <aside class="workflow-reading-aside">
+          <section class="workflow-next-card"><span class="workflow-eyebrow">接下来</span><h3>{{ workflow.next_step }}</h3>{% if workflow.current_summary %}<div class="markdown-body">{{ workflow.current_summary|markdown }}</div>{% else %}<p>{{ status_explanation }}</p>{% endif %}</section>
+          <details class="workflow-branch-records"{% if issue.status in ['BLOCKED', 'ON_HOLD', 'HUMAN_CONFIRMATION_REQUIRED', 'INSPECTOR_CONFIRMATION_REQUIRED'] %} open{% endif %}><summary>返工、确认与暂停记录 <span>{{ workflow.branches|length }}</span></summary><div class="workflow-branch-list">{% for branch in workflow.branches %}<article><div><strong>{{ branch.title }}</strong><time>{{ branch.time|localtime }}</time></div><div class="markdown-body">{{ branch.summary|markdown }}</div></article>{% else %}<p class="muted">暂无此类记录。</p>{% endfor %}</div></details>
+          <details class="workflow-rules"><summary>遇到驳回或重设计时怎么走？</summary><ul><li>方案驳回：修订方案后重新审核。</li><li>阶段驳回：修正当前阶段，再提交验收。</li><li>最终审核或验证未通过：返回开发修复。</li><li>方案方向失效：重新设计，旧计划保留历史。</li><li>需要技术或人工确认：先处理待决事项，再恢复流程。</li></ul></details>
+          <p class="workflow-note">完成标记来自实际记录。未记录的环节不会自动算作已通过；阶段通过也不代表整个 Issue 已关闭。</p>
+        </aside>
       </div>
-      <p class="workflow-note">节点按实际活动、阶段记录和当前状态亮灯，连线只按实际先后记录亮灯，不推定未记录的历史步骤。未走过的分支保留暗色；流动线表示可能的下一步，不代表已经发生。</p>
     </div>
   </div>
 </div>

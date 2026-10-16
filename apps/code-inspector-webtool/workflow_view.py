@@ -140,4 +140,105 @@ def workflow_graph(issue, activities, stages, current_execution_stage=None):
         edges.append(dict(source=source, target=target, path=path,
                           visited=(source, target) in traversed,
                           flowing=source == current and not paused and (source, target) in PATHS))
-    return {"nodes": nodes, "edges": edges, "lanes": [dict(title=title, y=22 + row*160) for row, (title, _) in enumerate(LANES)]}
+    result = {"nodes": nodes, "edges": edges, "lanes": [dict(title=title, y=22 + row*160) for row, (title, _) in enumerate(LANES)]}
+    result.update(reading_route(issue, activities, stages, current_execution_stage, current, visited, by_key))
+    return result
+
+
+# 主视图按人阅读的顺序展示；完成标记仍只消费原有事实，不由位置补齐历史。
+ROUTE_STEPS = [
+    ("discovery", "记录问题", {"PROPOSED"}, {"PROPOSED"}),
+    ("design", "对齐修复方案", {"DESIGN_REQUIRED", "DESIGN_PENDING_REVIEW", "DESIGN_APPROVED", "DESIGN_REJECTED", "REDESIGN_REQUIRED", "REDESIGN_SUBMITTED"}, {"DESIGN_APPROVED"}),
+    ("development", "开发与阶段验收", {"IN_PROGRESS", "STAGE_PLAN_CREATED", "STAGE_SCOPE_DECLARED", "STAGE_SUBMITTED", "STAGE_APPROVED", "STAGE_REJECTED"}, {"IMPLEMENTED_PENDING_REVIEW"}),
+    ("review", "审核最终实现", {"IMPLEMENTED_PENDING_REVIEW", "REVIEW_APPROVED", "REVIEW_REJECTED"}, {"REVIEW_APPROVED"}),
+    ("verification", "最终验证", {"VERIFICATION_PASSED", "VERIFICATION_FAILED"}, {"VERIFICATION_PASSED"}),
+    ("closure", "确认关闭", {"CONFIRMED"}, {"CONFIRMED"}),
+]
+
+
+def reading_route(issue, activities, stages, current_stage, current, visited, by_key):
+    status = issue["status"]
+    active_stages = sorted(
+        (stage for stage in stages if stage.get("plan_status", "ACTIVE") == "ACTIVE"),
+        key=lambda stage: (stage.get("plan_no", 0), stage.get("stage_no", 0)),
+    )
+    route = []
+    current_group = next((key for key, _, keys, _ in ROUTE_STEPS if current in keys), None)
+    # 等待确认/暂停是覆盖状态，保留事实上的最近主流程位置，不将它当作已通过。
+    if current_group is None:
+        for activity in reversed(activities):
+            event = EVENT_NODES.get(activity["activity_type"], activity["activity_type"])
+            group = next((key for key, _, keys, _ in ROUTE_STEPS if event in keys), None)
+            if group:
+                current_group = group
+                break
+    current_index = next((i for i, step in enumerate(ROUTE_STEPS) if step[0] == current_group), -1)
+    descriptions = {
+        "discovery": "核实问题、影响与完成标准。",
+        "design": "明确修复边界，由审核方确认方案。",
+        "development": "完成修改，并逐阶段提交和验收。" if active_stages else "完成代码修改与必要测试，再提交整体实现。",
+        "review": "审核完整实现，确认问题与修复范围一致。",
+        "verification": "验证实际效果，保留可复查的证据。",
+        "closure": "明确满足完成标准后，确认关闭 Issue。",
+    }
+    for index, (key, title, keys, completed_by) in enumerate(ROUTE_STEPS):
+        if key == "design" and not (visited & keys):
+            continue
+        recorded = bool(visited & keys)
+        done = (any(activity["activity_type"] == "IMPLEMENTATION_SUBMITTED" for activity in activities)
+                if key == "development" else bool(visited & completed_by))
+        is_current = key == current_group and status not in {"CONFIRMED", "CANCELLED"}
+        state = "current" if is_current else "done" if done else "recorded" if recorded else "missing" if index < current_index else "pending"
+        labels = {"current": "当前环节", "done": "已完成", "recorded": "有处理记录", "missing": "未记录", "pending": "待进行"}
+        if key == "development" and done:
+            labels["done"] = "已提交整体实现"
+        route.append({"key": key, "title": title, "description": descriptions[key], "state": state,
+                      "state_label": labels[state], "current": is_current})
+    stage_cards = []
+    stage_labels = {"APPROVED": "验收通过", "PENDING_REVIEW": "待验收", "IN_PROGRESS": "进行中", "PLANNED": "待开始"}
+    for stage in active_stages:
+        is_current = bool(current_stage and stage.get("id") == current_stage.get("id")
+                          and stage.get("stage_no") == current_stage.get("stage_no")
+                          and stage["status"] in {"IN_PROGRESS", "PENDING_REVIEW"})
+        stage_cards.append({"stage_no": stage.get("stage_no"), "title": stage.get("title", ""),
+                            "state": "done" if stage["status"] == "APPROVED" else "current" if is_current else "pending",
+                            "status_label": stage_labels.get(stage["status"], stage["status"])})
+    branch_kinds = {"DESIGN_REJECTED", "STAGE_REJECTED", "REVIEW_REJECTED", "VERIFICATION_FAILED", "REDESIGN_REQUIRED", "STAGE_PLAN_SUPERSEDED",
+                    "HUMAN_CONFIRMATION_REQUIRED", "HUMAN_CONFIRMATION_PROVIDED", "INSPECTOR_CONFIRMATION_REQUIRED", "INSPECTOR_CONFIRMATION_PROVIDED", "ON_HOLD", "BLOCKED", "CANCELLED"}
+    branches = []
+    for activity in activities:
+        event = activity["activity_type"]
+        if event == "STATUS_CHANGED":
+            event = activity.get("result_status")
+        elif event == "HUMAN_CONFIRMATION_REQUESTED":
+            event = "HUMAN_CONFIRMATION_REQUIRED"
+        if event not in branch_kinds:
+            continue
+        metadata = activity.get("metadata") or {}
+        title = by_key[event]["title"]
+        if metadata.get("stage_no") is not None:
+            title = f"Stage {metadata['stage_no']} · {title}"
+        branches.append({"title": title, "time": activity.get("created_at"),
+                         "summary": activity.get("human_summary") or by_key[event]["description"]})
+    current_title = by_key[current]["title"]
+    if current_stage and status == "IN_PROGRESS":
+        current_title = f"Stage {current_stage.get('stage_no', '')} · {current_stage.get('title', current_title)}"
+    latest_summary = next((activity.get("human_summary") for activity in reversed(activities) if activity.get("human_summary")), "")
+    next_step = {
+        "PROPOSED": "确认是否需要先设计方案，再开始开发。",
+        "DESIGN_REQUIRED": "Developer 提交具体方案，交由 Inspector 审核。",
+        "DESIGN_PENDING_REVIEW": "Inspector 审核方案，通过后进入开发。",
+        "IMPLEMENTED_PENDING_REVIEW": "Inspector 审核当前整体实现，并完成后续验证。",
+        "INSPECTOR_CONFIRMATION_REQUIRED": "由 Inspector 确认当前技术边界，再继续处理。",
+        "HUMAN_CONFIRMATION_REQUIRED": "由 Human 处理待决事项，再恢复工作流。",
+        "ON_HOLD": "等待恢复处理；搁置不代表已经解决。",
+        "BLOCKED": "先解决当前依赖或阻断项，再恢复处理。",
+        "REDESIGN_REQUIRED": "先修订方案和边界，再重新审核。",
+        "CONFIRMED": "该 Issue 已确认关闭；可在协作记录中追查结论。",
+        "CANCELLED": "该 Issue 已取消，不代表修复验证通过。",
+    }.get(status, "完成当前修改与验证后，提交整体实现供审核。")
+    if status == "IN_PROGRESS" and current_stage:
+        next_step = ("Inspector 验收当前阶段；通过后再继续后续阶段。" if current_stage["status"] == "PENDING_REVIEW"
+                     else "完成当前阶段的验收要求，再提交阶段结果。")
+    return {"route": route, "stage_cards": stage_cards, "branches": list(reversed(branches)),
+            "current_title": current_title, "current_summary": latest_summary, "next_step": next_step}

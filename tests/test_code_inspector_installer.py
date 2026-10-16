@@ -2600,7 +2600,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 css = stylesheet.get_data(as_text=True)
                 self.assertTrue(css.lstrip().startswith(":root {"))
                 self.assertNotIn("function animateProgressChanges", css)
-                for selector in (".issue-ranking-row", ".progress-damage-trail", ".stage-glass-shard", ".workflow-edge"):
+                for selector in (".issue-ranking-row", ".progress-damage-trail", ".stage-glass-shard", ".workflow-route"):
                     self.assertIn(selector, css)
                 stylesheet.close()
 
@@ -2922,7 +2922,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 self.assertIn("打开工作流", review_page)
                 self.assertIn('data-modal-open="issue-workflow-modal"', review_page)
                 self.assertIn('aria-current="step"', review_page)
-                self.assertIn('workflow-edge is-flowing', review_page)
+                self.assertIn('workflow-route-step is-current', review_page)
                 self.assertIn("order.py", review_page)
                 self.assertIn('提交人 <b class="mono">developer</b> · Developer', review_page)
                 # 三个记录标签共用一份 DOM，靠 data-in-discussion / data-in-history 过滤；
