@@ -221,7 +221,7 @@ function animateProgressChanges(previous, incoming) {
 
   document.querySelectorAll('.clickable-row').forEach((row) => {
     const navigate = (event) => {
-      if (event.target.closest('a, button, input, select, textarea')) return;
+      if (event.target.closest('a, button, input, select, textarea, details')) return;
       window.location.href = row.dataset.href;
     };
     row.addEventListener('click', navigate);

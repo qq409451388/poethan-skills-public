@@ -92,6 +92,7 @@
             <div class="agent-assignment">{{ agent_icon() }}<div><strong>{{ issue.assignment.agent }}</strong><small>{{ issue.assignment.model }} · {{ issue.assignment.reasoning }}</small></div></div>
             {% if issue.assignment_status == 'STALE' %}<span class="badge badge-red" title="{{ issue.assignment_invalid_reason|assignment_reason }}">分配已失效</span>{% endif %}
             {% else %}<span class="muted">未分配</span>{% endif %}
+            {% if issue.assignment_profiles %}<details class="inline-agent-assignment"><summary>分配 Agent</summary><form method="post" action="{{ url_for('issue_set_assignment', issue_key=issue.issue_key) }}"><input type="hidden" name="return_to" value="{{ request.full_path }}"><select name="profile_id" aria-label="{{ issue.issue_key }} 的 AI Agent"><option value="">— 清除分配 —</option>{% for profile in issue.assignment_profiles %}<option value="{{ profile.id }}" {% if issue.assignment and issue.assignment.profileId == profile.id %}selected{% endif %}>{{ profile.agent }} · {{ profile.model }} · {{ profile.reasoning }}</option>{% endfor %}</select><button class="btn btn-small" type="submit">保存分配</button></form></details>{% endif %}
           </td>
           <td class="mono muted nowrap">{{ issue.updated_at|localtime }}</td>
         </tr>

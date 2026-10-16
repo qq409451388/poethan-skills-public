@@ -55,7 +55,7 @@
   <div class="issue-title">
     <div class="issue-badges"><span class="badge sev-chip-{{ issue.severity }}">{{ issue.severity|label }}</span><span class="badge badge-blue">{{ issue.dimension|label }}</span></div>
     <h1>{{ issue.title }}</h1>
-    <div class="meta"><span>问题键：<strong class="mono">{{ issue.issue_key }}</strong></span><span>任务：<strong class="mono">{{ issue.task_key }}</strong></span><span>引入版本：v{{ issue.introduced_version }}</span><span>当前尝试：第 {{ issue.current_attempt_no }} 次</span>{% if issue.parent_issue_id %}<span>父问题 ID：{{ issue.parent_issue_id }}</span>{% endif %}</div>
+    <div class="meta"><span>总处理用时：<strong>{{ issue.timing.elapsed }}</strong>{% if issue.timing.running %}（截至当前）{% endif %}</span><span>创建：{{ issue.timing.start|localtime }}</span>{% if issue.timing.end %}<span>结束：{{ issue.timing.end|localtime }}</span>{% endif %}<span>问题键：<strong class="mono">{{ issue.issue_key }}</strong></span><span>任务：<strong class="mono">{{ issue.task_key }}</strong></span><span>引入版本：v{{ issue.introduced_version }}</span><span>当前尝试：第 {{ issue.current_attempt_no }} 次</span>{% if issue.parent_issue_id %}<span>父问题 ID：{{ issue.parent_issue_id }}</span>{% endif %}</div>
   </div>
   <div class="head-actions"><button type="button" class="btn btn-soft" data-modal-open="issue-edit-modal">✎ 编辑当前 Issue</button></div>
 </header>
@@ -111,6 +111,7 @@
                 <span class="badge badge-status-{{ execution_stage.status }}">{{ execution_stage.status|label }}</span>
               </summary>
               <div class="stage-body">
+                <div class="stage-timing">开始：{{ execution_stage.timing.start|localtime }} · 结束：{% if execution_stage.timing.running %}进行中{% else %}{{ execution_stage.timing.end|localtime }}{% endif %} · 总用时：<strong>{{ execution_stage.timing.elapsed }}</strong><small>自然用时，包含等待与返工；开始取阶段激活时间，缺失时取最早范围声明。</small></div>
                 <dl class="keybox compact-keybox">
                   <dt>目标</dt><dd><div class="markdown-body">{{ execution_stage.objective|markdown }}</div></dd>
                   <dt>验收标准</dt><dd><div class="markdown-body">{{ execution_stage.acceptance_criteria|markdown }}</div></dd>

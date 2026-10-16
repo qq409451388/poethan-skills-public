@@ -825,3 +825,10 @@ button.queue-pill { font: inherit; cursor: pointer; }
 .workflow-stage-context small { color: #70809d; }
 
 .workflow-diagram-edge.is-current-entry { stroke: #3969e7; stroke-width: 2.8; }
+
+.stage-timing { padding: 10px 12px; margin-bottom: 12px; background: #f5f8fc; border-radius: 7px; font-size: 13px; color: #526078; }
+.stage-timing small { display: block; margin-top: 5px; color: #718096; }
+.inline-agent-assignment { margin-top: 7px; font-size: 12px; }
+.inline-agent-assignment summary { color: #3869e8; cursor: pointer; }
+.inline-agent-assignment form { display: grid; gap: 7px; margin-top: 8px; min-width: 210px; }
+.inline-agent-assignment select { max-width: 290px; }

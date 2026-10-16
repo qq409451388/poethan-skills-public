@@ -23,6 +23,7 @@ from commands import run_human_command
 from db import parse_json_field, query_all, query_one
 import routing
 from workflow_view import workflow_graph
+from issue_timing import attach_timing
 
 BASE_DIR = Path(__file__).resolve().parent
 app = Flask(__name__, template_folder=str(BASE_DIR / "templates"), static_folder=str(BASE_DIR / "static"))
@@ -789,6 +790,7 @@ def task_detail(task_key: str):
                      i.updated_at DESC, i.issue_key ASC""", params,
     )]
     for issue in issues:
+        issue["assignment_profiles"] = routing.candidate_profiles(issue.get("difficulty"))
         issue["assignment_status"], issue["assignment_invalid_reason"] = routing.assignment_state(
             issue.get("assignment"), issue.get("difficulty"),
         )
@@ -923,6 +925,7 @@ def issue_detail(issue_key: str):
     stages = [stage_with_json(row) for row in query_all(
         "SELECT * FROM issue_stage WHERE issue_id = ? ORDER BY plan_no DESC, stage_no", (issue["id"],)
     )]
+    attach_timing(issue, stages, activities)
     stage_plans: OrderedDict[int, list[dict]] = OrderedDict()
     for execution_stage in stages:
         stage_plans.setdefault(execution_stage["plan_no"], []).append(execution_stage)
@@ -966,9 +969,9 @@ def issue_set_assignment(issue_key: str):
         args.extend(["--profile-id", profile_id])
     try:
         run_human_command("issue", "assign", *args)
-        return redirect_back("issue_detail", issue_key=issue_key, msg="执行者分配已保存")
+        return feedback_redirect(safe_return_to(url_for("issue_detail", issue_key=issue_key)), msg="执行者分配已保存")
     except Exception as exc:  # noqa: BLE001
-        return redirect_back("issue_detail", issue_key=issue_key, err=str(exc))
+        return feedback_redirect(safe_return_to(url_for("issue_detail", issue_key=issue_key)), err=str(exc))
 
 
 @app.route("/issues/<issue_key>/assessment", methods=["POST"])
