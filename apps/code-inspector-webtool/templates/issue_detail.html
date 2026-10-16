@@ -3,7 +3,7 @@
 {% from "components/evidence.html" import render_references %}
 {% from "components/issue_copy_button.html" import issue_copy_button %}
 {% macro render_collaboration_record(record, compact=false) %}
-<article class="event{% if record.record_kind == 'discussion' %} discussion-item{% endif %} record-role-{{ (record.operator_type or 'system')|lower }}" data-record-kind="{{ record.record_kind }}" data-in-all="1"{% if record.record_kind == 'activity' %} data-activity-type="{{ record.activity_type }}"{% endif %}{% if record.record_kind == 'discussion' or record.is_collaborative_submission %} data-in-discussion="1"{% endif %}{% if record.in_history %} data-in-history="1"{% endif %}>
+<article class="event{% if record.record_kind == 'discussion' %} discussion-item{% endif %} record-role-{{ (record.operator_type or 'system')|lower }}" data-record-kind="{{ record.record_kind }}" {% if record.in_all %}data-in-all="1"{% endif %}{% if record.record_kind == 'activity' %} data-activity-type="{{ record.activity_type }}"{% endif %}{% if record.record_kind == 'discussion' or record.is_collaborative_submission %} data-in-discussion="1"{% endif %}{% if record.in_history %} data-in-history="1"{% endif %}>
   {% if record.discussion_topic %}{% set topic = record.discussion_topic %}
   <div class="record-topic-head"><span class="badge badge-blue">{{ topic.category|topic_label }}</span><span class="record-topic">话题 #{{ topic.id }} · {{ topic.title }}</span>{% if topic.plan_no is not none %}<span class="muted">计划 {{ topic.plan_no }}{% if topic.stage_no is not none %} · Stage {{ topic.stage_no }}{% endif %}</span>{% endif %}</div>
   {% endif %}
@@ -169,9 +169,9 @@
     </div>
 
     <details class="panel record-panel collapsible-panel" data-live-region="collaboration-records" data-records-view="all" open>
-      <summary><span><strong>协作记录</strong><small>全部看摘要，讨论看话题正文，处理历史看动作，有效结论看当前决定。</small></span></summary>
+      <summary><span><strong>协作记录</strong><small>全部看文案摘要，讨论看话题正文，处理历史单独看动作，有效结论看当前决定。</small></span></summary>
       <div class="collapsible-panel-body">
-      <div class="tabs" role="tablist"><button type="button" class="tab active" data-tab-target="all">全部 {{ all_records|length }}</button><button type="button" class="tab" data-tab-target="discussion">讨论 {{ discussion_records|length }}</button><button type="button" class="tab" data-tab-target="history">处理历史 {{ history_records|length }}</button><button type="button" class="tab" data-tab-target="decisions">有效结论 {{ decisions|length }}</button></div>
+      <div class="tabs" role="tablist"><button type="button" class="tab active" data-tab-target="all">全部 {{ all_content_count }}</button><button type="button" class="tab" data-tab-target="discussion">讨论 {{ discussion_records|length }}</button><button type="button" class="tab" data-tab-target="history">处理历史 {{ history_records|length }}</button><button type="button" class="tab" data-tab-target="decisions">有效结论 {{ decisions|length }}</button></div>
       <div class="record-stream">{% for record in all_records %}{{ render_collaboration_record(record, record.record_kind == 'activity' and not record.is_collaborative_submission) }}{% endfor %}{% for decision in decisions %}<article class="event record-decision" data-in-decisions="1">{{ decision_item(decision) }}</article>{% endfor %}<div class="empty record-empty" hidden>暂无记录。</div></div>
       <div class="record-foot"><span class="muted">AI 摘要供快速阅读；完整技术内容保留在讨论话题中。</span><button type="button" class="btn btn-soft" data-modal-open="issue-discussion-modal">＋ 追加讨论</button></div>
       </div>

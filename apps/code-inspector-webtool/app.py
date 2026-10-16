@@ -905,6 +905,10 @@ def issue_detail(issue_key: str):
     history_keys = {(record["record_kind"], record["id"]) for record in history_records}
     for record in all_records:
         record["in_history"] = (record["record_kind"], record["id"]) in history_keys
+        record["in_all"] = (record["record_kind"] == "discussion"
+                            or record["record_kind"] == "activity" and (
+                                record["is_collaborative_submission"]
+                                or record["activity_type"] not in HISTORY_MILESTONE_TYPES))
     grouped: OrderedDict[int, list[dict]] = OrderedDict()
     for activity in history_activities:
         grouped.setdefault(activity["attempt_no"], []).append(activity)
@@ -937,7 +941,7 @@ def issue_detail(issue_key: str):
     return render_template(
         "issue_detail.html", issue=issue, activities=history_activities, activity_groups=grouped,
         decisions=decisions, discussions=discussions, discussion_records=discussion_records,
-        all_records=all_records, history_records=history_records, issue_topics=topics,
+        all_records=all_records, all_content_count=sum(record["in_all"] for record in all_records), history_records=history_records, issue_topics=topics,
         latest_implementation=latest_implementation, latest_design_submission=latest_design_submission,
         verification_activities=verification_activities,
         latest_human_request=latest_human_request,
