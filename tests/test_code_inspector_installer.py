@@ -1218,11 +1218,12 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 "V019__issue_difficulty_and_executor_recommendations.sql",
                 "V020__routing_revision_and_assignment.sql",
                 "V021__routing_decoupled_from_projection.sql",
+                "V022__issue_progress.sql",
             ])
             self.assertIsNotNone(upgraded["backup"])
             with sqlite3.connect(database) as conn:
                 conn.row_factory = sqlite3.Row
-                self.assertEqual(conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0], 21)
+                self.assertEqual(conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0], 22)
                 task = conn.execute("SELECT * FROM review_task WHERE id = 41").fetchone()
                 self.assertEqual((task["task_key"], task["task_type"], task["scope_fingerprint"]),
                                  ("RT-OLD", "REVIEW", "old-fingerprint"))
@@ -1317,6 +1318,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 "V019__issue_difficulty_and_executor_recommendations.sql",
                 "V020__routing_revision_and_assignment.sql",
                 "V021__routing_decoupled_from_projection.sql",
+                "V022__issue_progress.sql",
             ])
             with sqlite3.connect(database) as conn:
                 conn.row_factory = sqlite3.Row
@@ -1373,6 +1375,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 "V019__issue_difficulty_and_executor_recommendations.sql",
                 "V020__routing_revision_and_assignment.sql",
                 "V021__routing_decoupled_from_projection.sql",
+                "V022__issue_progress.sql",
             ])
             with closing(sqlite3.connect(database)) as conn, conn:
                 conn.row_factory = sqlite3.Row
@@ -2539,6 +2542,19 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             }
             created = db("inspector", "issue-create-batch", "--task-key", task["task_key"], "--reason", "扫描", "--issues", json.dumps([issue]))
             issue_key = created["created"][0]
+            # 进度独立于流程状态，Inspector 可评估并因返工下调。
+            self.assertIsNone(db("inspector", "issue-get", "--issue-key", issue_key)["progress"])
+            for value in (75, 40):
+                updated = db("inspector", "issue-set-progress", "--issue-key", issue_key,
+                             "--progress", str(value), "--reason", "实现已完成，待验证")
+                self.assertEqual(updated["progress"], value)
+            for role, value, reason in (("developer", "60", "自评"), ("human", "60", "自评"),
+                                        ("inspector", "101", "越界"), ("inspector", "100", "未确认"),
+                                        ("inspector", "50", " ")):
+                with self.assertRaises(AssertionError):
+                    db(role, "issue-set-progress", "--issue-key", issue_key,
+                       "--progress", value, "--reason", reason)
+            self.assertEqual(db("inspector", "issue-get", "--issue-key", issue_key)["progress"], 40)
             candidate = db(
                 "developer", "candidate-submit", "--task-key", task["task_key"],
                 "--candidate-key", "RC-WEB-QUEUE", "--title", "候选缓存泄漏",
@@ -2575,20 +2591,65 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 intentional_escape = str(markdown("说明\n`value\\n`"))
                 self.assertIn("value\\n", intentional_escape)
                 client = app.test_client()
+                stylesheet = client.get("/static/style.css")
+                self.assertEqual(stylesheet.status_code, 200)
+                self.assertEqual(stylesheet.mimetype, "text/css")
+                css = stylesheet.get_data(as_text=True)
+                self.assertTrue(css.lstrip().startswith(":root {"))
+                self.assertNotIn("function animateProgressChanges", css)
+                for selector in (".issue-ranking-row", ".progress-damage-trail", ".stage-glass-shard", ".workflow-edge"):
+                    self.assertIn(selector, css)
+                stylesheet.close()
+
                 inbox = client.get("/")
                 self.assertEqual(inbox.status_code, 200)
                 self.assertIn("待我处理", inbox.get_data(as_text=True))
-                self.assertIn("最近活跃的任务", inbox.get_data(as_text=True))
+                self.assertNotIn("最近活跃的任务", inbox.get_data(as_text=True))
+                self.assertIn('data-modal-open="pending-review-modal"', inbox.get_data(as_text=True))
+                self.assertIn('id="candidate-review-modal" role="dialog"', inbox.get_data(as_text=True))
                 self.assertIn(task["task_key"], inbox.get_data(as_text=True))
                 self.assertIn("候选问题待审核", inbox.get_data(as_text=True))
+
+                self.assertIn("40%", inbox.get_data(as_text=True))
+                self.assertIn("实现已完成，待验证", client.get(f"/issues/{issue_key}").get_data(as_text=True))
+                # 以真实数据库验证首页排序、未评估与已关闭 Issue 排除。
+                from app import inbox as inbox_view
+                from unittest.mock import patch
+                database = home / ".agent-review" / "data" / "review.db"
+                with sqlite3.connect(database) as conn:
+                    columns = [row[1] for row in conn.execute("PRAGMA table_info(review_issue)") if row[1] != "id"]
+                    original = dict(zip(columns, conn.execute(
+                        f"SELECT {','.join(columns)} FROM review_issue WHERE issue_key=?", (issue_key,)
+                    ).fetchone()))
+                    for key, progress, status, active in (
+                        ("RI-SORT-HIGH", 80, "IN_PROGRESS", "2026-01-01 00:00:00"),
+                        ("RI-SORT-RECENT", 80, "IN_PROGRESS", "2026-01-02 00:00:00"),
+                        ("RI-SORT-UNKNOWN", None, "IN_PROGRESS", "2099-01-01 00:00:00"),
+                        ("RI-SORT-CLOSED", 100, "CONFIRMED", "2099-01-01 00:00:00"),
+                    ):
+                        row = {**original, "issue_key": key, "dedupe_key": key, "progress": progress,
+                               "status": status, "updated_at": active}
+                        conn.execute(f"INSERT INTO review_issue ({','.join(columns)}) VALUES ({','.join('?' for _ in columns)})",
+                                     [row[column] for column in columns])
+                with app.test_request_context("/"):
+                    with patch("app.render_template") as render:
+                        inbox_view()
+                        self.assertEqual([i["issue_key"] for i in render.call_args.kwargs["active_issues"]],
+                                         ["RI-SORT-RECENT", "RI-SORT-HIGH", issue_key, "RI-SORT-UNKNOWN"])
+                with sqlite3.connect(database) as conn:
+                    conn.execute("DELETE FROM review_issue WHERE issue_key LIKE 'RI-SORT-%'")
 
                 project_picker = client.get("/tasks")
                 self.assertEqual(project_picker.status_code, 200)
                 project_picker_html = project_picker.get_data(as_text=True)
                 self.assertIn("选择项目", project_picker_html)
+                for queue_key in ("pending-review", "confirmation", "blocked"):
+                    self.assertEqual(project_picker_html.count(f'id="{queue_key}-modal"'), 1)
+                    self.assertIn(f'<button type="button" class="queue-pill" data-modal-open="{queue_key}-modal"', project_picker_html)
+                    self.assertNotIn(f'href="/#{queue_key}-modal"', project_picker_html)
                 self.assertIn("project", project_picker_html)
                 self.assertNotIn('class="task-table"', project_picker_html)
-                self.assertNotIn(task["task_key"], project_picker_html)
+                self.assertNotIn(task["task_key"], project_picker_html.split("</main>")[0])
                 self.assertIn("创建任务", project_picker_html)
                 self.assertEqual(client.get("/tasks/").status_code, 200)
                 listing = client.get("/tasks?project_name=project")
@@ -2855,7 +2916,10 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 self.assertIn(issue_key, inbox_after_submit)
                 review_page = client.get(f"/issues/{issue_key}").get_data(as_text=True)
                 self.assertIn("本次实现", review_page)
-                self.assertIn("Human 操作台", review_page)
+                self.assertIn("打开工作流", review_page)
+                self.assertIn('data-modal-open="issue-workflow-modal"', review_page)
+                self.assertIn('aria-current="step"', review_page)
+                self.assertIn('workflow-edge is-flowing', review_page)
                 self.assertIn("order.py", review_page)
                 self.assertIn('提交人 <b class="mono">developer</b> · Developer', review_page)
                 # 三个记录标签共用一份 DOM，靠 data-in-discussion / data-in-history 过滤；
@@ -2945,6 +3009,33 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 self.assertIn("执行计划", stage_page)
                 self.assertIn("兼容边界", stage_page)
                 self.assertIn("阶段验收通过", stage_page)
+                ranking_page = client.get("/").get_data(as_text=True)
+                self.assertIn("ranking-stage-summary", ranking_page)
+                self.assertIn("Plan 1 · Stage 1/1", ranking_page)
+                self.assertNotIn("ranking-stage-history\"", ranking_page)
+                self.assertNotIn("历经", ranking_page)
+                self.assertIn("兼容边界", ranking_page)
+                with sqlite3.connect(database) as conn:
+                    stage_columns = [row[1] for row in conn.execute("PRAGMA table_info(issue_stage)") if row[1] != "id"]
+                    stage_id, stage_issue_id = conn.execute(
+                        "SELECT s.id,s.issue_id FROM issue_stage s JOIN review_issue i ON i.id=s.issue_id WHERE i.issue_key='RI-WEB-DESIGN'"
+                    ).fetchone()
+                    row = dict(zip(stage_columns, conn.execute(
+                        f"SELECT {','.join(stage_columns)} FROM issue_stage WHERE id=?", (stage_id,)
+                    ).fetchone()))
+                    conn.execute("UPDATE issue_stage SET plan_status='SUPERSEDED' WHERE id=?", (stage_id,))
+                    row["plan_no"] = 2
+                    conn.execute(f"INSERT INTO issue_stage ({','.join(stage_columns)}) VALUES ({','.join('?' for _ in stage_columns)})",
+                                 [row[column] for column in stage_columns])
+                revised_ranking = client.get("/").get_data(as_text=True)
+                self.assertIn("2 个 Stage Plan", revised_ranking)
+                self.assertIn("历史 Plan #1", revised_ranking)
+                self.assertIn("Plan 2 · Stage 1/1", revised_ranking)
+                with sqlite3.connect(database) as conn:
+                    conn.execute("DELETE FROM issue_stage WHERE issue_id=? AND plan_no=2", (stage_issue_id,))
+                    conn.execute("UPDATE issue_stage SET plan_status='ACTIVE' WHERE id=?", (stage_id,))
+
+
                 stage_review = client.post(
                     "/issues/RI-WEB-DESIGN/stages/1/review",
                     data={

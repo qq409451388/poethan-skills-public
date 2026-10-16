@@ -597,3 +597,120 @@ tbody tr:last-child td { border-bottom: 0; }
 .executor-stale-warning { margin-top: 12px; padding: 11px 13px; border-left: 4px solid var(--red); border-radius: 0 8px 8px 0; background: var(--red-soft); }
 .executor-stale-warning strong { display: block; color: var(--red); }
 .executor-stale-warning p { margin: 4px 0 0; font-size: 12px; }
+
+/* Issue 完成进度 */
+.issue-progress { --progress-color: #3869e8; display: grid; gap: 10px; margin: 10px 0; min-width: 0; }
+.issue-progress-label { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: #718096; font-size: 11px; font-weight: 500; }
+.issue-progress-label strong { display: inline-flex; align-items: baseline; gap: 2px; color: var(--progress-color); font-size: 21px; line-height: 1; font-weight: 750; font-variant-numeric: tabular-nums; letter-spacing: -.6px; }
+.issue-progress-label strong small { font-size: 11px; font-weight: 500; letter-spacing: 0; opacity: .7; }
+.issue-progress-track { position: relative; height: 8px; border-radius: 999px; background: #edf1f7; overflow: hidden; box-shadow: inset 0 1px 2px #18345a08; }
+.issue-progress-fill { position: relative; z-index: 1; display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, color-mix(in srgb, var(--progress-color) 45%, white), var(--progress-color)); box-shadow: 0 1px 3px #18345a14; }
+.issue-progress.is-unassessed .issue-progress-label strong { color: #8590a2; }
+.issue-progress.is-unassessed .issue-progress-track { background: repeating-linear-gradient(120deg, #edf1f7 0 5px, #f6f8fb 5px 10px); }
+.issue-progress.is-compact { gap: 7px; }
+.issue-progress.is-compact .issue-progress-label strong { font-size: 18px; }
+.issue-progress.is-compact .issue-progress-track { height: 6px; }
+.issue-progress p { margin: 0; overflow-wrap: anywhere; }
+.agent-icon { width: 20px; height: 20px; flex-shrink: 0; vertical-align: middle; color: #2563eb; }
+.agent-assignment { display: flex; gap: 8px; align-items: center; }
+.agent-assignment strong, .agent-assignment small { display: block; }
+.agent-assignment small { color: var(--muted); overflow-wrap: anywhere; }
+.issue-progress-cell { min-width: 120px; }
+.issue-assignment-cell { min-width: 180px; }
+.issue-leaderboard { list-style: none; margin: 0; padding: 0; border: 1px solid var(--border); border-radius: 12px; background: #fff; overflow: hidden; }
+.issue-leaderboard li + li { border-top: 1px solid var(--border); }
+.issue-ranking-row { display: grid; grid-template-columns: 32px 160px minmax(120px, auto) 1fr; gap: 18px; align-items: center; padding: 14px 18px; color: var(--text); }
+.issue-ranking-row:hover, .issue-ranking-row:focus-visible { background: #eff6ff; }
+.issue-ranking-number { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 8px; background: #f1f5f9; color: var(--muted); font-weight: 800; font-variant-numeric: tabular-nums; }
+.issue-leaderboard li:first-child .issue-ranking-number { background: #fef3c7; color: #92400e; }
+.issue-leaderboard li:nth-child(2) .issue-ranking-number { background: #e2e8f0; color: #334155; }
+.issue-leaderboard li:nth-child(3) .issue-ranking-number { background: #ffedd5; color: #9a3412; }
+.issue-ranking-progress .issue-progress { margin: 0; }
+.issue-ranking-title, .issue-ranking-key { min-width: 0; overflow-wrap: anywhere; }
+.issue-progress-panel { display: grid; grid-template-columns: minmax(0, 1fr) 24px; align-items: center; gap: 14px; }
+.issue-progress-panel .issue-progress { margin: 0; gap: 12px; }
+.issue-progress-panel .issue-progress-label strong { font-size: 24px; }
+.issue-progress-panel .issue-progress-track { height: 8px; }
+.progress-info { position: relative; align-self: center; }
+.progress-info-button { display: grid; place-items: center; width: 20px; height: 20px; padding: 0; border: 1px solid #b8c5db; border-radius: 50%; background: #f4f7fc; color: #64748b; font-size: 12px; font-weight: 750; cursor: help; }
+.progress-info-button:focus-visible { outline: 2px solid #3b6cf6; outline-offset: 3px; }
+.progress-info-tooltip { position: absolute; z-index: 30; top: 100%; right: 0; width: min(380px, 75vw); padding: 14px 16px; border: 1px solid var(--border); border-radius: 10px; background: #fff; box-shadow: 0 8px 28px #172b4d26; visibility: hidden; opacity: 0; pointer-events: none; }
+.progress-info:hover .progress-info-tooltip, .progress-info:focus-within .progress-info-tooltip { visibility: visible; opacity: 1; pointer-events: auto; }
+.progress-info-tooltip p { margin: 0 0 8px; color: #526078; font-size: 12px; line-height: 1.8; overflow-wrap: anywhere; }
+.progress-info-tooltip small { color: var(--muted); font-size: 11px; }
+button.metric { text-align: left; font: inherit; cursor: pointer; }
+button.metric:hover { border-color: #a9bff0; background: #f8faff; }
+button.queue-pill { font: inherit; cursor: pointer; }
+.inbox-modal .modal-card { width: min(960px, 96vw); }
+.inbox-modal .work-card { margin: 0; border: 0; box-shadow: none; }
+.inbox-modal .work-card-head { padding-top: 0; }
+
+/* 提交与阶段更新 */
+.issue-new-submission { display: inline-flex; align-items: center; gap: 5px; margin-left: 10px; padding: 3px 7px; border-radius: 5px; background: #eaf2ff; color: #3869e8; font-size: 10px; font-weight: 600; white-space: nowrap; vertical-align: middle; }
+.issue-new-submission[hidden] { display: none; }
+.issue-new-submission::before { content: ''; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+.has-new-submission .issue-ranking-row { box-shadow: inset 3px 0 #3869e8; background: #f5f8ff; }
+.is-event-active .issue-ranking-row { animation: issue-submission-pulse 1.4s ease-in-out 3; animation-delay: var(--submission-delay, 0ms); }
+@keyframes issue-submission-pulse { 0%, 100% { background-color: #f5f8ff; } 50% { background-color: #e5eeff; } }
+.ranking-stage-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 7px 12px; margin-top: 8px; font-size: 11px; font-weight: 400; }
+.ranking-stage-history { color: #687a92; }.ranking-stage-history b { color: #21845b; }
+.ranking-stage-history > span { color: #97a3b6; }
+.ranking-stage-current { display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 4px 8px; border: 1px solid #dbe6ff; border-radius: 6px; background: #f2f6ff; color: #4767a3; }
+.ranking-stage-current i { width: 5px; height: 5px; border-radius: 50%; background: #5482ed; }
+.ranking-stage-current small { color: #7c8eae; font-size: 10px; }
+.ranking-stage-inactive { color: #97a3b6; }
+.stage-reveal-wrap { display: inline-grid; position: relative; isolation: isolate; vertical-align: middle; }
+.stage-glass-overlay { position: absolute; top: 0; left: 0; z-index: 2; pointer-events: none; }
+.stage-glass-shard { position: absolute; inset: 0; transform-origin: 48% 46%; pointer-events: none; will-change: transform, opacity; }
+.stage-glass-shard > .ranking-stage-current, .stage-glass-shard > .ranking-stage-inactive { display: flex; box-sizing: border-box; width: 100%; height: 100%; margin: 0; background: linear-gradient(125deg, #f8fbff, #eaf1ff 65%, #fff); box-shadow: inset 0 0 0 1px #fff9; }
+.is-event-active .issue-progress-track { animation: progress-event-glow 1.4s ease-in-out 3; animation-delay: var(--submission-delay, 0ms); }
+.is-event-active .issue-progress-track::after { content: ''; position: absolute; inset: 0; z-index: 2; border-radius: inherit; background: linear-gradient(100deg, transparent 25%, #a8c7ff60 42%, #ffffffed 50%, #a8c7ff60 58%, transparent 75%); transform: translateX(-100%); animation: progress-event-scan 1.4s cubic-bezier(.4, 0, .2, 1) 3; animation-delay: var(--submission-delay, 0ms); pointer-events: none; }
+.is-event-active .issue-progress-label strong { animation: progress-number-flash 1.4s ease-in-out 3; animation-delay: var(--submission-delay, 0ms); }
+@keyframes progress-event-scan { 0% { transform: translateX(-100%); opacity: 0; } 15%, 85% { opacity: 1; } 100% { transform: translateX(100%); opacity: 0; } }
+@keyframes progress-event-glow { 0%, 100% { box-shadow: 0 0 0 0 #709cff00; } 50% { box-shadow: 0 0 0 3px #709cff1f, 0 0 12px #709cff4d; } }
+@keyframes progress-number-flash { 0%, 100% { opacity: 1; } 50% { opacity: .55; } }
+.progress-particle-layer { position: absolute; inset: 0; z-index: 3; pointer-events: none; }
+.progress-gain-particle { position: absolute; left: 0; top: calc(50% - 1px); border-radius: 1px; background: #fff; box-shadow: 0 0 3px var(--progress-color), 0 0 6px #fff9; }
+.progress-damage-trail { position: absolute; left: 0; top: 0; bottom: 0; z-index: 0; border-radius: inherit; background: linear-gradient(90deg, #f7b057, #eb6159); box-shadow: 0 0 8px #ef6a5c55; pointer-events: none; }
+.issue-progress.is-damaged .issue-progress-fill { background: linear-gradient(90deg, #f0958c, #df4949); box-shadow: 0 0 5px #e45a5a55; }
+.issue-progress.is-damaged .issue-progress-label strong { color: #d94545; }
+.issue-progress.is-damaged .issue-progress-track { background: #fce8e7; animation: progress-damage-flash .65s ease-in-out 6; animation-delay: var(--damage-delay, 0ms); }
+@keyframes progress-damage-flash { 0%, 100% { box-shadow: 0 0 0 1px #e45a5a44; } 50% { box-shadow: 0 0 0 2px #e45a5aaa, 0 0 12px #e45a5a44; } }
+
+/* 工作流泳道与事实亮灯 */
+.workflow-modal .modal-card { width: min(1320px, 96vw); }
+.workflow-current { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; color: #526078; font-size: 13px; }
+.workflow-legend { display: flex; flex-wrap: wrap; gap: 18px; padding-bottom: 16px; font-size: 11px; color: #97a3b6; }
+.legend-current { color: #3869e8; }.legend-visited { color: #21845b; }
+.workflow-scroll { max-height: 65vh; overflow: auto; border: 1px solid #e7edf5; border-radius: 12px; background: #fbfcfe; }
+.workflow-canvas { position: relative; width: 1220px; height: 1000px; }
+.workflow-edges { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.workflow-edge { fill: none; stroke: #e2e8f0; stroke-width: 1.2; opacity: .55; }
+.workflow-edge.is-visited { stroke: #57aa8a; stroke-width: 2; opacity: .9; }
+.workflow-edge.is-flowing { stroke: #3869e8; stroke-width: 2; stroke-dasharray: 6 5; opacity: 1; animation: workflow-edge-flow 1s linear infinite; }
+@keyframes workflow-edge-flow { to { stroke-dashoffset: -22; } }
+.workflow-lane-title { position: absolute; left: 30px; color: #7d8da5; font-size: 11px; font-weight: 650; letter-spacing: 1px; }
+.workflow-graph-node { position: absolute; width: 200px; height: 100px; }
+.workflow-graph-button { width: 100%; height: 100%; display: grid; grid-template-columns: 8px 1fr; align-content: center; gap: 7px 10px; padding: 12px; text-align: left; border: 1px solid #e4e9f1; border-radius: 10px; background: #f5f7fa; color: #9aa5b6; cursor: help; }
+.workflow-graph-button strong { font-size: 12px; font-weight: 650; }
+.workflow-graph-button small, .workflow-node-state { grid-column: 2; font-size: 10px; }
+.workflow-node-light { width: 7px; height: 7px; margin-top: 4px; border-radius: 50%; background: #d1d9e5; }
+.workflow-graph-node.is-visited .workflow-graph-button { background: #f0faf5; border-color: #b6dbc9; color: #286d52; }
+.workflow-graph-node.is-visited .workflow-node-light { background: #2ba373; box-shadow: 0 0 7px #2ba37355; }
+.workflow-graph-node.is-current .workflow-graph-button { background: #eef4ff; border-color: #6f95fa; color: #315fb7; box-shadow: 0 0 0 3px #3869e810; }
+.workflow-graph-node.is-current .workflow-node-light { background: #3869e8; box-shadow: 0 0 8px #3869e888; }
+.workflow-graph-button:focus-visible { outline: 2px solid #3869e8; outline-offset: 3px; }
+.workflow-node-tooltip { position: absolute; z-index: 5; top: 100%; left: 0; width: 260px; padding: 14px; border: 1px solid #dce5f3; border-radius: 10px; background: #fff; box-shadow: 0 8px 28px #172b4d26; visibility: hidden; opacity: 0; color: #526078; font-size: 12px; line-height: 1.7; pointer-events: none; }
+.workflow-node-tooltip p { margin: 6px 0 0; }
+.workflow-graph-node:hover, .workflow-graph-node:focus-within { z-index: 6; }
+.workflow-graph-node:hover .workflow-node-tooltip, .workflow-graph-node:focus-within .workflow-node-tooltip { visibility: visible; opacity: 1; }
+.workflow-note { margin: 14px 0 0; color: var(--muted); font-size: 11px; line-height: 1.7; }
+@media (max-width: 700px) {
+  .issue-ranking-row { grid-template-columns: 28px minmax(90px, 1fr) minmax(100px, 1fr); gap: 10px; padding: 12px; }
+  .issue-ranking-title { grid-column: 2 / -1; }
+  .workflow-current { align-items: flex-start; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .is-event-active .issue-ranking-row, .is-event-active .issue-progress-track, .is-event-active .issue-progress-track::after, .is-event-active .issue-progress-label strong, .workflow-edge.is-flowing, .issue-progress.is-damaged .issue-progress-track { animation: none; }
+  .is-event-active .issue-progress-track::after, .progress-particle-layer, .progress-damage-trail, .stage-glass-overlay { display: none; }
+}

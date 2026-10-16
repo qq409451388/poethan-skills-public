@@ -1,0 +1,26 @@
+{% macro issue_progress(issue, compact=false) %}
+{% set assessed = issue.progress is defined and issue.progress is not none %}
+{% if assessed %}
+{% set p = issue.progress %}
+{% if p <= 50 %}
+{% set t = p / 50 %}
+{% set red = (217 + (59 - 217) * t)|round|int %}
+{% set green = (139 + (111 - 139) * t)|round|int %}
+{% set blue = (22 + (232 - 22) * t)|round|int %}
+{% else %}
+{% set t = (p - 50) / 50 %}
+{% set red = (59 + (24 - 59) * t)|round|int %}
+{% set green = (111 + (151 - 111) * t)|round|int %}
+{% set blue = (232 + (104 - 232) * t)|round|int %}
+{% endif %}
+{% endif %}
+<div {% if assessed %}style="--progress-color: rgb({{ red }}, {{ green }}, {{ blue }}); --progress-soft: rgba({{ red }}, {{ green }}, {{ blue }}, .06)"{% endif %} class="issue-progress{% if compact %} is-compact{% endif %}{% if assessed and issue.progress == 100 %} is-complete{% endif %}{% if not assessed %} is-unassessed{% endif %}">
+  <div class="issue-progress-label"><span>完成进度</span><strong>{% if assessed %}{{ issue.progress }}<small>%</small>{% else %}<small>待评估</small>{% endif %}</strong></div>
+  {% if assessed %}
+  <div class="issue-progress-track" role="progressbar" aria-label="Inspector 评估进度 {{ issue.progress }}%" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ issue.progress }}">
+    <span class="issue-progress-fill" style="width: {{ issue.progress }}%"></span>
+  </div>
+  {% else %}<div class="issue-progress-track" aria-hidden="true"></div>{% endif %}
+  {% if assessed and issue.progress_reason and not compact %}<p>{{ issue.progress_reason }}</p>{% endif %}
+</div>
+{% endmacro %}

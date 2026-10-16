@@ -52,7 +52,7 @@ python3 apps/code-inspector-webtool/app.py
 
 ## 页面结构
 
-- 待我处理：首页顶部先显示最多 6 个最近活跃任务，活跃时间综合 Task、Issue、Activity 和 Candidate 的最近变化；下方按待审核实现、需要人工确认、受阻和候选待审核聚合 Human 当前工作。`HUMAN_CONFIRMATION_REQUIRED` 会突出显示 Inspector 整理的原因、问题、选项、推荐和关键风险；普通 `INSPECTOR_CONFIRMATION_REQUIRED` 仍由 Agent 自主处理，不计入 Human 待确认。
+- 待我处理：展示处理中 Issue 排行榜和四个待办数字卡片；点击待审核实现、需要人工确认、受阻或候选待审核卡片弹窗查看完整对应列表，默认隐藏明细。右上角待审核、待确认、受阻入口复用对应弹窗，所有页面均在当前页面直接打开公共弹窗。
 - 检查任务：默认显示活动任务，可按项目、状态和 `REVIEW` / `CONTINUOUS` 类型筛选并选择显示已关闭任务；整行进入任务详情。
 - 任务详情：展示任务信息、版本历史、统计指标和可组合筛选的问题列表；默认隐藏已确认、已取消的 Issue，勾选“包含已关闭issue”后点击筛选可一并显示，两种任务类型均适用。明确选择关闭状态或“已完成”页签仍显示对应 Issue；任务编辑集中在弹窗中。
 - Issue 详情：`difficulty` 面板区分「已选定的执行者」（assignment）与「候选执行配置」（推荐，实时计算）。assignment 失效时显示“当前执行配置已失效，请重新选择。”并给出原因；指定执行者的下拉只列出 `level >= difficulty` 的合法候选。Routing 配置变化不会自动改选执行者，也不会删除历史分配。
@@ -96,3 +96,5 @@ apps/code-inspector-webtool/
 `/routing` 只读展示 YAML 中的执行配置。新增、删除和等级调整统一编辑 YAML，再校验和保存；不读取本机 Agent 配置，不提供逐条启用或删除操作。每条 Profile 都参与候选筛选。
 
 YAML 根参数 `style: 1/2/3` 分别选择曜石渐变、极光玻璃、金属勋章，默认 `1`。等级参照、执行配置列表以及 Issue 的执行者等级标签统一使用该样式；保存后刷新页面生效。
+
+Issue 完成进度由 Inspector 用 `cictl-insp issue progress <issue> <0–100> --reason "依据"` 评估，详情与任务 Issue 列表显示进度和依据，历史数据为“待评估”。首页顶部显示最多 6 个未关闭 Issue，按进度降序、最近活动（Issue/活动/讨论）降序排序，未评估排在最后；仅 CONFIRMED 可评估为 100%，进度允许下调。

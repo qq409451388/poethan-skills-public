@@ -214,3 +214,7 @@ python3 scripts/code-inspector-installer/install.py migrate
 - [references/activation.yaml](references/activation.yaml)：会话模式触发条件。
 - [references/workflow.yaml](references/workflow.yaml)：任务与问题状态流转。
 - [references/tool-contracts.yaml](references/tool-contracts.yaml)：数据库领域命令契约。
+
+### 手动重新评估进度
+
+已开启 Inspector 会话后输入 `issue progress RI-XXX`；当前唯一绑定一个 Issue 时可省略编号，输入 `issue progress`。Inspector 读取现有审核、阶段验收与验证证据，自主给出百分比和依据并保存。也接受 `$poethan-code-inspector issue progress RI-XXX`。这与底层写入命令 `cictl-insp issue progress RI-XXX 35 --reason "依据"` 不同，用户不需要手填百分比。

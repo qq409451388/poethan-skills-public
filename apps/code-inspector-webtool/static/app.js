@@ -1,3 +1,79 @@
+// 保持真实百分比：事件只做提示，只有评估值变化才移动进度端点。
+function animateProgressChanges(previous, incoming) {
+  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  const oldBars = Array.from(previous.querySelectorAll('[role="progressbar"]'));
+  incoming.querySelectorAll('[role="progressbar"]').forEach((bar, index) => {
+    const oldValue = Number(oldBars[index]?.getAttribute('aria-valuenow'));
+    const value = Number(bar.getAttribute('aria-valuenow'));
+    const fill = bar.querySelector('.issue-progress-fill');
+    const progress = bar.closest('.issue-progress');
+    function showDamage(until) {
+      progress.dataset.damageUntil = String(until);
+      progress.style.setProperty('--damage-delay', `${-(4000 - (until - Date.now()))}ms`);
+      progress.classList.add('is-damaged');
+      window.setTimeout(() => {
+        if (Number(progress.dataset.damageUntil) === until) {
+          progress.classList.remove('is-damaged');
+          delete progress.dataset.damageUntil;
+        }
+      }, Math.max(0, until - Date.now()));
+    }
+    const previousDamage = Number(oldBars[index]?.closest('.issue-progress')?.dataset.damageUntil || 0);
+    if (previousDamage > Date.now()) showDamage(previousDamage);
+    if (!oldBars[index] || !fill || !Number.isFinite(oldValue) || oldValue === value) return;
+    const increasing = value > oldValue;
+    fill.animate([{ width: `${oldValue}%` }, { width: `${value}%` }], {
+      duration: increasing ? 1100 : 240,
+      easing: increasing ? 'linear' : 'cubic-bezier(.2,.8,.2,1)',
+    });
+    if (increasing) {
+      const width = bar.getBoundingClientRect().width;
+      if (!width) return;
+      const layer = document.createElement('span');
+      layer.className = 'progress-particle-layer';
+      layer.setAttribute('aria-hidden', 'true');
+      bar.appendChild(layer);
+      const flights = Array.from({ length: 22 }, (_, particleIndex) => {
+        const dot = document.createElement('i');
+        dot.className = 'progress-gain-particle';
+        const size = 2 + particleIndex % 3;
+        dot.style.width = `${size}px`;
+        dot.style.height = `${size}px`;
+        layer.appendChild(dot);
+        const delay = particleIndex * 32;
+        const duration = 400;
+        const arrival = Math.min(1, (delay + duration) / 1100);
+        const target = width * (oldValue + (value - oldValue) * arrival) / 100;
+        const origin = Math.max(target + 10, width - (particleIndex % 5) * 6);
+        return dot.animate([
+          { transform: `translate(${origin}px, ${(particleIndex % 3 - 1) * 2}px) scale(.5)`, opacity: 0 },
+          { opacity: 1, offset: .16 },
+          { transform: `translate(${target}px, 0) scale(1.2)`, opacity: .95, offset: .9 },
+          { transform: `translate(${target - 2}px, 0) scale(.2)`, opacity: 0 },
+        ], { duration, delay, easing: 'cubic-bezier(.25,.4,.4,1)', fill: 'both' });
+      });
+      Promise.allSettled(flights.map((animation) => animation.finished)).then(() => layer.remove());
+    } else {
+      showDamage(Date.now() + 4000);
+      const damage = document.createElement('span');
+      damage.className = 'progress-damage-trail';
+      damage.style.width = `${oldValue}%`;
+      damage.setAttribute('aria-hidden', 'true');
+      bar.prepend(damage);
+      const drain = damage.animate([
+        { width: `${oldValue}%`, opacity: 1 },
+        { width: `${value}%`, opacity: .25 },
+      ], { duration: 850, delay: 350, easing: 'cubic-bezier(.55,0,.8,.45)', fill: 'both' });
+      bar.animate([
+        { transform: 'translateX(0)' }, { transform: 'translateX(-2px)' },
+        { transform: 'translateX(2px)' }, { transform: 'translateX(-1px)' },
+        { transform: 'translateX(0)' },
+      ], { duration: 260, easing: 'ease-out' });
+      Promise.allSettled([drain.finished]).then(() => damage.remove());
+    }
+  });
+}
+
 (() => {
   let lastTrigger = null;
 
@@ -95,7 +171,7 @@
     }
 
     const opener = event.target.closest('[data-modal-open]');
-    if (opener) {
+    if (opener && document.getElementById(opener.dataset.modalOpen)) {
       event.preventDefault();
       openModal(opener.dataset.modalOpen, opener);
       return;
@@ -444,6 +520,11 @@ document.querySelectorAll('form[method="post" i]').forEach((form) => {
       return;
     }
     if (target?.matches('details.collapsible-panel')) target.open = true;
+    const queueKeys = ['pending-review', 'confirmation', 'blocked', 'candidate-review'];
+    const key = window.location.hash.slice(1);
+    const modal = target?.matches('.modal-backdrop') ? target
+      : queueKeys.includes(key) ? document.getElementById(`${key}-modal`) : null;
+    if (modal) openModal(modal.id);
   }
 
   // tab 行要贴在吸顶标题下面，标题高度随语言和换行变化，所以按实际高度算偏移。
@@ -483,10 +564,18 @@ document.querySelectorAll('form[method="post" i]').forEach((form) => {
       document.querySelectorAll('[data-live-region]').forEach((current) => {
         const key = current.dataset.liveRegion;
         const incoming = nextDocument.querySelector(`[data-live-region="${CSS.escape(key)}"]`);
-        if (!incoming || comparableHtml(current) === comparableHtml(incoming) || current.contains(document.activeElement)) return;
+        if (current.contains(document.activeElement)) return;
+        if (!incoming) {
+          current.remove();
+          changed = true;
+          syncStickyOffsets();
+          return;
+        }
+        if (comparableHtml(current) === comparableHtml(incoming)) return;
         const state = regionState(current);
         const replacement = incoming.cloneNode(true);
         current.replaceWith(replacement);
+        animateProgressChanges(current, replacement);
         restoreRegionState(replacement, state);
         renderRecordPreviews(replacement);
         syncStickyOffsets();
@@ -506,4 +595,134 @@ document.querySelectorAll('form[method="post" i]').forEach((form) => {
   }
 
   window.setInterval(refreshIssue, interval);
+})();
+
+// 将旧 Stage 描述分成玻璃碎片，露出下面的新描述；不影响链接和读屏内容。
+function animateStageReveal(snapshot, row) {
+  const latest = row.querySelector('.ranking-stage-current, .ranking-stage-inactive');
+  if (!snapshot || !latest || snapshot.text === latest.textContent.trim()
+      || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  const wrap = document.createElement('span');
+  wrap.className = 'stage-reveal-wrap';
+  latest.before(wrap);
+  wrap.appendChild(latest);
+  const overlay = document.createElement('span');
+  overlay.className = 'stage-glass-overlay';
+  overlay.setAttribute('aria-hidden', 'true');
+  overlay.setAttribute('inert', '');
+  overlay.style.width = `${snapshot.width}px`;
+  overlay.style.height = `${snapshot.height}px`;
+  wrap.appendChild(overlay);
+  const shapes = [
+    ['0 0, 38% 0, 48% 46%', -20, -18, -12],
+    ['38% 0, 72% 0, 48% 46%', 5, -27, 8],
+    ['72% 0, 100% 0, 100% 48%, 48% 46%', 28, -14, 14],
+    ['100% 48%, 100% 100%, 68% 100%, 48% 46%', 31, 20, 16],
+    ['68% 100%, 31% 100%, 48% 46%', 1, 30, -8],
+    ['31% 100%, 0 100%, 0 60%, 48% 46%', -25, 22, -16],
+    ['0 60%, 0 0, 48% 46%', -32, -2, -10],
+  ];
+  const animations = shapes.map(([polygon, x, y, rotation], index) => {
+    const shard = document.createElement('span');
+    shard.className = 'stage-glass-shard';
+    shard.style.clipPath = `polygon(${polygon})`;
+    shard.appendChild(snapshot.node.cloneNode(true));
+    overlay.appendChild(shard);
+    return shard.animate([
+      { transform: 'translate(0, 0) rotate(0deg)', opacity: 1, filter: 'brightness(1)' },
+      { transform: 'translate(0, 0) rotate(0deg)', opacity: 1, filter: 'brightness(1.25)', offset: .16 },
+      { transform: `translate(${x}px, ${y}px) rotate(${rotation}deg)`, opacity: 0, filter: 'brightness(1.4)' },
+    ], { duration: 850, delay: index * 18, easing: 'cubic-bezier(.22,.65,.32,1)', fill: 'forwards' });
+  });
+  const reveal = latest.animate([
+    { opacity: 0, transform: 'translateY(5px)', filter: 'blur(2px)' },
+    { opacity: 1, transform: 'translateY(0)', filter: 'blur(0)' },
+  ], { duration: 650, delay: 160, easing: 'ease-out', fill: 'backwards' });
+  Promise.allSettled([...animations, reveal].map((animation) => animation.finished)).then(() => {
+    overlay.remove();
+    if (wrap.isConnected) wrap.replaceWith(latest);
+  });
+}
+
+// 首页复用审计事件流：仅对本次页面打开后收到的提交做动效提示。
+(() => {
+  if (!document.querySelector('[data-active-issues]')) return;
+  const submissions = new Map();
+  const submissionActions = new Set(['design.submit', 'stage.submit', 'implementation.submit']);
+  let dirty = false;
+  let refreshing = false;
+
+  function paintSubmissions() {
+    const now = Date.now();
+    for (const [key, notice] of submissions) {
+      if (notice.expires <= now) submissions.delete(key);
+    }
+    document.querySelectorAll('[data-active-issues] [data-issue-key]').forEach((row) => {
+      const notice = submissions.get(row.dataset.issueKey);
+      const fresh = Boolean(notice);
+      row.classList.toggle('has-new-submission', fresh);
+      if (notice && row.dataset.submissionEvent !== String(notice.eventId)) {
+        row.dataset.submissionEvent = String(notice.eventId);
+        row.style.setProperty('--submission-delay', `${-(now - notice.started)}ms`);
+        // 新的提交重播提示；同一事件轮询不重复播放。
+        row.classList.remove('is-event-active');
+        void row.offsetWidth;
+        row.classList.add('is-event-active');
+      }
+      if (!notice || now - notice.started >= 4200) row.classList.remove('is-event-active');
+      const badge = row.querySelector('.issue-new-submission');
+      if (badge) badge.hidden = !fresh;
+    });
+  }
+
+  async function refreshRanking() {
+    paintSubmissions();
+    if (!dirty || refreshing || document.hidden) return;
+    const region = document.querySelector('[data-active-issues]');
+    // 避免更新时移走键盘焦点；待用户离开列表后再更新。
+    if (!region || region.contains(document.activeElement)) return;
+    refreshing = true;
+    dirty = false;
+    try {
+      const response = await fetch(window.location.href, { cache: 'no-store', credentials: 'same-origin' });
+      if (!response.ok) throw new Error('ranking unavailable');
+      const next = new DOMParser().parseFromString(await response.text(), 'text/html')
+        .querySelector('[data-active-issues]');
+      if (!next) throw new Error('ranking missing');
+      if (region.contains(document.activeElement)) { dirty = true; return; }
+      const stageSnapshots = new Map();
+      region.querySelectorAll('[data-issue-key]').forEach((row) => {
+        const stage = row.querySelector('.ranking-stage-current, .ranking-stage-inactive');
+        if (stage) {
+          const rect = stage.getBoundingClientRect();
+          stageSnapshots.set(row.dataset.issueKey, {
+            node: stage.cloneNode(true), text: stage.textContent.trim(), width: rect.width, height: rect.height,
+          });
+        }
+      });
+      region.replaceWith(next);
+      next.querySelectorAll('[data-issue-key]').forEach((row) => {
+        const oldRow = Array.from(region.querySelectorAll('[data-issue-key]'))
+          .find((item) => item.dataset.issueKey === row.dataset.issueKey);
+        if (oldRow) animateProgressChanges(oldRow, row);
+        animateStageReveal(stageSnapshots.get(row.dataset.issueKey), row);
+      });
+      paintSubmissions();
+    } catch (_error) {
+      dirty = true;
+    } finally {
+      refreshing = false;
+    }
+  }
+
+  window.addEventListener('code-inspector:changed', ({ detail }) => {
+    if (detail.issueKey && submissionActions.has(detail.action)) {
+      const started = Date.now();
+      submissions.set(detail.issueKey, { started, expires: started + 20000, eventId: detail.eventId });
+      paintSubmissions();
+    }
+    dirty = true;
+    refreshRanking();
+  });
+  window.setInterval(refreshRanking, 1000);
 })();

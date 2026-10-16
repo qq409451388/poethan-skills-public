@@ -135,6 +135,7 @@
         "activity-revision-list",
         "candidate-list",
         "candidate-update-status",
+        "issue-set-progress",
         "issue-set-difficulty",
         "issue-set-assignment"
       ],

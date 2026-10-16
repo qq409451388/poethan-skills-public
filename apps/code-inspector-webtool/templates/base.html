@@ -20,9 +20,9 @@
       </nav>
       <button type="button" class="notification-toggle" data-browser-notifications hidden>开启桌面提醒</button>
       <div class="workqueue" aria-label="Human 当前待办">
-        <a class="queue-pill" href="{{ url_for('inbox') }}#pending-review"><strong>{{ queue_counts.pending_review }}</strong>待审核</a>
-        <a class="queue-pill" href="{{ url_for('inbox') }}#confirmation"><strong>{{ queue_counts.confirmation }}</strong>待确认</a>
-        <a class="queue-pill" href="{{ url_for('inbox') }}#blocked"><strong>{{ queue_counts.blocked }}</strong>受阻</a>
+        <button type="button" class="queue-pill" data-modal-open="pending-review-modal" aria-haspopup="dialog"><strong>{{ queue_counts.pending_review }}</strong>待审核</button>
+        <button type="button" class="queue-pill" data-modal-open="confirmation-modal" aria-haspopup="dialog"><strong>{{ queue_counts.confirmation }}</strong>待确认</button>
+        <button type="button" class="queue-pill" data-modal-open="blocked-modal" aria-haspopup="dialog"><strong>{{ queue_counts.blocked }}</strong>受阻</button>
       </div>
     </div>
   </header>
@@ -36,6 +36,10 @@
     {% endif %}
     {% block content %}{% endblock %}
   </main>
+
+  {% with groups=workqueue.groups, candidates=workqueue.candidates %}
+    {% include "components/workqueue_modals.html" %}
+  {% endwith %}
 
   <footer class="footer">业务写入通过 <span class="mono">reviewctl</span> 的 WebApp Human 身份入口，统一校验和审计。</footer>
 </body>

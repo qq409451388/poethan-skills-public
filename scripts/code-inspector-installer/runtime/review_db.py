@@ -958,6 +958,7 @@ ISSUE_OUTPUT_FIELDS = {
     "estimated_change_json", "current_attempt_no", "confirmed_at", "cancelled_at",
     "created_at", "updated_at", "dedupe_key", "task_key", "project_name",
     "summary", "expected_outcome", "technical_note", "local_terms_json",
+    "progress", "progress_reason", "progress_updated_at", "progress_updated_by",
     "difficulty", "difficulty_reason_json", "recommended_executors_json",
     "routing_revision", "assignment_json",
     "last_activity_at", "last_comment_at", "last_discussion_at",
@@ -974,6 +975,7 @@ ISSUE_GET_COMPACT_FIELDS = [
     "evidence_json", "current_attempt_no", "updated_at", "last_activity_at", "last_discussion_at",
     # difficulty 与 assignment 是判断「谁来做」的关键信息，compact 视图必须带上。
     # assignmentStatus / assignmentInvalidReason 是读取时计算的派生字段。
+    "progress", "progress_reason", "progress_updated_at", "progress_updated_by",
     "difficulty", "difficulty_reason_json", "recommended_executors_json",
     "assignment", "assignmentStatus", "assignmentInvalidReason",
 ]
@@ -1214,6 +1216,33 @@ def issue_set_difficulty(args: argparse.Namespace) -> None:
     with connect() as conn:
         result = apply_difficulty_update(conn, args, args.issue_key, difficulty, reason)
     print_json({"issue_key": args.issue_key, **result})
+
+def issue_set_progress(args: argparse.Namespace) -> None:
+    require_agent(args.agent)
+    if args.agent != "inspector":
+        raise PermissionError("只有 inspector 可以评估问题进度")
+    if not 0 <= args.progress <= 100:
+        raise ValueError("progress 必须是 0–100 的整数")
+    reason = args.reason.strip()
+    if not reason:
+        raise ValueError("必须提供进度评估依据")
+    with connect() as conn:
+        row = conn.execute("SELECT id, status, progress FROM review_issue WHERE issue_key = ?",
+                           (args.issue_key,)).fetchone()
+        if row is None:
+            raise KeyError(f"问题不存在: {args.issue_key}")
+        if args.progress == 100 and row["status"] != "CONFIRMED":
+            raise ValueError("只有已确认通过验证的 Issue 可以评估为 100%")
+        conn.execute(
+            """UPDATE review_issue SET progress=?, progress_reason=?,
+               progress_updated_at=CURRENT_TIMESTAMP, progress_updated_by=?,
+               updated_at=CURRENT_TIMESTAMP WHERE id=?""",
+            (args.progress, reason, actor_id(args), row["id"]),
+        )
+        audit(conn, actor_id(args), "issue.set-progress", "review_issue", args.issue_key, True,
+              dumps({"before": row["progress"], "progress": args.progress, "reason": reason}))
+    print_json({"issue_key": args.issue_key, "progress": args.progress, "progress_reason": reason})
+
 
 def apply_assignment_update(
     conn: sqlite3.Connection, args: argparse.Namespace, issue_key: str,
@@ -2243,7 +2272,7 @@ def issue_context_get(args: argparse.Namespace) -> None:
             """SELECT i.issue_key, i.title, i.summary, i.expected_outcome, i.technical_note,
                       i.status, i.dimension, i.severity, i.current_attempt_no,
                       i.evidence_json, i.local_terms_json,
-                      i.difficulty, i.assignment_json,
+                      i.difficulty, i.assignment_json, i.progress, i.progress_reason, i.progress_updated_at, i.progress_updated_by,
                       t.task_key, t.project_name, t.review_level, t.review_scope, t.baseline_ref
                FROM review_issue i JOIN review_task t ON t.id=i.task_id
                WHERE i.issue_key=?""",
@@ -2331,6 +2360,11 @@ def issue_context_get(args: argparse.Namespace) -> None:
     print_json({
         "projection_revision": projection["projection_revision"],
         "issue": issue_json,
+        **({"progress_guidance": {
+            "command": f'cictl-insp issue progress {args.issue_key} <0–100> --reason "已完成什么；还缺什么"',
+            "unassessed": issue_json.get("progress") is None,
+            "instruction": "首次接手未评估 Issue，或本轮方案审核、阶段验收、实现审核、返工、最终验证后，结束本轮前评估并写入进度；按已验证范围判断，允许下调；100 仅限 CONFIRMED。无新事实时不重复写入。",
+        }} if role == "inspector" else {}),
         "current_stage": stage,
         "effective_decisions": [dict(item) for item in decisions],
         "latest_activities": [dict(item) for item in activities],
@@ -4218,6 +4252,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--facts")
     p.add_argument("--rationale")
     p.set_defaults(func=issue_update_body)
+
+    p = sub.add_parser("issue-set-progress")
+    p.add_argument("--issue-key", required=True)
+    p.add_argument("--progress", type=int, required=True)
+    p.add_argument("--reason", required=True)
+    p.set_defaults(func=issue_set_progress)
 
     p = sub.add_parser("issue-set-difficulty")
     p.add_argument("--issue-key", required=True)

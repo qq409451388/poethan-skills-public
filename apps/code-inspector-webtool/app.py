@@ -16,12 +16,13 @@ import traceback
 from urllib.parse import urlencode
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from flask import Flask, abort, redirect, render_template, request, session, url_for
+from flask import Flask, abort, g, redirect, render_template, request, session, url_for
 from markupsafe import Markup
 
 from commands import run_human_command
 from db import parse_json_field, query_all, query_one
 import routing
+from workflow_view import workflow_graph
 
 BASE_DIR = Path(__file__).resolve().parent
 app = Flask(__name__, template_folder=str(BASE_DIR / "templates"), static_folder=str(BASE_DIR / "static"))
@@ -162,7 +163,7 @@ BROWSER_CHANGE_ACTIONS = (
     "issue.update-assessment-batch", "issue.update-body", "issue.update-status",
     "issue.update-status-batch", "design.request", "design.submit", "design.review",
     "stage.plan-create", "stage.prepare", "stage.submit", "stage.review",
-    "implementation.submit", "human.escalate", "human.confirmation-resolve",
+    "implementation.submit", "human.escalate", "human.confirmation-resolve", "issue.set-progress",
 )
 
 STATUS_PRESENTATION = {
@@ -433,8 +434,9 @@ def issue_summary_where(extra: str = "", params: tuple = ()) -> dict:
     return {key: int(row.get(key) or 0) for key in ("pending_review", "confirmation", "blocked")}
 
 
-@app.route("/")
-def inbox():
+def workqueue_data():
+    if "workqueue" in g:
+        return g.workqueue
     base_select = """SELECT i.*, t.task_key, t.title AS task_title, t.project_name,
         (SELECT MAX(COALESCE(a.amended_at, a.created_at)) FROM issue_activity a
          WHERE a.issue_id = i.id AND a.operator_type = 'DEVELOPMENT_AGENT'
@@ -458,37 +460,50 @@ def inbox():
     candidates = [candidate_with_json(row) for row in query_all(
         """SELECT c.*, t.task_key, t.project_name FROM issue_candidate c
            JOIN review_task t ON t.id = c.task_id
-           WHERE c.status IN ('SUBMITTED', 'UNDER_REVIEW') ORDER BY c.updated_at DESC, c.id DESC LIMIT 8"""
+           WHERE c.status IN ('SUBMITTED', 'UNDER_REVIEW') ORDER BY c.updated_at DESC, c.id DESC"""
     )]
     metrics = {name: len(rows) for name, rows in issue_groups.items()}
-    metrics["candidates"] = int((query_one(
-        "SELECT COUNT(*) AS total FROM issue_candidate WHERE status IN ('SUBMITTED', 'UNDER_REVIEW')"
-    ) or {}).get("total") or 0)
-    recent_tasks = query_all(
-        """SELECT t.*,
-                  COUNT(i.id) AS issue_total,
-                  SUM(CASE WHEN i.status NOT IN ('CONFIRMED','CANCELLED') THEN 1 ELSE 0 END) AS open_issue_total,
-                  SUM(CASE WHEN i.status = 'IMPLEMENTED_PENDING_REVIEW' THEN 1 ELSE 0 END) AS pending_review_total,
-                  SUM(CASE WHEN i.status = 'HUMAN_CONFIRMATION_REQUIRED' THEN 1 ELSE 0 END) AS human_total,
-                  (SELECT MAX(i2.updated_at) FROM review_issue i2 WHERE i2.task_id = t.id) AS latest_issue_at,
-                  (SELECT MAX(COALESCE(a.amended_at, a.created_at)) FROM issue_activity a
-                     JOIN review_issue i3 ON i3.id = a.issue_id WHERE i3.task_id = t.id) AS latest_activity_at,
-                  (SELECT MAX(c.updated_at) FROM issue_candidate c WHERE c.task_id = t.id) AS latest_candidate_at
-           FROM review_task t LEFT JOIN review_issue i ON i.task_id = t.id
-           WHERE t.status IN ('PENDING','IN_PROGRESS','ON_HOLD','BLOCKED')
-           GROUP BY t.id"""
+    metrics["candidates"] = len(candidates)
+    g.workqueue = {"groups": issue_groups, "candidates": candidates, "metrics": metrics}
+    return g.workqueue
+
+
+@app.route("/")
+def inbox():
+    queue = workqueue_data()
+    active_issues = query_all(
+        """SELECT i.*, t.task_key, t.project_name,
+                  MAX(i.updated_at, COALESCE((SELECT MAX(COALESCE(a.amended_at, a.created_at))
+                      FROM issue_activity a WHERE a.issue_id=i.id), i.updated_at),
+                      COALESCE((SELECT MAX(COALESCE(d.amended_at, d.created_at)) FROM issue_discussion d
+                      WHERE d.issue_id=i.id), i.updated_at)) AS active_at
+           FROM review_issue i JOIN review_task t ON t.id=i.task_id
+           WHERE i.status NOT IN ('CONFIRMED','CANCELLED')
+           ORDER BY i.progress IS NULL, i.progress DESC, active_at DESC, i.id DESC LIMIT 6"""
     )
-    for task in recent_tasks:
-        task["active_at"] = max(
-            value for value in (
-                task.get("updated_at"), task.get("latest_issue_at"),
-                task.get("latest_activity_at"), task.get("latest_candidate_at"),
-            ) if value
+    if active_issues:
+        placeholders = ",".join("?" for _ in active_issues)
+        stage_rows = query_all(
+            f"SELECT * FROM issue_stage WHERE issue_id IN ({placeholders}) ORDER BY plan_no DESC, stage_no",
+            [item["id"] for item in active_issues],
         )
-    recent_tasks.sort(key=lambda task: (task["active_at"], task["id"]), reverse=True)
+        for item in active_issues:
+            history = [row for row in stage_rows if row["issue_id"] == item["id"]]
+            if not history:
+                continue
+            active = [row for row in history if row["plan_status"] == "ACTIVE"]
+            current = next((row for row in active if row["status"] in {"IN_PROGRESS", "PENDING_REVIEW"}), None)
+            item["stage_summary"] = {
+                "plans": len({row["plan_no"] for row in history}),
+                "history_plans": sorted({row["plan_no"] for row in history if row["plan_status"] != "ACTIVE"}),
+                "active_plan_no": active[0]["plan_no"] if active else None,
+                "active_total": len(active),
+                "active_approved": sum(row["status"] == "APPROVED" for row in active),
+                "current": current,
+            }
     return render_template(
-        "inbox.html", groups=issue_groups, candidates=candidates, metrics=metrics,
-        recent_tasks=recent_tasks[:6],
+        "inbox.html", metrics=queue["metrics"],
+        active_issues=active_issues,
     )
 
 
@@ -718,6 +733,10 @@ def task_detail(task_key: str):
             ORDER BY CASE i.severity WHEN 'critical' THEN 4 WHEN 'high' THEN 3 WHEN 'medium' THEN 2 ELSE 1 END DESC,
                      i.updated_at DESC, i.issue_key ASC""", params,
     )]
+    for issue in issues:
+        issue["assignment_status"], issue["assignment_invalid_reason"] = routing.assignment_state(
+            issue.get("assignment"), issue.get("difficulty"),
+        )
     versions = query_all("SELECT * FROM review_task_version WHERE task_id = ? ORDER BY version_no DESC", (task["id"],))
     non_open_placeholders = ",".join("?" for _ in NON_OPEN_ISSUE_STATUSES)
     completed_placeholders = ",".join("?" for _ in COMPLETED_ISSUE_STATUSES)
@@ -739,6 +758,7 @@ def task_detail(task_key: str):
     )
     return render_template(
         "task_detail.html", task=task, issues=issues, versions=versions, summary=summary,
+        level_roles=routing.LEVEL_ROLES, rank_skin=routing.rank_skin(),
         statuses=TASK_STATUSES, issue_statuses=ISSUE_STATUSES, severities=SEVERITIES, dimensions=DIMENSIONS,
         filters={
             "tab": tab, "issue_status": issue_status, "severity": severity, "dimension": dimension,
@@ -849,6 +869,7 @@ def issue_detail(issue_key: str):
         latest_human_request=latest_human_request,
         stage_plans=stage_plans, active_stage_plan=active_stage_plan,
         current_execution_stage=current_execution_stage,
+        workflow=workflow_graph(issue, activities, stages, current_execution_stage),
         current_stage=stage, status_explanation=status_explanation, dimensions=DIMENSIONS,
         severities=SEVERITIES, benefits=BENEFITS, costs=COSTS, confidence=CONFIDENCE,
         dispositions=DISPOSITIONS, activity_types=ACTIVITY_TYPES, discussion_topics=DISCUSSION_TOPICS,
@@ -1193,16 +1214,18 @@ def routing_validate():
 
 @app.context_processor
 def inject_globals():
-    queue_counts = {"pending_review": 0, "confirmation": 0, "blocked": 0}
+    queue = {"groups": {key: [] for key in ("pending_review", "confirmation", "blocked")},
+             "candidates": [], "metrics": {key: 0 for key in ("pending_review", "confirmation", "blocked", "candidates")}}
     if request.endpoint != "healthcheck":
         try:
-            queue_counts = issue_summary_where()
+            queue = workqueue_data()
         except RuntimeError:
             pass
     return {
         "flash_msg": request.args.get("msg", "") or request.args.get("err", ""),
         "flash_kind": "err" if request.args.get("err") else ("ok" if request.args.get("msg") else ""),
-        "queue_counts": queue_counts,
+        "queue_counts": queue["metrics"],
+        "workqueue": queue,
         "csrf_token": csrf_token(),
     }
 

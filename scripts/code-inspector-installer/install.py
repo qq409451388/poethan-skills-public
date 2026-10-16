@@ -483,6 +483,9 @@ def generated_skill_text(platform: str, identities: list[dict[str, Any]], target
         "后的摘要和正文必须用中文说明业务变化，例如 `refactor(analytics): 统一淘宝数据源边界`，不得只写英文"
         "摘要。若项目已有明确的强制语言规范则遵循项目规范。原始标识符和证据保持不变；本规则不代表获得"
         "执行 `git add`、`git commit` 或 `git push` 的额外授权。\n\n"
+        "## Inspector 进度维护\n\n"
+        'Inspector 必须维护 Issue 完成进度：创建后、首次接手未评估 Issue，以及方案审核、Stage 验收、实现审核、返工和最终验证后，在本轮结束前用 `cictl-insp issue progress <issue_key> <0–100整数> --reason "已完成什么；还缺什么"` 写入评估。仅按已验证范围判断，允许下调，不按 Stage 数量平均换算；100 仅限 CONFIRMED。没有新事实且已有评估时不重复写入。\n\n'
+        '手动触发：已激活的 Inspector 会话收到 `issue progress <issue_key>`（也接受 `$poethan-code-inspector issue progress <issue_key>` 或 `/poethan-code-inspector issue progress <issue_key>`）时，读取该 Issue 的 context，并按需补读 Stage、审核与验证证据，自主评估 0–100 的进度，再执行 `cictl-insp issue progress <issue_key> <百分比> --reason "已完成什么；还缺什么"`，最后简短回复百分比与依据。用户无需提供百分比；这是重新评估请求，不是只展示旧值。省略 Issue Key 时仅使用当前唯一绑定的 Issue；没有唯一目标则询问 Issue Key，不批量猜测。Developer 会话不得切换身份执行，未激活时先提示开启 `start insp`；FastMode 仍限已绑定 Scope，不改变现有流程状态、不启动 Watch。\n\n'
         "## FastMode\n\n"
         "FastMode 启动格式：`$poethan-code-inspector fastmode RI-XXX [RI-YYY ...]`。FastMode 固定使用 Inspector 身份，"
         "启动后只能检查命令中指定并去重的 Issue，且按输入顺序串行处理。Developer Agent 不是前置条件，"

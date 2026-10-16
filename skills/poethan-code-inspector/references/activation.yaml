@@ -83,3 +83,14 @@ workflow_execution:
   inspector_when:
     - 用户要求创建审核任务、执行审核、制定或验收 Stage、验证修复或最终确认
     - 仅在穷尽可得事实后仍缺少 Human 独有业务事实，或存在重大不可逆数据风险时发起 Human 异常升级
+
+manual_issue_progress:
+  commands:
+    - issue progress [<issue-key>]
+    - $poethan-code-inspector issue progress [<issue-key>]
+    - /poethan-code-inspector issue progress [<issue-key>]
+  required_active_role: inspector
+  missing_issue_key: 仅使用当前唯一绑定 Issue，否则询问 Issue Key。
+  behavior: 读取 context 和必要验收证据，自主评估百分比并调用 cictl-insp issue progress 写入进度及依据；不是只展示旧值。
+  inactive_behavior: 提示先 start insp，不自动激活或切换角色。
+  fastmode_scope: 仍限定当前 FastMode 的 Issue Scope。

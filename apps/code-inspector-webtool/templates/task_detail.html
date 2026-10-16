@@ -1,6 +1,9 @@
 {% extends "base.html" %}
 {% from "components/task_modal.html" import task_modal %}
 {% from "components/issue_copy_button.html" import issue_copy_button %}
+{% from "components/issue_progress.html" import issue_progress %}
+{% from "components/agent_icon.html" import agent_icon %}
+{% from "components/rank_tag.html" import rank_tag %}
 {% block title %}{{ task.task_key }} · 检查任务{% endblock %}
 {% block content %}
 <nav class="breadcrumb" aria-label="面包屑"><a href="{{ url_for('task_list') }}">检查任务</a><span>/</span><span>{{ task.task_key }}</span></nav>
@@ -75,13 +78,22 @@
   {% if issues %}
   <div class="table-wrap">
     <table class="issue-table">
-      <thead><tr><th>问题</th><th>问题摘要</th><th>维度</th><th>严重度</th><th>状态</th><th>更新</th></tr></thead>
+      <thead><tr><th>问题</th><th>问题摘要</th><th>维度</th><th>严重度</th><th>状态</th><th>进度</th><th>难度</th><th>AI Agent</th><th>更新</th></tr></thead>
       <tbody>{% for issue in issues %}
         <tr class="clickable-row" tabindex="0" data-href="{{ url_for('issue_detail', issue_key=issue.issue_key) }}">
           <td class="mono nowrap"><span class="issue-key-copy"><a href="{{ url_for('issue_detail', issue_key=issue.issue_key) }}">{{ issue.issue_key }}</a>{{ issue_copy_button(issue.issue_key) }}</span></td>
           <td class="issue-title-cell"><strong>{{ issue.title }}</strong><span>{{ issue.summary|truncate(100) }}</span></td>
           <td class="nowrap">{{ issue.dimension|label }}</td><td class="sev-{{ issue.severity }}">{{ issue.severity|label }}</td>
-          <td><span class="badge badge-status-{{ issue.status }}">{{ issue.status|label }}</span></td><td class="mono muted nowrap">{{ issue.updated_at|localtime }}</td>
+          <td><span class="badge badge-status-{{ issue.status }}">{{ issue.status|label }}</span></td>
+          <td class="issue-progress-cell" title="{{ issue.progress_reason or 'Inspector 尚未评估' }}">{{ issue_progress(issue, compact=true) }}</td>
+          <td class="nowrap">{% if issue.difficulty is not none %}{{ rank_tag(issue.difficulty, level_roles.get(issue.difficulty, ''), rank_skin) }}{% else %}<span class="muted">待评估</span>{% endif %}</td>
+          <td class="issue-assignment-cell">
+            {% if issue.assignment %}
+            <div class="agent-assignment">{{ agent_icon() }}<div><strong>{{ issue.assignment.agent }}</strong><small>{{ issue.assignment.model }} · {{ issue.assignment.reasoning }}</small></div></div>
+            {% if issue.assignment_status == 'STALE' %}<span class="badge badge-red" title="{{ issue.assignment_invalid_reason|assignment_reason }}">分配已失效</span>{% endif %}
+            {% else %}<span class="muted">未分配</span>{% endif %}
+          </td>
+          <td class="mono muted nowrap">{{ issue.updated_at|localtime }}</td>
         </tr>
       {% endfor %}</tbody>
     </table>

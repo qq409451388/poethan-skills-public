@@ -13,7 +13,7 @@ internal_compat_layer:
   note: 旧 review-db 子命令保留为内部兼容层；Skill 文档与安装说明只暴露角色命令 cictl-dev / cictl-insp，cictl.py 仅为被角色命令加载的运行时文件。
 domain_action_map:
   task: {list: task-list, show: task-get, ensure: task-resolve, edit: task-update, status: task-update-status}
-  issue: {list: issue-list, pending: issue-list-pending-review, show: issue-get, context: issue-context-get, create: issue-create, create-many: issue-create-batch, edit: issue-update-body, rate: issue-update-assessment, rate-many: issue-update-assessment-batch, status: issue-update-status, status-many: issue-update-status-batch, difficulty: issue-set-difficulty, assign: issue-set-assignment}
+  issue: {list: issue-list, pending: issue-list-pending-review, show: issue-get, context: issue-context-get, create: issue-create, create-many: issue-create-batch, edit: issue-update-body, rate: issue-update-assessment, rate-many: issue-update-assessment-batch, status: issue-update-status, status-many: issue-update-status-batch, progress: issue-set-progress, difficulty: issue-set-difficulty, assign: issue-set-assignment}
   design: {request: design-request, submit: design-submit, preview: design-preview, confirm: design-choice-record, approve: "design-review(decision=approved)", reject: "design-review(decision=rejected)"}
   stage: {list: stage-list, show: stage-get, history: stage-history-get, prepare: stage-prepare, submit: stage-submit, review-template: 只读模板生成, review: "stage-review（decision/content/summary/plan_no 自动推导，验收项使用 AC-n 稳定 ID）", redesign: "stage-review(decision=redesign)"}
   discussion: {list: discussion-list, show: discussion-get, add: discussion-append, edit: discussion-amend}
@@ -72,6 +72,10 @@ commands:
     evidence_location: 优先 file_path 加 class_name/method_name/符号或 code_excerpt；line_start/line_end 只是快照提示。
     difficulty: 可选正整数，只描述任务本身的抽象困难程度；不写具体模型名称，也不做模型能力判断。缺少时不产生推荐执行配置。
     recommended_executors: 读取时由本机 Model Router 按 level>=difficulty 动态计算；Router 未配置时为空列表，命令照常成功。
+  issue-set-progress:
+    agent: inspector
+    required: [--issue-key, --progress, --reason]
+    note: Inspector 评估 0–100 整数完成进度并提供非空依据，允许下调；100 仅限 CONFIRMED。独立于流程状态，历史未评估为 null。show/context 返回 progress、progress_reason、progress_updated_at 和 progress_updated_by。
   issue-set-difficulty:
     roles: [inspector, human]
     required: [--issue-key, --difficulty]

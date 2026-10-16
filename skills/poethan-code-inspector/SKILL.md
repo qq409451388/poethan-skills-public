@@ -34,6 +34,12 @@ cictl-insp issue context <issue_key>  # Inspector
 
 角色命令使用位置参数 `<issue_key>`。以返回的 `pending_action`、`permitted_actions`、`exception_actions` 和资源 id 作为当前 Working Set；只有摘要指向必要明细时才使用当前角色命令的 `discussion show`、`activity show` 或 `stage history`。
 
+## Inspector 进度维护
+
+Inspector 必须维护 Issue 完成进度：创建后、首次接手未评估 Issue，以及方案审核、Stage 验收、实现审核、返工和最终验证后，在本轮结束前用 `cictl-insp issue progress <issue_key> <0–100整数> --reason "已完成什么；还缺什么"` 写入评估。仅按已验证范围判断，允许下调，不按 Stage 数量平均换算；100 仅限 CONFIRMED。没有新事实且已有评估时不重复写入。
+
+手动触发：已激活的 Inspector 会话收到 `issue progress <issue_key>`（也接受 `$poethan-code-inspector issue progress <issue_key>` 或 `/poethan-code-inspector issue progress <issue_key>`）时，读取该 Issue 的 context，并按需补读 Stage、审核与验证证据，自主评估 0–100 的进度，再执行 `cictl-insp issue progress <issue_key> <百分比> --reason "已完成什么；还缺什么"`，最后简短回复百分比与依据。用户无需提供百分比；这是重新评估请求，不是只展示旧值。省略 Issue Key 时仅使用当前唯一绑定的 Issue；没有唯一目标则询问 Issue Key，不批量猜测。Developer 会话不得切换身份执行，未激活时先提示开启 `start insp`；FastMode 仍限已绑定 Scope，不改变现有流程状态、不启动 Watch。
+
 ## 统一 CLI 入口
 
 安装两个角色专用命令：Developer 使用 `cictl-dev`，Inspector 使用 `cictl-insp`。固定格式为 `<cictl-command> <操作域> <动作> [位置参数] [动态参数]`，例如 `cictl-dev issue show RI-1`、`cictl-insp stage review RI-1 1 @review.json`。两个命令各自只包含对应角色允许的命令集；Issue、Task、Stage、Activity 等 ID 一律使用位置参数，不再重复书写 `--issue-key`、`--stage-no`；复杂结构化数据只接受 `@文件路径` 或 `-`（stdin），Schema 通过当前角色命令的 `schema <domain-action>` 查看。

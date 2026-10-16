@@ -40,6 +40,8 @@
   {{ value }}
 {%- endif -%}
 {% endmacro %}
+{% from "components/issue_progress.html" import issue_progress %}
+{% from "components/agent_icon.html" import agent_icon %}
 {% block title %}{{ issue.issue_key }} · Issue 详情{% endblock %}
 {% block content %}
 <nav class="breadcrumb" aria-label="面包屑" data-issue-auto-refresh data-refresh-interval="1000"><a href="{{ url_for('task_list') }}">检查任务</a><span>/</span><a href="{{ url_for('task_detail', task_key=issue.task_key) }}">{{ issue.task_key }}</a><span>/</span><span class="issue-key-copy"><span>{{ issue.issue_key }}</span>{{ issue_copy_button(issue.issue_key) }}</span></nav>
@@ -54,13 +56,16 @@
 </header>
 
 <section class="status-strip" data-live-region="status-strip">
-  <div class="status-main"><span>当前工作状态</span><strong><span class="badge badge-status-{{ issue.status }}">{{ issue.status|label }}</span> {{ status_explanation }}</strong></div>
+  <div class="status-main"><span>当前工作状态</span><strong><span class="badge badge-status-{{ issue.status }}">{{ issue.status|label }}</span> {{ status_explanation }}</strong>
+
+  </div>
   <div class="steps" aria-label="问题处理流程">
     {% for name in ['发现问题', '方案对齐', '开发修复', 'Inspector 审核', '确认关闭'] %}
       <div class="step"><span class="step-dot {% if loop.index < current_stage or issue.status == 'CONFIRMED' %}done{% elif loop.index == current_stage %}current{% else %}todo{% endif %}">{% if loop.index < current_stage or issue.status == 'CONFIRMED' %}✓{% else %}{{ loop.index }}{% endif %}</span><span>{{ name }}</span></div>{% if not loop.last %}<span class="step-line"></span>{% endif %}
     {% endfor %}
   </div>
-  <a class="btn btn-primary" href="#human-actions">打开 Human 操作台 →</a>
+  <button type="button" class="btn btn-primary" data-modal-open="issue-workflow-modal" aria-haspopup="dialog">打开工作流 →</button>
+
 </section>
 
 <div class="issue-layout">
@@ -258,6 +263,19 @@
       <div class="action-foot"><button type="button" class="btn btn-soft btn-block" data-modal-open="issue-status-modal">改状态（高级）</button></div>
     </section>
 
+  <section class="panel issue-progress-panel" data-live-region="issue-progress">
+    {{ issue_progress(issue, compact=true) }}
+    {% if issue.progress_reason or issue.progress_updated_at %}
+    <div class="progress-info">
+      <button type="button" class="progress-info-button" aria-label="查看进度评估依据" aria-describedby="progress-assessment-tooltip">!</button>
+      <div class="progress-info-tooltip" id="progress-assessment-tooltip" role="tooltip">
+        {% if issue.progress_reason %}<p>{{ issue.progress_reason }}</p>{% endif %}
+        {% if issue.progress_updated_at %}<small>{{ issue.progress_updated_by }} · {{ issue.progress_updated_at|localtime }}</small>{% endif %}
+      </div>
+    </div>
+    {% endif %}
+  </section>
+
     <section class="panel score-panel" data-live-region="issue-score"><h2>问题评级</h2><div class="score-grid"><div><span>严重度</span><strong class="sev-{{ issue.severity }}">{{ issue.severity|label }}</strong></div><div><span>维度</span><strong>{{ issue.dimension|label }}</strong></div></div></section>
 
     {% if issue.difficulty is not none %}
@@ -271,7 +289,7 @@
       <h3 class="executor-heading">已选定的执行者</h3>
       <div class="issue-executors">
         <div class="issue-executor {% if issue.assignment_status == 'VALID' %}issue-executor-assigned{% else %}issue-executor-stale{% endif %}">
-          <span><strong>{{ issue.assignment.agent }}</strong> · {{ issue.assignment.model }} · reasoning {{ issue.assignment.reasoning }}<br><small class="mono">{{ issue.assignment.profileId }}</small></span>
+          <span>{{ agent_icon() }} <strong>{{ issue.assignment.agent }}</strong> · {{ issue.assignment.model }} · reasoning {{ issue.assignment.reasoning }}<br><small class="mono">{{ issue.assignment.profileId }}</small></span>
           <div class="executor-rank-status">
             <span class="badge {% if issue.assignment_status == 'VALID' %}badge-green{% else %}badge-red{% endif %}">{% if issue.assignment_status == 'VALID' %}有效{% else %}已失效{% endif %}</span>
             {{ rank_tag(issue.assignment.level, level_roles.get(issue.assignment.level, ''), rank_skin) }}
@@ -322,6 +340,8 @@
 
   </div></aside>
 </div>
+
+{% include "components/issue_workflow_modal.html" %}
 
 <div class="modal-backdrop" id="issue-edit-modal" role="dialog" aria-modal="true" aria-labelledby="issue-edit-title">
   <div class="modal-card">
