@@ -1,31 +1,33 @@
-<div class="modal-backdrop workflow-modal" id="issue-workflow-modal" role="dialog" aria-modal="true" aria-labelledby="issue-workflow-title">
+{% macro render_diagram(diagram, number) %}
+        <details class="workflow-diagram-section"{% if diagram.open %} open{% endif %}>
+          <summary><span><b>{{ number }}</b>{{ diagram.title }}</span><small>{% if diagram.open %}当前所在流程{% else %}{{ diagram.visited }} 个节点有记录{% endif %}</small></summary>
+          <div class="workflow-diagram-scroll" tabindex="0" aria-label="{{ diagram.title }}流程图，可横向滚动">
+            <div class="workflow-diagram-canvas" style="height: {{ diagram.height }}px">
+              <svg class="workflow-diagram-lines" viewBox="0 0 1220 {{ diagram.height }}" aria-hidden="true"><defs><marker id="wf-arrow-{{ diagram.key }}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0 0 L10 5 L0 10z" fill="context-stroke"/></marker></defs>
+              {% for edge in diagram.edges %}<path d="{{ edge.path }}" class="workflow-diagram-edge{% if edge.visited %} is-visited{% endif %}{% if edge.flowing %} is-flowing{% endif %}" marker-end="url(#wf-arrow-{{ diagram.key }})"/>{% if edge.label %}<text x="{{ edge.label_x }}" y="{{ edge.label_y }}" class="workflow-diagram-edge-label" text-anchor="middle">{{ edge.label }}</text>{% endif %}{% endfor %}</svg>
+              {% for node in diagram.nodes %}<div class="workflow-diagram-node{% if node.visited %} is-visited{% endif %}{% if node.current %} is-current{% endif %}" style="left: {{ node.x }}px; top: {{ node.y }}px" title="{{ node.description }}"{% if node.current %} aria-current="step"{% endif %}><strong><i></i>{{ node.title }}</strong><small>{{ node.owner }}</small><span>{% if node.current %}当前节点{% elif node.visited %}有实际记录{% else %}未记录{% endif %}</span></div>{% endfor %}
+            </div>
+          </div>
+          <p class="workflow-diagram-note">{{ diagram.note }}</p>
+        </details>
+{% endmacro %}
+<div class="modal-backdrop workflow-diagram-modal" id="issue-workflow-modal" role="dialog" aria-modal="true" aria-labelledby="issue-workflow-title">
   <div class="modal-card">
-    <div class="modal-head"><div><h2 id="issue-workflow-title">Issue 处理进展</h2><div class="modal-sub mono">{{ issue.issue_key }}</div></div><button type="button" class="modal-close" data-modal-close aria-label="关闭">×</button></div>
-    <div class="modal-body" data-live-region="workflow-content">
-      <div class="workflow-reading-head"><div><span class="workflow-eyebrow">当前进展</span><h3>{{ workflow.current_title }}</h3></div><span class="badge badge-status-{{ issue.status }}">{{ issue.status|label }}</span></div>
-      <div class="workflow-reading-layout">
-        <section class="workflow-main-route" aria-label="主流程">
-          <h3 class="workflow-section-title">处理路线 <span>从上到下阅读</span></h3>
-          <ol class="workflow-route">
-            {% for step in workflow.route %}
-            <li class="workflow-route-step is-{{ step.state }}"{% if step.current %} aria-current="step"{% endif %}>
-              <span class="workflow-route-marker" aria-hidden="true">{% if step.state == 'done' %}✓{% else %}{{ loop.index }}{% endif %}</span>
-              <div class="workflow-route-content"><div class="workflow-route-title"><strong>{{ step.title }}</strong><span>{{ step.state_label }}</span></div><p>{{ step.description }}</p>
-              {% if step.key == 'development' and workflow.stage_cards %}
-                <ol class="workflow-stage-list" aria-label="实际执行阶段">{% for stage in workflow.stage_cards %}<li class="is-{{ stage.state }}"><span class="workflow-stage-dot" aria-hidden="true"></span><span class="workflow-stage-number">Stage {{ stage.stage_no }}</span><strong>{{ stage.title }}</strong><span class="workflow-stage-state">{{ stage.status_label }}</span></li>{% endfor %}</ol>
-              {% endif %}
-              </div>
-            </li>
-            {% endfor %}
-          </ol>
-        </section>
-        <aside class="workflow-reading-aside">
-          <section class="workflow-next-card"><span class="workflow-eyebrow">接下来</span><h3>{{ workflow.next_step }}</h3>{% if workflow.current_summary %}<div class="markdown-body">{{ workflow.current_summary|markdown }}</div>{% else %}<p>{{ status_explanation }}</p>{% endif %}</section>
-          <details class="workflow-branch-records"{% if issue.status in ['BLOCKED', 'ON_HOLD', 'HUMAN_CONFIRMATION_REQUIRED', 'INSPECTOR_CONFIRMATION_REQUIRED'] %} open{% endif %}><summary>返工、确认与暂停记录 <span>{{ workflow.branches|length }}</span></summary><div class="workflow-branch-list">{% for branch in workflow.branches %}<article><div><strong>{{ branch.title }}</strong><time>{{ branch.time|localtime }}</time></div><div class="markdown-body">{{ branch.summary|markdown }}</div></article>{% else %}<p class="muted">暂无此类记录。</p>{% endfor %}</div></details>
-          <details class="workflow-rules"><summary>遇到驳回或重设计时怎么走？</summary><ul><li>方案驳回：修订方案后重新审核。</li><li>阶段驳回：修正当前阶段，再提交验收。</li><li>最终审核或验证未通过：返回开发修复。</li><li>方案方向失效：重新设计，旧计划保留历史。</li><li>需要技术或人工确认：先处理待决事项，再恢复流程。</li></ul></details>
-          <p class="workflow-note">完成标记来自实际记录。未记录的环节不会自动算作已通过；阶段通过也不代表整个 Issue 已关闭。</p>
-        </aside>
+    <div class="modal-head"><div><h2 id="issue-workflow-title">Issue 工作流</h2><div class="modal-sub mono">{{ issue.issue_key }} · 节点与流转关系</div></div><button type="button" class="modal-close" data-modal-close aria-label="关闭">×</button></div>
+    <div class="modal-body" data-live-region="workflow-diagram-content">
+      <div class="workflow-diagram-status"><span class="badge badge-status-{{ issue.status }}">{{ issue.status|label }}</span><strong>{{ workflow.current_title }}</strong><button type="button" class="btn btn-small" data-workflow-progress>查看实际处理进展</button></div>
+      <div class="workflow-diagram-legend"><span><i class="is-current"></i>当前节点</span><span><i class="is-visited"></i>有实际记录</span><span><i></i>未记录</span><span>虚线箭头：可能的下一步</span></div>
+      {% set graph = workflow.connected_diagram %}
+      <div class="workflow-connected-scroll" tabindex="0" aria-label="连续分层工作流图">
+        <svg class="workflow-connected-map" viewBox="0 0 {{ graph.width }} {{ graph.height }}" role="group" aria-label="方案设计、开发与阶段验收、最终审核通过跨层箭头连接">
+          <defs><marker id="wf-connected-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0 0 L10 5 L0 10z" fill="context-stroke"/></marker></defs>
+          {% for layer in graph.layers %}<text x="100" y="{{ layer.y }}" class="workflow-map-layer-title">{{ loop.index }} · {{ layer.title }}</text><line x1="100" x2="1280" y1="{{ layer.line_y }}" y2="{{ layer.line_y }}" class="workflow-map-divider"/>{% endfor %}
+          {% for edge in graph.edges %}<path d="{{ edge.path }}" class="workflow-diagram-edge{% if edge.visited %} is-visited{% endif %}{% if edge.flowing %} is-flowing{% endif %}{% if edge.cross_layer %} is-cross-layer{% endif %}" marker-end="url(#wf-connected-arrow)"/>{% if edge.label %}<text x="{{ edge.label_x }}" y="{{ edge.label_y }}" class="workflow-diagram-edge-label" text-anchor="middle">{{ edge.label }}</text>{% endif %}{% endfor %}
+          {% for node in graph.nodes %}<g class="workflow-map-node{% if node.visited %} is-visited{% endif %}{% if node.current %} is-current{% endif %}"{% if node.current %} aria-current="step"{% endif %}><title>{{ node.title }}：{{ node.description }}</title><rect x="{{ node.x }}" y="{{ node.y }}" width="190" height="76" rx="9"/><circle cx="{{ node.x+18 }}" cy="{{ node.y+19 }}" r="3.5"/><text x="{{ node.x+30 }}" y="{{ node.y+23 }}" class="workflow-map-node-title">{{ node.title }}</text><text x="{{ node.x+30 }}" y="{{ node.y+44 }}" class="workflow-map-node-owner">{{ node.owner }}</text><text x="{{ node.x+30 }}" y="{{ node.y+63 }}" class="workflow-map-node-state">{% if node.current %}当前节点{% elif node.visited %}有实际记录{% else %}未记录{% endif %}</text></g>{% endfor %}
+        </svg>
       </div>
+      <details class="workflow-other-branches"{% if workflow.diagram_secondary_open %} open{% endif %}><summary>其他条件分支：确认、重设计、暂停与快速检查</summary><div>{% for diagram in workflow.diagrams if diagram.secondary %}{{ render_diagram(diagram, loop.index) }}{% endfor %}</div></details>
+      <p class="workflow-note">同层从左向右阅读；右侧跨层线连接下一环节，左侧回线返回开发。绿色表示有实际记录，不代表整个 Issue 已完成。</p>
     </div>
   </div>
 </div>

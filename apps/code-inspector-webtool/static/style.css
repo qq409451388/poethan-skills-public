@@ -747,3 +747,57 @@ button.queue-pill { font: inherit; cursor: pointer; }
 .record-topic-head .badge { padding: 3px 8px; background: #355de6; color: #fff; font-size: 11px; font-weight: 700; }
 .record-topic-head > .muted { margin-left: auto; color: #40577b; font-size: 12px; white-space: nowrap; }
 .event-head > time { flex-shrink: 0; white-space: nowrap; }
+
+.steps-progress-trigger { padding: 8px 10px; border: 1px solid transparent; border-radius: 8px; background: transparent; color: inherit; font: inherit; cursor: pointer; }
+.steps-progress-trigger:hover { border-color: #d4dff6; background: #f5f8ff; }
+.steps-progress-trigger:focus-visible { outline: 2px solid var(--blue); outline-offset: 3px; }
+.workflow-diagram-modal .modal-card { width: min(1320px, 96vw); }
+.workflow-diagram-status { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; font-size: 13px; color: #405577; margin-bottom: 14px; }
+.workflow-diagram-status .btn { margin-left: auto; }
+.workflow-diagram-legend { display: flex; flex-wrap: wrap; gap: 18px; color: #8492a5; font-size: 11px; margin: 0 0 18px; }
+.workflow-diagram-legend span { display: flex; align-items: center; gap: 5px; }
+.workflow-diagram-legend i, .workflow-diagram-node i { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #c8d2e0; }
+.workflow-diagram-legend i.is-current { background: #3969e7; }.workflow-diagram-legend i.is-visited { background: #29946e; }
+.workflow-diagram-sections { display: grid; gap: 12px; }
+.workflow-diagram-section { border: 1px solid #dfe6f1; border-radius: 10px; overflow: hidden; }
+.workflow-diagram-section > summary { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 15px 16px; background: #f8faff; color: #324b71; font-size: 13px; cursor: pointer; }
+.workflow-diagram-section > summary > span { display: flex; align-items: center; gap: 10px; font-weight: 650; }
+.workflow-diagram-section summary b { display: grid; place-items: center; width: 23px; height: 23px; border-radius: 6px; background: #e9effb; color: #5073b2; font-size: 11px; }
+.workflow-diagram-section summary small { color: #8795aa; font-size: 11px; }
+.workflow-diagram-section[open] > summary { border-bottom: 1px solid #e5ebf4; }
+.workflow-diagram-scroll { overflow-x: auto; background: #fff; }
+.workflow-diagram-canvas { width: 1220px; position: relative; margin: 8px auto 0; }
+.workflow-diagram-lines { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
+.workflow-diagram-edge { fill: none; stroke: #ccd5e3; stroke-width: 1.5; color: #ccd5e3; }
+.workflow-diagram-edge.is-visited { stroke: #61a88b; color: #61a88b; stroke-width: 2; }
+.workflow-diagram-edge.is-flowing { stroke: #3f6de3; color: #3f6de3; stroke-width: 2; stroke-dasharray: 5 4; }
+.workflow-diagram-edge-label { font-size: 11px; fill: #75859d; paint-order: stroke; stroke: white; stroke-width: 5px; stroke-linejoin: round; }
+.workflow-diagram-node { position: absolute; width: 190px; height: 76px; padding: 12px 14px; box-sizing: border-box; border: 1px solid #dfe5ee; border-radius: 9px; background: #f5f7fa; color: #96a1b2; display: grid; align-content: center; gap: 5px; }
+.workflow-diagram-node strong { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 650; }
+.workflow-diagram-node small, .workflow-diagram-node > span { padding-left: 15px; font-size: 10px; }
+.workflow-diagram-node.is-visited { border-color: #b6dbca; background: #eff9f4; color: #307458; }
+.workflow-diagram-node.is-visited i { background: #29946e; }
+.workflow-diagram-node.is-current { border-color: #7395f0; background: #edf3ff; color: #315db6; box-shadow: 0 0 0 3px #eef2ff; }
+.workflow-diagram-node.is-current i { background: #3969e7; }
+.workflow-diagram-note { margin: 0; padding: 11px 16px; border-top: 1px solid #edf0f6; background: #fbfcfe; color: #75859b; font-size: 11px; line-height: 1.7; }
+
+.workflow-other-branches { border-top: 1px solid #e5eaf2; padding-top: 4px; }
+.workflow-other-branches > summary { padding: 13px 4px; color: #798aa2; font-size: 12px; cursor: pointer; }
+.workflow-other-branches > div { display: grid; gap: 10px; padding-top: 7px; }
+
+.workflow-diagram-modal .modal-card { width: min(1440px, 97vw); }
+.workflow-connected-scroll { max-height: 68vh; overflow: auto; border: 1px solid #e1e7f1; border-radius: 10px; background: #fff; }
+.workflow-connected-map { display: block; width: 100%; min-width: 1080px; height: auto; }
+.workflow-map-layer-title { fill: #465e80; font-size: 14px; font-weight: 700; }
+.workflow-map-divider { stroke: #edf0f5; stroke-width: 1; }
+.workflow-map-node rect { fill: #f5f7fa; stroke: #dde5ee; }
+.workflow-map-node circle { fill: #c8d2e0; }
+.workflow-map-node text { fill: #929fb0; }
+.workflow-map-node-title { font-size: 12px; font-weight: 650; }
+.workflow-map-node-owner, .workflow-map-node-state { font-size: 10px; }
+.workflow-map-node.is-visited rect { fill: #eff9f4; stroke: #b6dbca; }
+.workflow-map-node.is-visited text { fill: #307458; }
+.workflow-map-node.is-visited circle { fill: #29946e; }
+.workflow-map-node.is-current rect { fill: #edf3ff; stroke: #7395f0; stroke-width: 2; }
+.workflow-map-node.is-current text { fill: #315db6; }
+.workflow-map-node.is-current circle { fill: #3969e7; }

@@ -78,7 +78,7 @@ EVENT_NODES = {"ISSUE_CREATED": "PROPOSED", "DESIGN_REQUESTED": "DESIGN_REQUIRED
                "IMPLEMENTATION_SUBMITTED": "IMPLEMENTED_PENDING_REVIEW"}
 
 
-def workflow_graph(issue, activities, stages, current_execution_stage=None):
+def workflow_graph(issue, activities, stages, current_execution_stage=None, discussions=None):
     nodes = []
     for row, (lane, entries) in enumerate(LANES):
         for col, (key, title, owner, description) in enumerate(entries):
@@ -141,7 +141,10 @@ def workflow_graph(issue, activities, stages, current_execution_stage=None):
                           visited=(source, target) in traversed,
                           flowing=source == current and not paused and (source, target) in PATHS))
     result = {"nodes": nodes, "edges": edges, "lanes": [dict(title=title, y=22 + row*160) for row, (title, _) in enumerate(LANES)]}
-    result.update(reading_route(issue, activities, stages, current_execution_stage, current, visited, by_key))
+    result.update(reading_route(issue, activities, stages, current_execution_stage, current, visited, by_key, discussions or []))
+    result["diagrams"] = diagram_sections(by_key, current, paused, traversed)
+    result["diagram_secondary_open"] = any(diagram["open"] and diagram["secondary"] for diagram in result["diagrams"])
+    result["connected_diagram"] = connected_diagram(result["diagrams"], traversed, current, paused)
     return result
 
 
@@ -156,7 +159,7 @@ ROUTE_STEPS = [
 ]
 
 
-def reading_route(issue, activities, stages, current_stage, current, visited, by_key):
+def reading_route(issue, activities, stages, current_stage, current, visited, by_key, discussions):
     status = issue["status"]
     active_stages = sorted(
         (stage for stage in stages if stage.get("plan_status", "ACTIVE") == "ACTIVE"),
@@ -223,7 +226,8 @@ def reading_route(issue, activities, stages, current_stage, current, visited, by
     current_title = by_key[current]["title"]
     if current_stage and status == "IN_PROGRESS":
         current_title = f"Stage {current_stage.get('stage_no', '')} · {current_stage.get('title', current_title)}"
-    latest_summary = next((activity.get("human_summary") for activity in reversed(activities) if activity.get("human_summary")), "")
+    summary_records = [record for record in [*activities, *discussions] if record.get("human_summary")]
+    latest_summary = max(summary_records, key=lambda record: record.get("amended_at") or record.get("created_at") or "").get("human_summary") if summary_records else ""
     next_step = {
         "PROPOSED": "确认是否需要先设计方案，再开始开发。",
         "DESIGN_REQUIRED": "Developer 提交具体方案，交由 Inspector 审核。",
@@ -242,3 +246,102 @@ def reading_route(issue, activities, stages, current_stage, current, visited, by
                      else "完成当前阶段的验收要求，再提交阶段结果。")
     return {"route": route, "stage_cards": stage_cards, "branches": list(reversed(branches)),
             "current_title": current_title, "current_summary": latest_summary, "next_step": next_step}
+
+
+def diagram_sections(by_key, current, paused, traversed):
+    """各区只有局部连线；回线使用节点外的专用上/下通道。"""
+    specs = [
+        {"key": "design", "title": "方案与设计", "note": "简单问题可以直接进入开发；方案通过后进入开发区。", "height": 270,
+         "positions": {"PROPOSED": (20,48), "DESIGN_REQUIRED": (330,48), "DESIGN_PENDING_REVIEW": (640,48), "DESIGN_APPROVED": (950,48), "DESIGN_REJECTED": (640,174)},
+         "edges": [
+             ("PROPOSED", "DESIGN_REQUIRED", "M210,86 H330", "", 0,0),
+             ("DESIGN_REQUIRED", "DESIGN_PENDING_REVIEW", "M520,86 H640", "",0,0),
+             ("DESIGN_PENDING_REVIEW", "DESIGN_APPROVED", "M830,86 H950", "通过",885,77),
+             ("DESIGN_PENDING_REVIEW", "DESIGN_REJECTED", "M735,124 V174", "未通过",772,151),
+             ("DESIGN_REJECTED", "DESIGN_REQUIRED", "M640,212 H425 V124", "修订后重审",525,203),
+         ]},
+        {"key": "stages", "title": "开发与阶段验收", "note": "无阶段计划时直接开发并提交整体实现；分阶段时逐阶段验收，全部通过后进入最终审核区。", "height": 270,
+         "positions": {"IN_PROGRESS": (20,48), "STAGE_PLAN_CREATED": (265,48), "STAGE_SCOPE_DECLARED": (510,48), "STAGE_SUBMITTED": (755,48), "STAGE_APPROVED": (1000,48), "STAGE_REJECTED": (755,174)},
+         "edges": [
+             ("IN_PROGRESS", "STAGE_PLAN_CREATED", "M210,86 H265", "",0,0),
+             ("STAGE_PLAN_CREATED", "STAGE_SCOPE_DECLARED", "M455,86 H510", "",0,0),
+             ("STAGE_SCOPE_DECLARED", "STAGE_SUBMITTED", "M700,86 H755", "",0,0),
+             ("STAGE_SUBMITTED", "STAGE_APPROVED", "M945,86 H1000", "通过",972,77),
+             ("STAGE_SUBMITTED", "STAGE_REJECTED", "M850,124 V174", "未通过",888,151),
+             ("STAGE_REJECTED", "STAGE_SCOPE_DECLARED", "M755,212 H605 V124", "修正当前阶段",673,203),
+             ("STAGE_APPROVED", "STAGE_SCOPE_DECLARED", "M1095,48 V16 H605 V48", "下一阶段（如有）",850,10),
+         ]},
+        {"key": "review", "title": "最终审核、验证与关闭", "note": "审核或验证未通过，返回开发修复；确认关闭以实际记录为准。", "height": 270,
+         "positions": {"IMPLEMENTED_PENDING_REVIEW": (20,48), "REVIEW_APPROVED": (330,48), "VERIFICATION_PASSED": (640,48), "CONFIRMED": (950,48), "REVIEW_REJECTED": (20,174), "VERIFICATION_FAILED": (330,174)},
+         "edges": [
+             ("IMPLEMENTED_PENDING_REVIEW", "REVIEW_APPROVED", "M210,86 H330", "通过",270,77),
+             ("REVIEW_APPROVED", "VERIFICATION_PASSED", "M520,86 H640", "验证通过",580,77),
+             ("VERIFICATION_PASSED", "CONFIRMED", "M830,86 H950", "确认",890,77),
+             ("IMPLEMENTED_PENDING_REVIEW", "REVIEW_REJECTED", "M115,124 V174", "审核未通过",170,151),
+             ("REVIEW_APPROVED", "VERIFICATION_FAILED", "M425,124 V174", "验证未通过",480,151),
+         ]},
+    ]
+    secondary = [
+        ("redesign", "重设计", ["REDESIGN_REQUIRED", "STAGE_PLAN_SUPERSEDED", "DESIGN_REQUIRED", "REDESIGN_SUBMITTED", "DESIGN_PENDING_REVIEW"], "方案方向失效时保留旧计划历史，重新设计并审核。"),
+        ("technical", "技术边界确认", ["INSPECTOR_CONFIRMATION_REQUIRED", "INSPECTOR_CONFIRMATION_PROVIDED", "IN_PROGRESS"], "技术边界确认后，按实际状态回到开发。"),
+        ("human", "人工决定", ["HUMAN_CONFIRMATION_REQUIRED", "HUMAN_CONFIRMATION_PROVIDED", "IN_PROGRESS"], "人工决定也可以转为重新设计、搁置、受阻或取消，以实际决定为准。"),
+        ("pauses", "暂停与终止", ["ON_HOLD", "BLOCKED", "CANCELLED"], "搁置和受阻可在条件满足后恢复处理；取消不代表修复通过。"),
+        ("evidence", "补充验证证据", ["VERIFICATION_EVIDENCE_ADDED", "VERIFICATION_PASSED"], "补充证据后仍需实际验证通过，不能由补录动作推定通过。"),
+        ("fastmode", "FastMode 检查结果", ["FASTMODE_PASS", "FASTMODE_FAIL"], "人工协调的快速检查，只记录检查结果，不自动关闭 Issue。"),
+    ]
+    for key,title,keys,note in secondary:
+        positions = {node_key:(20+index*245,48) for index,node_key in enumerate(keys)}
+        edges = []
+        if key not in {"pauses", "fastmode"}:
+            for source,target in zip(keys,keys[1:]):
+                x = positions[source][0]+190
+                edges.append((source,target,f"M{x},86 H{positions[target][0]}","",0,0))
+        specs.append({"key":key,"title":title,"positions":positions,"edges":edges,"note":note,"height":160})
+    current_sections = [spec for spec in specs if current in spec["positions"]]
+    # 通用开发节点在恢复分支也出现，优先主流程；暂停/确认只展开对应分支。
+    primary = next((spec["key"] for spec in current_sections), "stages")
+    results = []
+    for spec in specs:
+        nodes = [{**by_key[key], "x":x, "y":y} for key,(x,y) in spec["positions"].items()]
+        edges = [{"source":source,"target":target,"path":path,"label":label,"label_x":x,"label_y":y,
+                  "visited":(source,target) in traversed,
+                  "flowing":source == current and not paused and (source,target) in PATHS}
+                 for source,target,path,label,x,y in spec["edges"]]
+        results.append({**spec,"nodes":nodes,"edges":edges,"secondary":spec["key"] not in {"design", "stages", "review"},"open":spec["key"] == primary,
+                        "visited":sum(node["visited"] for node in nodes)})
+    return results
+
+
+def connected_diagram(diagrams, traversed, current, paused):
+    """三个主流程层共用坐标系；跨层前进走右侧，返回开发走左侧。"""
+    import re
+    nodes, edges, layers = [], [], []
+    for diagram, offset_y in zip(diagrams[:3], (60, 400, 740)):
+        offset_x = 80
+        layers.append({"title": diagram["title"], "y": offset_y+17,
+                       "line_y": offset_y+33})
+        nodes.extend({**node, "x": node["x"]+offset_x, "y": node["y"]+offset_y} for node in diagram["nodes"])
+        for edge in diagram["edges"]:
+            def translate(match):
+                command, raw = match.groups()
+                values = [float(value) for value in raw.split(',')]
+                if command == 'M':
+                    return f"M{values[0]+offset_x:g},{values[1]+offset_y:g}"
+                return f"{command}{values[0]+(offset_x if command == 'H' else offset_y):g}"
+            path = re.sub(r"([MHV])([\d.,]+)", translate, edge["path"])
+            edges.append({**edge, "path": path, "label_x": edge["label_x"]+offset_x,
+                          "label_y": edge["label_y"]+offset_y})
+    cross_layer = [
+        ("DESIGN_APPROVED", "IN_PROGRESS", "M1220,146 H1340 V365 H195 V448", "方案通过，进入开发", 1020,356),
+        ("STAGE_APPROVED", "IMPLEMENTED_PENDING_REVIEW", "M1270,486 H1360 V705 H195 V788", "全部阶段完成 → 提交整体实现", 1010,696),
+        ("PROPOSED", "IN_PROGRESS", "M195,184 V340 H55 V486 H100", "无需设计，直接开发", 225,331),
+        ("IN_PROGRESS", "IMPLEMENTED_PENDING_REVIEW", "M195,524 V680 H80 V826 H100", "不分阶段时，直接提交整体实现", 335,671),
+        ("REVIEW_REJECTED", "IN_PROGRESS", "M195,990 V1040 H55 V486 H100", "审核未通过，返回开发", 330,1031),
+        ("VERIFICATION_FAILED", "IN_PROGRESS", "M505,990 V1060 H30 V486 H100", "验证未通过，返回开发", 670,1051),
+    ]
+    for source,target,path,label,x,y in cross_layer:
+        edges.append({"source":source,"target":target,"path":path,"label":label,"label_x":x,"label_y":y,
+                      "visited":(source,target) in traversed,
+                      "flowing":source == current and not paused and (source,target) in PATHS,
+                      "cross_layer":True})
+    return {"nodes":nodes,"edges":edges,"layers":layers,"width":1390,"height":1100}

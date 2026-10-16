@@ -943,7 +943,7 @@ def issue_detail(issue_key: str):
         latest_human_request=latest_human_request,
         stage_plans=stage_plans, active_stage_plan=active_stage_plan,
         current_execution_stage=current_execution_stage,
-        workflow=workflow_graph(issue, activities, stages, current_execution_stage),
+        workflow=workflow_graph(issue, activities, stages, current_execution_stage, discussions),
         current_stage=stage, status_explanation=status_explanation, dimensions=DIMENSIONS,
         severities=SEVERITIES, benefits=BENEFITS, costs=COSTS, confidence=CONFIDENCE,
         dispositions=DISPOSITIONS, activity_types=ACTIVITY_TYPES, discussion_topics=DISCUSSION_TOPICS,

@@ -200,6 +200,12 @@ function animateProgressChanges(previous, incoming) {
       closeModal(event.target);
       return;
     }
+    const progressSwitch = event.target.closest('[data-workflow-progress]');
+    if (progressSwitch) {
+      closeModal(document.getElementById('issue-workflow-modal'));
+      openModal('issue-progress-modal');
+      return;
+    }
     const tab = event.target.closest('[data-tab-target]');
     if (tab) {
       const scope = tab.closest('.modal-backdrop, .implementation-panel, .record-panel');

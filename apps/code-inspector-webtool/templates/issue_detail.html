@@ -64,11 +64,11 @@
   <div class="status-main"><span>当前工作状态</span><strong><span class="badge badge-status-{{ issue.status }}">{{ issue.status|label }}</span> {{ status_explanation }}</strong>
 
   </div>
-  <div class="steps" aria-label="问题处理流程">
+  <button type="button" class="steps steps-progress-trigger" aria-label="查看 Issue 处理进展" data-modal-open="issue-progress-modal" aria-haspopup="dialog">
     {% for name in ['发现问题', '方案对齐', '开发修复', 'Inspector 审核', '确认关闭'] %}
-      <div class="step"><span class="step-dot {% if loop.index < current_stage or issue.status == 'CONFIRMED' %}done{% elif loop.index == current_stage %}current{% else %}todo{% endif %}">{% if loop.index < current_stage or issue.status == 'CONFIRMED' %}✓{% else %}{{ loop.index }}{% endif %}</span><span>{{ name }}</span></div>{% if not loop.last %}<span class="step-line"></span>{% endif %}
+      <span class="step"><span class="step-dot {% if loop.index < current_stage or issue.status == 'CONFIRMED' %}done{% elif loop.index == current_stage %}current{% else %}todo{% endif %}">{% if loop.index < current_stage or issue.status == 'CONFIRMED' %}✓{% else %}{{ loop.index }}{% endif %}</span><span>{{ name }}</span></span>{% if not loop.last %}<span class="step-line"></span>{% endif %}
     {% endfor %}
-  </div>
+  </button>
   <button type="button" class="btn btn-primary" data-modal-open="issue-workflow-modal" aria-haspopup="dialog">打开工作流 →</button>
 
 </section>
@@ -327,6 +327,7 @@
   </div></aside>
 </div>
 
+{% include "components/issue_progress_modal.html" %}
 {% include "components/issue_workflow_modal.html" %}
 
 <div class="modal-backdrop" id="issue-edit-modal" role="dialog" aria-modal="true" aria-labelledby="issue-edit-title">
