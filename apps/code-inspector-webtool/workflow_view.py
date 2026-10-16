@@ -12,6 +12,7 @@ LANES = [
         ("IN_PROGRESS", "开发修复", "Developer", "直接实现或按已批准的 Stage 开发修复。"),
         ("STAGE_PLAN_CREATED", "创建阶段计划", "Inspector", "批准分阶段方案并激活首阶段。"),
         ("STAGE_SCOPE_DECLARED", "声明阶段范围", "Developer", "声明影响范围与历史保护项。"),
+        ("STAGE_IN_PROGRESS", "阶段开发中", "Developer", "按当前阶段范围实施修改，完成后提交阶段验收。"),
         ("STAGE_SUBMITTED", "阶段提交待验收", "Developer → Inspector", "提交阶段实现与验证证据。"),
         ("STAGE_APPROVED", "阶段验收通过", "Inspector", "建立 PASSED baseline，进入下一阶段或最终提交。"),
     ]),
@@ -52,7 +53,7 @@ PATHS = [
     ("DESIGN_PENDING_REVIEW", "DESIGN_APPROVED"), ("DESIGN_PENDING_REVIEW", "DESIGN_REJECTED"),
     ("DESIGN_REJECTED", "DESIGN_REQUIRED"), ("DESIGN_APPROVED", "IN_PROGRESS"),
     ("DESIGN_APPROVED", "STAGE_PLAN_CREATED"), ("STAGE_PLAN_CREATED", "STAGE_SCOPE_DECLARED"),
-    ("STAGE_SCOPE_DECLARED", "STAGE_SUBMITTED"), ("STAGE_SUBMITTED", "STAGE_APPROVED"),
+    ("STAGE_SCOPE_DECLARED", "STAGE_IN_PROGRESS"), ("STAGE_IN_PROGRESS", "STAGE_SUBMITTED"), ("STAGE_SUBMITTED", "STAGE_APPROVED"),
     ("STAGE_SUBMITTED", "STAGE_REJECTED"), ("STAGE_REJECTED", "STAGE_SCOPE_DECLARED"),
     ("STAGE_APPROVED", "STAGE_SCOPE_DECLARED"), ("STAGE_APPROVED", "IMPLEMENTED_PENDING_REVIEW"),
     ("IN_PROGRESS", "IMPLEMENTED_PENDING_REVIEW"),
@@ -113,6 +114,8 @@ def workflow_graph(issue, activities, stages, current_execution_stage=None, disc
     for stage in stages:
         if stage.get("prepared_at"):
             visited.add("STAGE_SCOPE_DECLARED")
+        if stage.get("prepared_at") or stage.get("submitted_at"):
+            visited.add("STAGE_IN_PROGRESS")
         if stage.get("submitted_at"):
             visited.add("STAGE_SUBMITTED")
         if stage.get("status") == "APPROVED":
@@ -120,7 +123,7 @@ def workflow_graph(issue, activities, stages, current_execution_stage=None, disc
     current = issue["status"]
     if current == "IN_PROGRESS" and current_execution_stage:
         current = ("STAGE_SUBMITTED" if current_execution_stage["status"] == "PENDING_REVIEW"
-                   else "STAGE_SCOPE_DECLARED" if current_execution_stage.get("prepared_at")
+                   else "STAGE_IN_PROGRESS" if current_execution_stage.get("prepared_at")
                    else "STAGE_PLAN_CREATED")
     visited.add(current)
     for node in nodes:
@@ -154,7 +157,7 @@ def workflow_graph(issue, activities, stages, current_execution_stage=None, disc
     if result["paused_stage"]:
         stage = result["paused_stage"]
         anchor = ("STAGE_SUBMITTED" if stage["status"] == "PENDING_REVIEW"
-                  else "STAGE_SCOPE_DECLARED" if stage.get("prepared_at") else "STAGE_PLAN_CREATED")
+                  else "STAGE_IN_PROGRESS" if stage.get("prepared_at") else "STAGE_PLAN_CREATED")
         for node in graph["nodes"]:
             node["waiting_here"] = node["key"] == anchor
     graph["hover_paths"] = hover_paths(graph, trail)
@@ -170,7 +173,7 @@ def workflow_graph(issue, activities, stages, current_execution_stage=None, disc
 ROUTE_STEPS = [
     ("discovery", "记录问题", {"PROPOSED"}, {"PROPOSED"}),
     ("design", "对齐修复方案", {"DESIGN_REQUIRED", "DESIGN_PENDING_REVIEW", "DESIGN_APPROVED", "DESIGN_REJECTED", "REDESIGN_REQUIRED", "REDESIGN_SUBMITTED"}, {"DESIGN_APPROVED"}),
-    ("development", "开发与阶段验收", {"IN_PROGRESS", "STAGE_PLAN_CREATED", "STAGE_SCOPE_DECLARED", "STAGE_SUBMITTED", "STAGE_APPROVED", "STAGE_REJECTED"}, {"IMPLEMENTED_PENDING_REVIEW"}),
+    ("development", "开发与阶段验收", {"IN_PROGRESS", "STAGE_PLAN_CREATED", "STAGE_SCOPE_DECLARED", "STAGE_IN_PROGRESS", "STAGE_SUBMITTED", "STAGE_APPROVED", "STAGE_REJECTED"}, {"IMPLEMENTED_PENDING_REVIEW"}),
     ("review", "审核最终实现", {"IMPLEMENTED_PENDING_REVIEW", "REVIEW_APPROVED", "REVIEW_REJECTED"}, {"REVIEW_APPROVED"}),
     ("verification", "最终验证", {"VERIFICATION_PASSED", "VERIFICATION_FAILED"}, {"VERIFICATION_PASSED"}),
     ("closure", "确认关闭", {"CONFIRMED"}, {"CONFIRMED"}),
@@ -279,15 +282,16 @@ def diagram_sections(by_key, current, paused, traversed):
              ("DESIGN_REJECTED", "DESIGN_REQUIRED", "M640,212 H425 V124", "修订后重审",525,203),
          ]},
         {"key": "stages", "title": "开发与阶段验收", "note": "无阶段计划时直接开发并提交整体实现；分阶段时逐阶段验收，全部通过后进入最终审核区。", "height": 270,
-         "positions": {"IN_PROGRESS": (20,48), "STAGE_PLAN_CREATED": (265,48), "STAGE_SCOPE_DECLARED": (510,48), "STAGE_SUBMITTED": (755,48), "STAGE_APPROVED": (1000,48), "STAGE_REJECTED": (755,174)},
+         "positions": {"IN_PROGRESS": (20,48), "STAGE_PLAN_CREATED": (220,48), "STAGE_SCOPE_DECLARED": (420,48), "STAGE_IN_PROGRESS": (620,48), "STAGE_SUBMITTED": (820,48), "STAGE_APPROVED": (1020,48), "STAGE_REJECTED": (820,174)},
          "edges": [
-             ("IN_PROGRESS", "STAGE_PLAN_CREATED", "M210,86 H265", "",0,0),
-             ("STAGE_PLAN_CREATED", "STAGE_SCOPE_DECLARED", "M455,86 H510", "",0,0),
-             ("STAGE_SCOPE_DECLARED", "STAGE_SUBMITTED", "M700,86 H755", "",0,0),
-             ("STAGE_SUBMITTED", "STAGE_APPROVED", "M945,86 H1000", "通过",972,77),
-             ("STAGE_SUBMITTED", "STAGE_REJECTED", "M850,124 V174", "未通过",888,151),
-             ("STAGE_REJECTED", "STAGE_SCOPE_DECLARED", "M755,212 H605 V124", "修正当前阶段",673,203),
-             ("STAGE_APPROVED", "STAGE_SCOPE_DECLARED", "M1095,48 V16 H605 V48", "下一阶段（如有）",850,10),
+             ("IN_PROGRESS", "STAGE_PLAN_CREATED", "M210,86 H220", "",0,0),
+             ("STAGE_PLAN_CREATED", "STAGE_SCOPE_DECLARED", "M410,86 H420", "",0,0),
+             ("STAGE_SCOPE_DECLARED", "STAGE_IN_PROGRESS", "M610,86 H620", "",0,0),
+             ("STAGE_IN_PROGRESS", "STAGE_SUBMITTED", "M810,86 H820", "",0,0),
+             ("STAGE_SUBMITTED", "STAGE_APPROVED", "M1010,86 H1020", "通过",1015,77),
+             ("STAGE_SUBMITTED", "STAGE_REJECTED", "M915,124 V174", "未通过",953,151),
+             ("STAGE_REJECTED", "STAGE_SCOPE_DECLARED", "M820,212 H515 V124", "修正当前阶段",673,203),
+             ("STAGE_APPROVED", "STAGE_SCOPE_DECLARED", "M1115,48 V16 H515 V48", "下一阶段（如有）",850,10),
          ]},
         {"key": "review", "title": "最终审核、验证与关闭", "note": "审核或验证未通过，返回开发修复；确认关闭以实际记录为准。", "height": 270,
          "positions": {"IMPLEMENTED_PENDING_REVIEW": (20,48), "REVIEW_APPROVED": (330,48), "VERIFICATION_PASSED": (640,48), "CONFIRMED": (950,48), "REVIEW_REJECTED": (20,174), "VERIFICATION_FAILED": (330,174)},
@@ -351,7 +355,7 @@ def connected_diagram(diagrams, traversed, current, paused):
                           "label_y": edge["label_y"]+offset_y})
     cross_layer = [
         ("DESIGN_APPROVED", "IN_PROGRESS", "M1220,146 H1340 V365 H195 V448", "方案通过，进入开发", 1020,356),
-        ("STAGE_APPROVED", "IMPLEMENTED_PENDING_REVIEW", "M1270,486 H1360 V705 H195 V788", "全部阶段完成 → 提交整体实现", 1010,696),
+        ("STAGE_APPROVED", "IMPLEMENTED_PENDING_REVIEW", "M1290,486 H1360 V705 H195 V788", "全部阶段完成 → 提交整体实现", 1010,696),
         ("PROPOSED", "IN_PROGRESS", "M195,184 V340 H55 V486 H100", "无需设计，直接开发", 225,331),
         ("IN_PROGRESS", "IMPLEMENTED_PENDING_REVIEW", "M195,524 V680 H80 V826 H100", "不分阶段时，直接提交整体实现", 335,671),
         ("REVIEW_REJECTED", "IN_PROGRESS", "M195,990 V1040 H55 V486 H100", "审核未通过，返回开发", 330,1031),
