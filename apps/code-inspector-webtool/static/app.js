@@ -22,9 +22,23 @@ function animateProgressChanges(previous, incoming) {
     if (previousDamage > Date.now()) showDamage(previousDamage);
     if (!oldBars[index] || !fill || !Number.isFinite(oldValue) || oldValue === value) return;
     const increasing = value > oldValue;
+    const gainDuration = Math.max(1100, (value - oldValue) * 30);
+    if (increasing) {
+      const label = progress.querySelector('.issue-progress-label strong');
+      if (label?.firstChild) {
+        label.firstChild.nodeValue = String(oldValue);
+        for (let step = 1; step <= value - oldValue; step += 1) {
+          const elapsed = 1 - Math.cbrt(1 - step / (value - oldValue));
+          const displayed = oldValue + step;
+          window.setTimeout(() => {
+            if (label.isConnected) label.firstChild.nodeValue = String(displayed);
+          }, gainDuration * elapsed);
+        }
+      }
+    }
     fill.animate([{ width: `${oldValue}%` }, { width: `${value}%` }], {
-      duration: increasing ? 1100 : 240,
-      easing: increasing ? 'linear' : 'cubic-bezier(.2,.8,.2,1)',
+      duration: increasing ? gainDuration : 240,
+      easing: increasing ? 'cubic-bezier(.33,1,.68,1)' : 'cubic-bezier(.2,.8,.2,1)',
     });
     if (increasing) {
       const width = bar.getBoundingClientRect().width;
@@ -42,7 +56,8 @@ function animateProgressChanges(previous, incoming) {
         layer.appendChild(dot);
         const delay = particleIndex * 32;
         const duration = 400;
-        const arrival = Math.min(1, (delay + duration) / 1100);
+        const elapsed = Math.min(1, (delay + duration) / gainDuration);
+        const arrival = 1 - Math.pow(1 - elapsed, 3);
         const target = width * (oldValue + (value - oldValue) * arrival) / 100;
         const origin = Math.max(target + 10, width - (particleIndex % 5) * 6);
         return dot.animate([

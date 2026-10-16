@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Inspector · 动效 Demo</title>
+<style>
+:root { --text:#22324b; --muted:#7b8aa0; --border:#e4eaf3; }
+* { box-sizing:border-box; } body { margin:0; background:#f4f7fc; color:var(--text); font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+main { max-width:860px; margin:64px auto; padding:0 24px; } .eyebrow { color:#5779bd; font-size:11px; letter-spacing:2px; font-weight:700; }
+h1 { font-size:30px; letter-spacing:-1px; margin:10px 0; } .intro { color:var(--muted); font-size:14px; line-height:1.8; }
+.demo-card { padding:28px; margin-top:22px; background:#fff; border:1px solid var(--border); border-radius:18px; box-shadow:0 12px 35px #243e6510; }
+.demo-head { display:flex; justify-content:space-between; gap:16px; align-items:center; margin-bottom:24px; } h2 { margin:0; font-size:16px; } .index { font-size:11px; color:#9ba8bc; }
+.controls { display:flex; gap:10px; flex-wrap:wrap; margin-top:28px; } button { font:inherit; cursor:pointer; } .control { border:1px solid #dbe4f3; border-radius:8px; background:#f8faff; color:#42649e; padding:9px 14px; font-size:12px; font-weight:600; } .control:hover { background:#edf3ff; border-color:#b8ccf0; } .control.danger { color:#ce5353; background:#fff7f6; border-color:#f1d2cf; } .primary { background:#3869e8; color:white; border-color:#3869e8; } .primary:hover { background:#2c59cf; }
+.progress-demo { max-width:520px; margin:0 auto; padding:12px 8px; } .progress-demo .issue-progress-label strong { font-size:32px; } .progress-demo .issue-progress-track { height:12px; } .description { font-size:12px; color:var(--muted); line-height:1.8; margin:20px 0 0; }
+.stage-demo { min-height:80px; display:flex; align-items:center; padding:20px 0; } .stage-demo .ranking-stage-current { padding:10px 14px; gap:9px; font-size:13px; }
+.demo-footer { margin:24px 0; display:flex; gap:12px; align-items:center; flex-wrap:wrap; } #notice { color:#7b8aa0; font-size:12px; } button:focus-visible { outline:2px solid #3869e8; outline-offset:3px; }
+@media(max-width:600px) { main {margin:28px auto;} .demo-card {padding:20px;} .stage-demo .ranking-stage-current {font-size:11px;} }
+/* Issue 完成进度 */
+.issue-progress { --progress-color: #3869e8; display: grid; gap: 10px; margin: 10px 0; min-width: 0; }
+.issue-progress-label { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: #718096; font-size: 11px; font-weight: 500; }
+.issue-progress-label strong { display: inline-flex; align-items: baseline; gap: 2px; color: var(--progress-color); font-size: 21px; line-height: 1; font-weight: 750; font-variant-numeric: tabular-nums; letter-spacing: -.6px; }
+.issue-progress-label strong small { font-size: 11px; font-weight: 500; letter-spacing: 0; opacity: .7; }
+.issue-progress-track { position: relative; height: 8px; border-radius: 999px; background: #edf1f7; overflow: hidden; box-shadow: inset 0 1px 2px #18345a08; }
+.issue-progress-fill { position: relative; z-index: 1; display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, color-mix(in srgb, var(--progress-color) 45%, white), var(--progress-color)); box-shadow: 0 1px 3px #18345a14; }
+.issue-progress.is-unassessed .issue-progress-label strong { color: #8590a2; }
+.issue-progress.is-unassessed .issue-progress-track { background: repeating-linear-gradient(120deg, #edf1f7 0 5px, #f6f8fb 5px 10px); }
+.issue-progress.is-compact { gap: 7px; }
+.issue-progress.is-compact .issue-progress-label strong { font-size: 18px; }
+.issue-progress.is-compact .issue-progress-track { height: 6px; }
+.issue-progress p { margin: 0; overflow-wrap: anywhere; }
+.agent-icon { width: 20px; height: 20px; flex-shrink: 0; vertical-align: middle; color: #2563eb; }
+.agent-assignment { display: flex; gap: 8px; align-items: center; }
+.agent-assignment strong, .agent-assignment small { display: block; }
+.agent-assignment small { color: var(--muted); overflow-wrap: anywhere; }
+.issue-progress-cell { min-width: 120px; }
+.issue-assignment-cell { min-width: 180px; }
+.issue-leaderboard { list-style: none; margin: 0; padding: 0; border: 1px solid var(--border); border-radius: 12px; background: #fff; overflow: hidden; }
+.issue-leaderboard li + li { border-top: 1px solid var(--border); }
+.issue-ranking-row { display: grid; grid-template-columns: 32px 160px minmax(120px, auto) 1fr; gap: 18px; align-items: center; padding: 14px 18px; color: var(--text); }
+.issue-ranking-row:hover, .issue-ranking-row:focus-visible { background: #eff6ff; }
+.issue-ranking-number { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 8px; background: #f1f5f9; color: var(--muted); font-weight: 800; font-variant-numeric: tabular-nums; }
+.issue-leaderboard li:first-child .issue-ranking-number { background: #fef3c7; color: #92400e; }
+.issue-leaderboard li:nth-child(2) .issue-ranking-number { background: #e2e8f0; color: #334155; }
+.issue-leaderboard li:nth-child(3) .issue-ranking-number { background: #ffedd5; color: #9a3412; }
+.issue-ranking-progress .issue-progress { margin: 0; }
+.issue-ranking-title, .issue-ranking-key { min-width: 0; overflow-wrap: anywhere; }
+.issue-progress-panel { display: grid; grid-template-columns: minmax(0, 1fr) 24px; align-items: center; gap: 14px; }
+.issue-progress-panel .issue-progress { margin: 0; gap: 12px; }
+.issue-progress-panel .issue-progress-label strong { font-size: 24px; }
+.issue-progress-panel .issue-progress-track { height: 8px; }
+.progress-info { position: relative; align-self: center; }
+.progress-info-button { display: grid; place-items: center; width: 20px; height: 20px; padding: 0; border: 1px solid #b8c5db; border-radius: 50%; background: #f4f7fc; color: #64748b; font-size: 12px; font-weight: 750; cursor: help; }
+.progress-info-button:focus-visible { outline: 2px solid #3b6cf6; outline-offset: 3px; }
+.progress-info-tooltip { position: absolute; z-index: 30; top: 100%; right: 0; width: min(380px, 75vw); padding: 14px 16px; border: 1px solid var(--border); border-radius: 10px; background: #fff; box-shadow: 0 8px 28px #172b4d26; visibility: hidden; opacity: 0; pointer-events: none; }
+.progress-info:hover .progress-info-tooltip, .progress-info:focus-within .progress-info-tooltip { visibility: visible; opacity: 1; pointer-events: auto; }
+.progress-info-tooltip p { margin: 0 0 8px; color: #526078; font-size: 12px; line-height: 1.8; overflow-wrap: anywhere; }
+.progress-info-tooltip small { color: var(--muted); font-size: 11px; }
+button.metric { text-align: left; font: inherit; cursor: pointer; }
+button.metric:hover { border-color: #a9bff0; background: #f8faff; }
+button.queue-pill { font: inherit; cursor: pointer; }
+.inbox-modal .modal-card { width: min(960px, 96vw); }
+.inbox-modal .work-card { margin: 0; border: 0; box-shadow: none; }
+.inbox-modal .work-card-head { padding-top: 0; }
+
+/* 提交与阶段更新 */
+.issue-new-submission { display: inline-flex; align-items: center; gap: 5px; margin-left: 10px; padding: 3px 7px; border-radius: 5px; background: #eaf2ff; color: #3869e8; font-size: 10px; font-weight: 600; white-space: nowrap; vertical-align: middle; }
+.issue-new-submission[hidden] { display: none; }
+.issue-new-submission::before { content: ''; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+.has-new-submission .issue-ranking-row { box-shadow: inset 3px 0 #3869e8; background: #f5f8ff; }
+.is-event-active .issue-ranking-row { animation: issue-submission-pulse 1.4s ease-in-out 3; animation-delay: var(--submission-delay, 0ms); }
+@keyframes issue-submission-pulse { 0%, 100% { background-color: #f5f8ff; } 50% { background-color: #e5eeff; } }
+.ranking-stage-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 7px 12px; margin-top: 8px; font-size: 11px; font-weight: 400; }
+.ranking-stage-history { color: #687a92; }.ranking-stage-history b { color: #21845b; }
+.ranking-stage-history > span { color: #97a3b6; }
+.ranking-stage-current { display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 4px 8px; border: 1px solid #dbe6ff; border-radius: 6px; background: #f2f6ff; color: #4767a3; }
+.ranking-stage-current i { width: 5px; height: 5px; border-radius: 50%; background: #5482ed; }
+.ranking-stage-current small { color: #7c8eae; font-size: 10px; }
+.ranking-stage-inactive { color: #97a3b6; }
+.stage-reveal-wrap { display: inline-grid; position: relative; isolation: isolate; vertical-align: middle; }
+.stage-glass-overlay { position: absolute; top: 0; left: 0; z-index: 2; pointer-events: none; }
+.stage-glass-shard { position: absolute; inset: 0; transform-origin: 48% 46%; pointer-events: none; will-change: transform, opacity; }
+.stage-glass-shard > .ranking-stage-current, .stage-glass-shard > .ranking-stage-inactive { display: flex; box-sizing: border-box; width: 100%; height: 100%; margin: 0; background: linear-gradient(125deg, #f8fbff, #eaf1ff 65%, #fff); box-shadow: inset 0 0 0 1px #fff9; }
+.is-event-active .issue-progress-track { animation: progress-event-glow 1.4s ease-in-out 3; animation-delay: var(--submission-delay, 0ms); }
+.is-event-active .issue-progress-track::after { content: ''; position: absolute; inset: 0; z-index: 2; border-radius: inherit; background: linear-gradient(100deg, transparent 25%, #a8c7ff60 42%, #ffffffed 50%, #a8c7ff60 58%, transparent 75%); transform: translateX(-100%); animation: progress-event-scan 1.4s cubic-bezier(.4, 0, .2, 1) 3; animation-delay: var(--submission-delay, 0ms); pointer-events: none; }
+.is-event-active .issue-progress-label strong { animation: progress-number-flash 1.4s ease-in-out 3; animation-delay: var(--submission-delay, 0ms); }
+@keyframes progress-event-scan { 0% { transform: translateX(-100%); opacity: 0; } 15%, 85% { opacity: 1; } 100% { transform: translateX(100%); opacity: 0; } }
+@keyframes progress-event-glow { 0%, 100% { box-shadow: 0 0 0 0 #709cff00; } 50% { box-shadow: 0 0 0 3px #709cff1f, 0 0 12px #709cff4d; } }
+@keyframes progress-number-flash { 0%, 100% { opacity: 1; } 50% { opacity: .55; } }
+.progress-particle-layer { position: absolute; inset: 0; z-index: 3; pointer-events: none; }
+.progress-gain-particle { position: absolute; left: 0; top: calc(50% - 1px); border-radius: 1px; background: #fff; box-shadow: 0 0 3px var(--progress-color), 0 0 6px #fff9; }
+.progress-damage-trail { position: absolute; left: 0; top: 0; bottom: 0; z-index: 0; border-radius: inherit; background: linear-gradient(90deg, #f7b057, #eb6159); box-shadow: 0 0 8px #ef6a5c55; pointer-events: none; }
+.issue-progress.is-damaged .issue-progress-fill { background: linear-gradient(90deg, #f0958c, #df4949); box-shadow: 0 0 5px #e45a5a55; }
+.issue-progress.is-damaged .issue-progress-label strong { color: #d94545; }
+.issue-progress.is-damaged .issue-progress-track { background: #fce8e7; animation: progress-damage-flash .65s ease-in-out 6; animation-delay: var(--damage-delay, 0ms); }
+@keyframes progress-damage-flash { 0%, 100% { box-shadow: 0 0 0 1px #e45a5a44; } 50% { box-shadow: 0 0 0 2px #e45a5aaa, 0 0 12px #e45a5a44; } }
+
+
+@media(prefers-reduced-motion:reduce) { .issue-progress.is-damaged .issue-progress-track {animation:none;} .stage-glass-overlay,.progress-particle-layer {display:none;} }
+</style>
+<main><div class="eyebrow">CODE INSPECTOR / MOTION LAB</div><h1>进度与 Stage 动效</h1><p class="intro">点击按钮体验实际组件。这个页面独立运行，不连接数据库。</p>
+<section class="demo-card"><div class="demo-head"><h2>进度更新</h2><span class="index">01 / PROGRESS</span></div><div id="progress-demo" class="progress-demo"></div><div class="controls"><button class="control" id="gain">＋ 增加 15%</button><button class="control danger" id="loss">− 回退 20%</button><button class="control" id="reset-progress">重置 35%</button></div><p class="description">增加：颗粒从右向左汇入，填满新增部分。回退：快速扣减、残影追落，红框闪烁，4 秒后恢复配色。</p></section>
+<section class="demo-card"><div class="demo-head"><h2>Stage 更新</h2><span class="index">02 / GLASS REVEAL</span></div><div id="stage-demo" class="stage-demo"></div><div class="controls"><button class="control" id="next-stage">下一个 Stage →</button><button class="control" id="replay-stage">重播玻璃碎裂</button></div><p class="description">旧描述分裂成 7 块碎片散开，新 Stage 从下面浮现。Stage 3 之后进入 Plan #2。</p></section>
+<div class="demo-footer"><button class="control primary" id="play">▶ 连续演示</button><span id="notice" role="status" aria-live="polite">等待操作 · 可反复点击</span></div></main>
+<script>
+// 保持真实百分比：事件只做提示，只有评估值变化才移动进度端点。
+function animateProgressChanges(previous, incoming) {
+  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  const oldBars = Array.from(previous.querySelectorAll('[role="progressbar"]'));
+  incoming.querySelectorAll('[role="progressbar"]').forEach((bar, index) => {
+    const oldValue = Number(oldBars[index]?.getAttribute('aria-valuenow'));
+    const value = Number(bar.getAttribute('aria-valuenow'));
+    const fill = bar.querySelector('.issue-progress-fill');
+    const progress = bar.closest('.issue-progress');
+    function showDamage(until) {
+      progress.dataset.damageUntil = String(until);
+      progress.style.setProperty('--damage-delay', `${-(4000 - (until - Date.now()))}ms`);
+      progress.classList.add('is-damaged');
+      window.setTimeout(() => {
+        if (Number(progress.dataset.damageUntil) === until) {
+          progress.classList.remove('is-damaged');
+          delete progress.dataset.damageUntil;
+        }
+      }, Math.max(0, until - Date.now()));
+    }
+    const previousDamage = Number(oldBars[index]?.closest('.issue-progress')?.dataset.damageUntil || 0);
+    if (previousDamage > Date.now()) showDamage(previousDamage);
+    if (!oldBars[index] || !fill || !Number.isFinite(oldValue) || oldValue === value) return;
+    const increasing = value > oldValue;
+    const gainDuration = Math.max(1100, (value - oldValue) * 30);
+    if (increasing) {
+      const label = progress.querySelector('.issue-progress-label strong');
+      if (label?.firstChild) {
+        label.firstChild.nodeValue = String(oldValue);
+        for (let step = 1; step <= value - oldValue; step += 1) {
+          const elapsed = 1 - Math.cbrt(1 - step / (value - oldValue));
+          const displayed = oldValue + step;
+          window.setTimeout(() => {
+            if (label.isConnected) label.firstChild.nodeValue = String(displayed);
+          }, gainDuration * elapsed);
+        }
+      }
+    }
+    fill.animate([{ width: `${oldValue}%` }, { width: `${value}%` }], {
+      duration: increasing ? gainDuration : 240,
+      easing: increasing ? 'cubic-bezier(.33,1,.68,1)' : 'cubic-bezier(.2,.8,.2,1)',
+    });
+    if (increasing) {
+      const width = bar.getBoundingClientRect().width;
+      if (!width) return;
+      const layer = document.createElement('span');
+      layer.className = 'progress-particle-layer';
+      layer.setAttribute('aria-hidden', 'true');
+      bar.appendChild(layer);
+      const flights = Array.from({ length: 22 }, (_, particleIndex) => {
+        const dot = document.createElement('i');
+        dot.className = 'progress-gain-particle';
+        const size = 2 + particleIndex % 3;
+        dot.style.width = `${size}px`;
+        dot.style.height = `${size}px`;
+        layer.appendChild(dot);
+        const delay = particleIndex * 32;
+        const duration = 400;
+        const elapsed = Math.min(1, (delay + duration) / gainDuration);
+        const arrival = 1 - Math.pow(1 - elapsed, 3);
+        const target = width * (oldValue + (value - oldValue) * arrival) / 100;
+        const origin = Math.max(target + 10, width - (particleIndex % 5) * 6);
+        return dot.animate([
+          { transform: `translate(${origin}px, ${(particleIndex % 3 - 1) * 2}px) scale(.5)`, opacity: 0 },
+          { opacity: 1, offset: .16 },
+          { transform: `translate(${target}px, 0) scale(1.2)`, opacity: .95, offset: .9 },
+          { transform: `translate(${target - 2}px, 0) scale(.2)`, opacity: 0 },
+        ], { duration, delay, easing: 'cubic-bezier(.25,.4,.4,1)', fill: 'both' });
+      });
+      Promise.allSettled(flights.map((animation) => animation.finished)).then(() => layer.remove());
+    } else {
+      showDamage(Date.now() + 4000);
+      const damage = document.createElement('span');
+      damage.className = 'progress-damage-trail';
+      damage.style.width = `${oldValue}%`;
+      damage.setAttribute('aria-hidden', 'true');
+      bar.prepend(damage);
+      const drain = damage.animate([
+        { width: `${oldValue}%`, opacity: 1 },
+        { width: `${value}%`, opacity: .25 },
+      ], { duration: 850, delay: 350, easing: 'cubic-bezier(.55,0,.8,.45)', fill: 'both' });
+      bar.animate([
+        { transform: 'translateX(0)' }, { transform: 'translateX(-2px)' },
+        { transform: 'translateX(2px)' }, { transform: 'translateX(-1px)' },
+        { transform: 'translateX(0)' },
+      ], { duration: 260, easing: 'ease-out' });
+      Promise.allSettled([drain.finished]).then(() => damage.remove());
+    }
+  });
+}
+
+function animateStageReveal(snapshot, row) {
+  const latest = row.querySelector('.ranking-stage-current, .ranking-stage-inactive');
+  if (!snapshot || !latest || snapshot.text === latest.textContent.trim()
+      || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  const wrap = document.createElement('span');
+  wrap.className = 'stage-reveal-wrap';
+  latest.before(wrap);
+  wrap.appendChild(latest);
+  const overlay = document.createElement('span');
+  overlay.className = 'stage-glass-overlay';
+  overlay.setAttribute('aria-hidden', 'true');
+  overlay.setAttribute('inert', '');
+  overlay.style.width = `${snapshot.width}px`;
+  overlay.style.height = `${snapshot.height}px`;
+  wrap.appendChild(overlay);
+  const shapes = [
+    ['0 0, 38% 0, 48% 46%', -20, -18, -12],
+    ['38% 0, 72% 0, 48% 46%', 5, -27, 8],
+    ['72% 0, 100% 0, 100% 48%, 48% 46%', 28, -14, 14],
+    ['100% 48%, 100% 100%, 68% 100%, 48% 46%', 31, 20, 16],
+    ['68% 100%, 31% 100%, 48% 46%', 1, 30, -8],
+    ['31% 100%, 0 100%, 0 60%, 48% 46%', -25, 22, -16],
+    ['0 60%, 0 0, 48% 46%', -32, -2, -10],
+  ];
+  const animations = shapes.map(([polygon, x, y, rotation], index) => {
+    const shard = document.createElement('span');
+    shard.className = 'stage-glass-shard';
+    shard.style.clipPath = `polygon(${polygon})`;
+    shard.appendChild(snapshot.node.cloneNode(true));
+    overlay.appendChild(shard);
+    return shard.animate([
+      { transform: 'translate(0, 0) rotate(0deg)', opacity: 1, filter: 'brightness(1)' },
+      { transform: 'translate(0, 0) rotate(0deg)', opacity: 1, filter: 'brightness(1.25)', offset: .16 },
+      { transform: `translate(${x}px, ${y}px) rotate(${rotation}deg)`, opacity: 0, filter: 'brightness(1.4)' },
+    ], { duration: 850, delay: index * 18, easing: 'cubic-bezier(.22,.65,.32,1)', fill: 'forwards' });
+  });
+  const reveal = latest.animate([
+    { opacity: 0, transform: 'translateY(5px)', filter: 'blur(2px)' },
+    { opacity: 1, transform: 'translateY(0)', filter: 'blur(0)' },
+  ], { duration: 650, delay: 160, easing: 'ease-out', fill: 'backwards' });
+  Promise.allSettled([...animations, reveal].map((animation) => animation.finished)).then(() => {
+    overlay.remove();
+    if (wrap.isConnected) wrap.replaceWith(latest);
+  });
+}
+
+
+let value=35, stageIndex=0, busy=false, sequence=[];
+const progressRegion=document.getElementById('progress-demo');
+const stageRegion=document.getElementById('stage-demo');
+const stages=[['1','1','声明范围与兼容边界','进行中'],['1','2','主链路实现与回归验证','进行中'],['1','3','端到端验证与验收','待验收'],['2','1','修订方案与边界补齐','进行中']];
+function notice(text){document.getElementById('notice').textContent=text;}
+function renderProgress(){
+ const t=value<=50?value/50:(value-50)/50;
+ const a=value<=50?[217,139,22]:[59,111,232],b=value<=50?[59,111,232]:[24,151,104];
+ const rgb=a.map((c,i)=>Math.round(c+(b[i]-c)*t)).join(',');
+ return `<div class="issue-progress" style="--progress-color:rgb(${rgb})"><div class="issue-progress-label"><span>完成进度</span><strong>${value}<small>%</small></strong></div><div class="issue-progress-track" role="progressbar" aria-label="完成进度" aria-valuenow="${value}" aria-valuemin="0" aria-valuemax="100"><span class="issue-progress-fill" style="width:${value}%"></span></div></div>`;
+}
+function setProgress(next,animate=true){
+ const previous=progressRegion.cloneNode(true); value=Math.max(0,Math.min(100,next)); progressRegion.innerHTML=renderProgress();
+ if(animate)animateProgressChanges(previous,progressRegion);
+}
+function changeProgress(delta){if(busy)return;const old=value;setProgress(value+delta);notice(old===value?'已到边界，可以反向操作':`${old}% → ${value}%${delta<0?' · 红色受伤反馈持续 4 秒':' · 颗粒正在汇入'}`);lock(1250);}
+function renderStage(){const [plan,no,title,status]=stages[stageIndex];return `<span class="ranking-stage-current"><i></i>Plan ${plan} · Stage ${no}/3 <b>${title}</b><small>${status}</small></span>`;}
+function changeStage(){
+ if(busy)return; const old=stageRegion.querySelector('.ranking-stage-current'),rect=old.getBoundingClientRect();
+ const snapshot={node:old.cloneNode(true),text:old.textContent.trim(),width:rect.width,height:rect.height};
+ stageIndex=(stageIndex+1)%stages.length;stageRegion.innerHTML=renderStage();animateStageReveal(snapshot,stageRegion);notice('旧 Stage 碎裂 → 最新 Stage 揭幕');lock(1100);
+}
+function lock(ms){busy=true;document.querySelectorAll('#gain,#loss,#next-stage,#replay-stage').forEach(b=>b.disabled=true);setTimeout(()=>{busy=false;document.querySelectorAll('#gain,#loss,#next-stage,#replay-stage').forEach(b=>b.disabled=false);},ms);}
+function cancelSequence(){sequence.forEach(clearTimeout);sequence=[];}
+document.getElementById('gain').onclick=()=>changeProgress(15);
+document.getElementById('loss').onclick=()=>changeProgress(-20);
+document.getElementById('reset-progress').onclick=()=>{cancelSequence();setProgress(35,false);notice('已重置为 35%');};
+document.getElementById('next-stage').onclick=changeStage;
+document.getElementById('replay-stage').onclick=()=>{if(busy)return;stageIndex=(stageIndex+stages.length-1)%stages.length;stageRegion.innerHTML=renderStage();changeStage();};
+document.getElementById('play').onclick=()=>{if(busy)return;cancelSequence();setProgress(35,false);stageIndex=0;stageRegion.innerHTML=renderStage();changeProgress(15);sequence=[setTimeout(changeStage,1500),setTimeout(()=>changeProgress(-20),3000),setTimeout(()=>notice('演示结束 · 可以继续单独操作'),7500)];};
+setProgress(35,false);stageRegion.innerHTML=renderStage();
+</script></html>
