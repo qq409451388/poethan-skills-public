@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
-"""reviewctl — Code Inspector 统一 CLI 入口。
+"""cictl — Code Inspector 统一 CLI 实现。
 
-固定格式：reviewctl <操作域> <动作> [位置参数] [动态参数]。
+固定格式：<角色命令> <操作域> <动作> [位置参数] [动态参数]。
 
 设计约束：
-- 全局只暴露本命令；角色和 operator 由安装器私有适配器通过进程内受信入口传入，
-  再用 agent-bindings.json 解析，不提供公开的 --agent 参数，环境变量也不能切换身份。
+- 只通过角色命令 cictl-dev / cictl-insp（及 WebApp 私有适配器）暴露；角色和
+  operator 由安装器私有适配器通过进程内受信入口传入，再用 agent-bindings.json
+  解析，不提供公开的 --agent 参数，环境变量也不能切换身份。本文件不生成全局
+  PATH 命令，直接执行会因缺少受信身份而被拒绝。
 - 全部业务逻辑（handler、事务、权限、状态机、审计、事件）复用内部兼容层
   review_db.py：校验通过后把输入编译成 review-db 调用并在本进程执行，
   因此新旧入口对同一合法输入产生完全相同的数据库状态、Activity 和事件。
 - 校验失败时一次性返回全部可安全判断的错误（ok: false + errors 数组），
   且不产生任何数据库写入。
 
---help、reviewctl schema 与运行时校验共用同一份命令注册表和 Schema 声明。
+--help、schema 子命令与运行时校验共用同一份命令注册表和 Schema 声明。
+帮助与错误提示中的命令名按实际调用入口（argv[0]）动态显示。
 """
 from __future__ import annotations
 
@@ -34,9 +37,9 @@ def _load_review_db():
     here = Path(__file__).resolve().parent
     for candidate in (here / "review_db.py", here / "review-db.py"):
         if candidate.exists():
-            spec = importlib.util.spec_from_file_location("reviewctl_internal_review_db", candidate)
+            spec = importlib.util.spec_from_file_location("cictl_internal_review_db", candidate)
             module = importlib.util.module_from_spec(spec)
-            sys.modules["reviewctl_internal_review_db"] = module
+            sys.modules["cictl_internal_review_db"] = module
             assert spec.loader
             spec.loader.exec_module(module)
             return module
@@ -46,6 +49,15 @@ def _load_review_db():
 review_db = _load_review_db()  # noqa: E402
 
 DRAFT_2020_12 = "https://json-schema.org/draft/2020-12/schema"
+
+
+def _prog_name() -> str:
+    """帮助与错误提示中的命令名按实际调用入口显示（cictl-dev / cictl-insp 等）。"""
+    stem = Path(sys.argv[0]).stem if sys.argv and sys.argv[0] else ""
+    return stem or "cictl"
+
+
+PROG = _prog_name()
 
 
 # ---------------------------------------------------------------------------
@@ -250,7 +262,7 @@ class Command:
 
 
 class Context:
-    """一次 reviewctl 调用的解析结果与身份上下文。"""
+    """一次 cictl 调用的解析结果与身份上下文。"""
 
     def __init__(self, command: Command, values: dict[str, Any], payload: Any,
                  agent: str, operator_id: str | None) -> None:
@@ -336,7 +348,7 @@ _ISSUE_ITEM_SCHEMA = {
 
 ISSUE_CREATE_SCHEMA = {
     "$schema": DRAFT_2020_12,
-    "title": "reviewctl issue create 动态参数",
+    "title": "cictl issue create 动态参数",
     "description": "创建单个 Issue；task_key 使用位置参数传递。",
     **_ISSUE_ITEM_SCHEMA,
     "examples": [{
@@ -353,7 +365,7 @@ ISSUE_CREATE_SCHEMA = {
 
 ISSUE_CREATE_MANY_SCHEMA = {
     "$schema": DRAFT_2020_12,
-    "title": "reviewctl issue create-many 动态参数",
+    "title": "cictl issue create-many 动态参数",
     "description": "批量创建 Issue 的 JSON 数组；每项字段与 issue create 相同，summary 必填。任务版本由命令自动创建。",
     "type": "array",
     "minItems": 1,
@@ -368,7 +380,7 @@ ISSUE_CREATE_MANY_SCHEMA = {
 
 ISSUE_EDIT_SCHEMA = {
     "$schema": DRAFT_2020_12,
-    "title": "reviewctl issue edit 动态参数",
+    "title": "cictl issue edit 动态参数",
     "description": "更新 Issue 正文；只传需要修改的字段。",
     "type": "object",
     "additionalProperties": False,
@@ -380,7 +392,7 @@ ISSUE_EDIT_SCHEMA = {
 
 ISSUE_RATE_MANY_SCHEMA = {
     "$schema": DRAFT_2020_12,
-    "title": "reviewctl issue rate-many 动态参数",
+    "title": "cictl issue rate-many 动态参数",
     "description": "批量更新评级；同一批次不得重复 issue_key。",
     "type": "array",
     "minItems": 1,
@@ -404,7 +416,7 @@ ISSUE_RATE_MANY_SCHEMA = {
 
 ISSUE_STATUS_MANY_SCHEMA = {
     "$schema": DRAFT_2020_12,
-    "title": "reviewctl issue status-many 动态参数",
+    "title": "cictl issue status-many 动态参数",
     "description": "批量更新 Issue 状态；每项必含 issue_key 和 status，可选 content 说明原因。",
     "type": "array",
     "minItems": 1,
@@ -423,7 +435,7 @@ ISSUE_STATUS_MANY_SCHEMA = {
 
 DESIGN_SUBMIT_SCHEMA = {
     "$schema": DRAFT_2020_12,
-    "title": "reviewctl design submit 动态参数",
+    "title": "cictl design submit 动态参数",
     "description": "提交设计方案；summary/content 使用具名参数，动态参数承载结构化声明。",
     "type": "object",
     "additionalProperties": False,
@@ -454,7 +466,7 @@ DESIGN_SUBMIT_SCHEMA = {
 
 DESIGN_CONFIRM_SCHEMA = {
     "$schema": DRAFT_2020_12,
-    "title": "reviewctl design confirm 动态参数",
+    "title": "cictl design confirm 动态参数",
     "description": "记录 Inspector 对范围外变化的确认回答。",
     "type": "object",
     "additionalProperties": False,
@@ -488,7 +500,7 @@ _STAGE_PLAN_ITEM = {
 
 DESIGN_APPROVE_SCHEMA = {
     "$schema": DRAFT_2020_12,
-    "title": "reviewctl design approve 动态参数",
+    "title": "cictl design approve 动态参数",
     "description": "批准设计；execution_mode=staged 时必须提供 stages。content 为审批结论。",
     "type": "object",
     "additionalProperties": False,
@@ -512,7 +524,7 @@ DESIGN_APPROVE_SCHEMA = {
 
 DESIGN_REJECT_SCHEMA = {
     "$schema": DRAFT_2020_12,
-    "title": "reviewctl design reject 动态参数",
+    "title": "cictl design reject 动态参数",
     "description": "驳回设计；content 说明驳回原因和必改点。",
     "type": "object",
     "additionalProperties": False,
@@ -527,7 +539,7 @@ DESIGN_REJECT_SCHEMA = {
 
 STAGE_PREPARE_SCHEMA = {
     "$schema": DRAFT_2020_12,
-    "title": "reviewctl stage prepare 动态参数",
+    "title": "cictl stage prepare 动态参数",
     "description": "声明 Stage 开发范围与历史保护项；存在历史 Stage 时 protected_behaviors 必填。",
     "type": "object",
     "additionalProperties": False,
@@ -551,7 +563,7 @@ STAGE_PREPARE_SCHEMA = {
 
 STAGE_SUBMIT_SCHEMA = {
     "$schema": DRAFT_2020_12,
-    "title": "reviewctl stage submit 动态参数",
+    "title": "cictl stage submit 动态参数",
     "description": "提交 Stage 实现；上一轮 BLOCKER/MUST finding 自动关联为已处理，测试证据在此提供。",
     "type": "object",
     "additionalProperties": False,
@@ -599,7 +611,7 @@ _STAGE_REVIEW_CHECK = {
 
 STAGE_REVIEW_SCHEMA = {
     "$schema": DRAFT_2020_12,
-    "title": "reviewctl stage review 动态参数",
+    "title": "cictl stage review 动态参数",
     "description": "结构化审核结果。decision、content、summary、plan_no 由命令从本数据和数据库状态自动推导；"
                    "验收项使用 stage review-template 生成的稳定 ID（AC-1、AC-2…），不需要复制验收标准原文。"
                    "findings 是单一数组，每项携带 level；无 findings、无历史 Stage 时可省略对应字段。",
@@ -662,7 +674,7 @@ STAGE_REVIEW_SCHEMA = {
 
 ACTIVITY_ADD_SCHEMA = {
     "$schema": DRAFT_2020_12,
-    "title": "reviewctl activity add 动态参数",
+    "title": "cictl activity add 动态参数",
     "description": "追加 Activity 时的结构化代码定位。",
     "type": "object",
     "additionalProperties": False,
@@ -674,7 +686,7 @@ ACTIVITY_ADD_SCHEMA = {
 
 DECISION_ADD_SCHEMA = {
     "$schema": DRAFT_2020_12,
-    "title": "reviewctl decision add 动态参数",
+    "title": "cictl decision add 动态参数",
     "description": "登记有效结论时的范围键和来源讨论。",
     "type": "object",
     "additionalProperties": False,
@@ -687,7 +699,7 @@ DECISION_ADD_SCHEMA = {
 
 CANDIDATE_SUBMIT_SCHEMA = {
     "$schema": DRAFT_2020_12,
-    "title": "reviewctl candidate submit 动态参数",
+    "title": "cictl candidate submit 动态参数",
     "description": "提交问题候选的结构化证据与建议评级。",
     "type": "object",
     "additionalProperties": False,
@@ -718,7 +730,7 @@ HUMAN_OPTION_SCHEMA = {
 
 HUMAN_ASK_SCHEMA = {
     "$schema": DRAFT_2020_12,
-    "title": "reviewctl human ask 动态参数",
+    "title": "cictl human ask 动态参数",
     "description": "人工升级的选项与影响、已验证/未知事实和推荐。",
     "type": "object",
     "additionalProperties": False,
@@ -745,7 +757,7 @@ HUMAN_ASK_SCHEMA = {
 
 IMPL_SUBMIT_SCHEMA = {
     "$schema": DRAFT_2020_12,
-    "title": "reviewctl impl submit 动态参数",
+    "title": "cictl impl submit 动态参数",
     "description": "最终实现提交的代码定位。",
     "type": "object",
     "additionalProperties": False,
@@ -818,7 +830,7 @@ def build_review_template(issue_key: str, stage_no: int) -> dict[str, Any]:
                 {"stage_no": int(row["stage_no"]), "title": row["title"]} for row in history_rows
             ],
             "open_blocking_findings": known_ids,
-            "usage": "补全当前文件后直接提交；整案失效改用 reviewctl stage redesign。",
+            "usage": "补全当前文件后直接提交；整案失效改用 cictl-insp stage redesign。",
         },
         "findings": [],
         "current_acceptance": [
@@ -1292,7 +1304,7 @@ COMMANDS: list[Command] = [
             options=[_o("view", choices=("compact", "full"))]),
     Command("issue", "context", "issue-context-get", "读取当前角色的有界 Working Set",
             positionals=[_p("issue", legacy="issue-key")]),
-    Command("issue", "create", "issue-create", "创建单个问题；动态参数见 reviewctl schema issue-create",
+    Command("issue", "create", "issue-create", "创建单个问题；动态参数见 schema issue-create",
             positionals=[_p("task", legacy="task-key"),
                          _p("data", kind="@json", help="Issue 数据 @文件 或 -")],
             schema=ISSUE_CREATE_SCHEMA),
@@ -1697,11 +1709,11 @@ def load_json_option(opt: Option, raw: str, errors: Errors) -> Any:
 # ---------------------------------------------------------------------------
 
 def print_global_help() -> None:
-    print("reviewctl — Code Inspector 统一 CLI")
+    print(f"{PROG} — Code Inspector 统一 CLI")
     print()
-    print("用法: reviewctl <操作域> <动作> [位置参数] [动态参数]")
-    print("      reviewctl schema <domain-action>   # 查看动态参数 JSON Schema")
-    print("      reviewctl <域> <动作> --help       # 查看单个命令用法")
+    print(f"用法: {PROG} <操作域> <动作> [位置参数] [动态参数]")
+    print(f"      {PROG} schema <domain-action>   # 查看动态参数 JSON Schema")
+    print(f"      {PROG} <域> <动作> --help       # 查看单个命令用法")
     print()
     print("操作域：")
     for domain in DOMAIN_ORDER:
@@ -1721,19 +1733,19 @@ def print_domain_help(domain: str) -> int:
             {"path": "domain", "code": "PARSE_UNKNOWN_DOMAIN", "message": f"未知操作域: {domain}"}
         ]}, ensure_ascii=False))
         return 2
-    print(f"reviewctl {domain} — {DOMAIN_SUMMARIES.get(domain, '')}")
+    print(f"{PROG} {domain} — {DOMAIN_SUMMARIES.get(domain, '')}")
     print()
     for cmd in commands:
         usage = " ".join([f"<{p.name}>" if p.required else f"[<{p.name}>]" for p in cmd.positionals])
-        print(f"  reviewctl {domain} {cmd.action} {usage}".rstrip())
+        print(f"  {PROG} {domain} {cmd.action} {usage}".rstrip())
         print(f"    {cmd.summary}")
         if cmd.schema is not None:
-            print(f"    动态参数 Schema: reviewctl schema {cmd.key}")
+            print(f"    动态参数 Schema: {PROG} schema {cmd.key}")
     return 0
 
 
 def command_usage(command: Command) -> str:
-    parts = ["reviewctl", command.domain, command.action]
+    parts = [PROG, command.domain, command.action]
     for p in command.positionals:
         parts.append(f"<{p.name}>" if p.required else f"[<{p.name}>]")
     for opt in command.options:
@@ -1764,7 +1776,7 @@ def print_command_help(command: Command) -> None:
         required_fields = command.schema.get("required", [])
         if required_fields:
             print(f"动态参数必填字段: {', '.join(required_fields)}")
-        print(f"完整 Schema: reviewctl schema {command.key}")
+        print(f"完整 Schema: {PROG} schema {command.key}")
         examples = command.schema.get("examples") or []
         if examples:
             print("动态参数示例：")
@@ -1806,7 +1818,7 @@ def command_input_schema(command: Command) -> dict[str, Any]:
             required.append(opt.name)
     schema: dict[str, Any] = {
         "$schema": DRAFT_2020_12,
-        "title": f"reviewctl {command.key} 输入",
+        "title": f"{PROG} {command.key} 输入",
         "type": "object",
         "additionalProperties": False,
         "properties": properties,
@@ -1821,14 +1833,14 @@ def handle_schema_request(argument: str | None) -> int:
         print("可用 Schema：")
         for cmd in COMMANDS:
             if cmd.schema is not None:
-                print(f"  reviewctl schema {cmd.key:<24} {cmd.summary}")
-        print("查看任意命令完整输入 Schema: reviewctl schema <domain-action>")
+                print(f"  {PROG} schema {cmd.key:<24} {cmd.summary}")
+        print(f"查看任意命令完整输入 Schema: {PROG} schema <domain-action>")
         return 0
     matched = [cmd for cmd in COMMANDS if cmd.key == argument]
     if not matched:
         print(json.dumps({"ok": False, "errors": [{
             "path": "schema", "code": "PARSE_UNKNOWN_COMMAND",
-            "message": f"未知命令: {argument}；用 reviewctl schema 查看列表",
+            "message": f"未知命令: {argument}；用 {PROG} schema 查看列表",
         }]}, ensure_ascii=False))
         return 2
     print(json.dumps(command_input_schema(matched[0]), ensure_ascii=False, indent=2))
@@ -1953,7 +1965,7 @@ def main(argv: list[str] | None = None, trusted_operator_id: str | None = None) 
         if not command:
             errors = Errors()
             errors.add("action", "PARSE_UNKNOWN_ACTION",
-                       f"未知命令: {tokens[0]} {tokens[1]}；用 reviewctl {tokens[0]} --help 查看动作")
+                       f"未知命令: {tokens[0]} {tokens[1]}；用 {PROG} {tokens[0]} --help 查看动作")
             return fail(errors)
         print_command_help(command)
         return 0
@@ -1963,7 +1975,7 @@ def main(argv: list[str] | None = None, trusted_operator_id: str | None = None) 
     errors = Errors()
     if not command:
         errors.add("action", "PARSE_UNKNOWN_ACTION",
-                   f"未知命令: {domain} {action}；用 reviewctl --help 查看操作域")
+                   f"未知命令: {domain} {action}；用 {PROG} --help 查看操作域")
         return fail(errors)
 
     # 阶段 1：参数解析（全部收集）

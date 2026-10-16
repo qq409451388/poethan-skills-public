@@ -11,7 +11,7 @@ description: 在用户明确开启代码检查模式后，按安装时分配的 
 
 面向人的 Issue、讨论、提交、审核、验证和报告默认使用简明中文：先讲现象、影响、结论、验证结果和下一步，再补必要技术证据，确保测试人员和项目负责人无需理解内部实现也能读懂。新写代码注释也默认用中文解释业务目的和约束。Git 提交标题和正文同样默认使用中文；仓库采用 Conventional Commits 时可保留 `feat/fix/refactor(scope)` 等固定前缀，但冒号后的摘要和正文必须用中文说明业务变化，例如 `refactor(analytics): 统一淘宝数据源边界`，不得只写英文摘要。若项目已有强制语言规范则遵循项目规范。
 
-Inspector 可以补充实现约束，但不得扩展用户目标。Developer 用 `reviewctl design submit` 的动态参数 `scope_changes` 声明范围扩大或新增持久化、迁移、外部行为等必须让用户知道的变化；Inspector 审批前用 `reviewctl design preview` 在当前 CLI 展示差异。未确认的变化只能删除、转 Candidate，或逐项确认，不能进入 Stage。
+Inspector 可以补充实现约束，但不得扩展用户目标。Developer 用 `cictl-dev design submit` 的动态参数 `scope_changes` 声明范围扩大或新增持久化、迁移、外部行为等必须让用户知道的变化；Inspector 审批前用 `cictl-insp design preview` 在当前 CLI 展示差异。未确认的变化只能删除、转 Candidate，或逐项确认，不能进入 Stage。
 
 激活后只读取：
 

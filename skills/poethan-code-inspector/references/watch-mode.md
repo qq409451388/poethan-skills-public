@@ -33,7 +33,7 @@ Watch 不授权切换角色。若用户要求唤醒后由 Inspector 审核，但
 
 ## 启动与静默等待
 
-安装后的 watcher 位于 `scripts/watch.py`。`--tool` 填当前角色命令 `cictl-dev` 或 `cictl-insp`（也可填 `command -v` 查到的完整路径），不要填内部 `reviewctl.py`。`--kind task-status` 的 `--target` 必须是精确 Task key；其他状态和 Activity 观察使用 Issue key。校验通过后启动并保留 Shell execution session id：
+安装后的 watcher 位于 `scripts/watch.py`。`--tool` 填当前角色命令 `cictl-dev` 或 `cictl-insp`（也可填 `command -v` 查到的完整路径），不要填内部运行时文件 `cictl.py`。`--kind task-status` 的 `--target` 必须是精确 Task key；其他状态和 Activity 观察使用 Issue key。校验通过后启动并保留 Shell execution session id：
 
 ```text
 python <skill>/scripts/watch.py \

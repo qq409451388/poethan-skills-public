@@ -53,8 +53,8 @@ fastmode:
     expansion: forbidden
     outside_scope_behavior: 禁止操作；旁支发现沿用 Candidate 机制。
   processing_order: serial
-  first_read: <fixed_tool> issue context <issue_key>
-  first_read_parameter_rule: 使用 --issue-key，禁止使用 --issue-id。
+  first_read: cictl-insp issue context <issue_key>
+  first_read_parameter_rule: 使用位置参数 <issue_key>，不使用 --issue-key 或 --issue-id。
   pending_action_required: false
   runtime:
     watch: forbidden

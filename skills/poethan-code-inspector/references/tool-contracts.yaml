@@ -1,16 +1,16 @@
 version: 5.0.0
 
-public_entrypoint: reviewctl
-format: reviewctl <操作域> <动作> [位置参数] [动态参数]
+public_entrypoint: cictl-dev（Developer）/ cictl-insp（Inspector）
+format: <角色命令> <操作域> <动作> [位置参数] [动态参数]
 dynamic_arguments:
   rule: 复杂结构化数据只接受 @文件路径 或 -（stdin），不再要求内联 JSON。
-  schema_lookup: reviewctl schema <domain-action>
+  schema_lookup: <角色命令> schema <domain-action>
 identity:
   rule: 角色和 operator 从激活上下文（安装器私有适配器 + agent-bindings.json）解析；禁止公开的 --agent 参数；无激活身份只能查看 help/schema。
   audit_identity: agent_audit_log.agent_id、版本 created_by 和活动 operator_id 使用逻辑 alias。
 internal_compat_layer:
   command: review-db.py
-  note: 旧 review-db 子命令保留为内部兼容层；Skill 文档与安装说明只暴露 reviewctl。
+  note: 旧 review-db 子命令保留为内部兼容层；Skill 文档与安装说明只暴露角色命令 cictl-dev / cictl-insp，cictl.py 仅为被角色命令加载的运行时文件。
 domain_action_map:
   task: {list: task-list, show: task-get, ensure: task-resolve, edit: task-update, status: task-update-status}
   issue: {list: issue-list, pending: issue-list-pending-review, show: issue-get, context: issue-context-get, create: issue-create, create-many: issue-create-batch, edit: issue-update-body, rate: issue-update-assessment, rate-many: issue-update-assessment-batch, status: issue-update-status, status-many: issue-update-status-batch, difficulty: issue-set-difficulty, assign: issue-set-assignment}
@@ -180,7 +180,7 @@ commands:
   design-submit:
     roles: [developer, human]
     purpose: 原子追加 DESIGN_SUBMITTED 并将问题转为 DESIGN_PENDING_REVIEW。
-    public_format: reviewctl design submit <issue_key> [@design.json] --summary <summary> --content <content>
+    public_format: cictl-dev design submit <issue_key> [@design.json] --summary <summary> --content <content>
     required: [issue_key, --summary, --content]
     dynamic_optional: [scope_changes, code_reference]
     allowed_from: [DESIGN_REQUIRED, REDESIGN_REQUIRED]
@@ -259,13 +259,13 @@ commands:
     allowed_issue_status: IN_PROGRESS
     allowed_stage_status: IN_PROGRESS
     effects: [保存开发前声明, 追加 STAGE_SCOPE_DECLARED]
-    public_format: reviewctl stage prepare <issue_key> <stage_no> @scope.json
+    public_format: cictl-dev stage prepare <issue_key> <stage_no> @scope.json
     constraints: [Stage 2+ 必须存在历史 PASSED baseline, 省略 protected_behaviors 时自动继承历史 baseline 的 verified_behaviors]
   stage-submit:
     roles: [developer, human]
     purpose: 原子提交当前 Stage 的实现证据并转为 PENDING_REVIEW。
     required: [--issue-key, --stage-no, --content, --commit-sha]
-    public_format: reviewctl stage submit <issue_key> <stage_no> @evidence.json --content <content> --commit-sha <sha>
+    public_format: cictl-dev stage submit <issue_key> <stage_no> @evidence.json --content <content> --commit-sha <sha>
     governance_v2_required: [test_evidence, 已执行 stage prepare]
     automatic: [从 commit_sha 关联 code_reference 与 diff_summary, 关联上一轮 BLOCKER/MUST finding id]
     dynamic_optional: [code_reference, resolved_findings]
@@ -277,7 +277,7 @@ commands:
   stage-review:
     roles: [inspector, human]
     purpose: 原子验收当前 PENDING_REVIEW Stage；redesign 是兼容 UI 人工接管的显式整案失效扩展。
-    public_format: reviewctl stage review <issue_key> <stage_no> @review.json
+    public_format: cictl-insp stage review <issue_key> <stage_no> @review.json
     required: [issue_key, stage_no, current_acceptance]
     governance_v2_required: [approved 时 baseline]
     automatic: [decision, content, summary, plan_no]
@@ -300,7 +300,7 @@ commands:
     baseline_schema:
       required_keys: [verified_behaviors, input_output_contracts, business_semantics, tests]
       non_empty: [verified_behaviors, tests]
-      reviewctl_note: reviewctl stage review 由 findings、当前验收和历史回归自动计算 decision 并确定性生成 content/summary；只有整案失效使用 reviewctl stage redesign。
+      cictl_note: cictl-insp stage review 由 findings、当前验收和历史回归自动计算 decision 并确定性生成 content/summary；只有整案失效使用 cictl-insp stage redesign。
     convergence:
       - governance v2 推荐 decision=auto，由 Runtime 按 Gate 计算 approved/rejected；整案失效仍显式 redesign
       - 历史回归 FAIL 必须记录 BLOCKER

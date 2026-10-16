@@ -1,5 +1,5 @@
 {
-  "version": 16,
+  "version": 17,
   "skill_name": "poethan-code-inspector",
   "runtime": {
     "local_home": "${HOME}/.agent-review",
@@ -12,38 +12,12 @@
     "dsh"
   ],
   "bindings": {
-    "developer": [
-      {
-        "agent": "codex",
-        "alias": "codex-dev"
-      },
-      {
-        "agent": "dsh",
-        "alias": "dsh-developer"
-      },
-      {
-        "agent": "claude",
-        "alias": "claude-developer"
-      }
-    ],
-    "inspector": [
-      {
-        "agent": "codex",
-        "alias": "codex-insp"
-      },
-      {
-        "agent": "trae-cn",
-        "alias": "trae-inspector"
-      },
-      {
-        "agent": "claude",
-        "alias": "claude-inspector"
-      },
-      {
-        "agent": "dsh",
-        "alias": "dsh-inspector"
-      }
-    ]
+    "developer": {
+      "alias": "developer"
+    },
+    "inspector": {
+      "alias": "inspector"
+    }
   },
   "roles": {
     "developer": {

@@ -24,20 +24,20 @@ SKILL_DIR_NAME = "poethan-code-inspector"
 LEGACY_SKILL_DIR_NAME = "code-inspector"
 
 
-def _load_reviewctl_registry() -> dict[str, list[str]]:
-    """从 reviewctl 注册表生成 旧命令 → 新命令 的映射；保持单一事实来源。"""
+def _load_cictl_registry() -> dict[str, list[str]]:
+    """从 cictl 注册表生成 旧命令 → 新命令 的映射；保持单一事实来源。"""
     import importlib.util
 
     spec = importlib.util.spec_from_file_location(
-        "code_inspector_reviewctl", SCRIPT_DIR / "runtime" / "reviewctl.py"
+        "code_inspector_cictl", SCRIPT_DIR / "runtime" / "cictl.py"
     )
     module = importlib.util.module_from_spec(spec)
     assert spec and spec.loader
-    sys.modules["code_inspector_reviewctl"] = module
+    sys.modules["code_inspector_cictl"] = module
     spec.loader.exec_module(module)
     mapping: dict[str, list[str]] = {}
     for command in module.COMMANDS:
-        mapping.setdefault(command.legacy, []).append(f"reviewctl {command.domain} {command.action}")
+        mapping.setdefault(command.legacy, []).append(f"cictl {command.domain} {command.action}")
     return mapping
 
 # 固定角色身份：用于降低长上下文和多轮对话中的角色漂移。
@@ -104,8 +104,7 @@ def load_skill_config(source: Path) -> dict[str, Any]:
         raise ValueError("Skill 配置 agents 必须为通用工具名称数组")
     aliases: set[str] = set()
     selectors: set[str] = set()
-    grouped_bindings: dict[tuple[str, str], list[dict[str, Any]]] = {}
-    for role, assignments in config["bindings"].items():
+    for role, binding in config["bindings"].items():
         if role not in config["roles"]:
             raise ValueError(f"角色 {role} 缺少权限配置")
         policy = config["roles"][role]
@@ -118,24 +117,13 @@ def load_skill_config(source: Path) -> dict[str, Any]:
         for key in ("commands", "responsibilities", "prohibited"):
             if not isinstance(policy.get(key), list):
                 raise ValueError(f"角色 {role} 的 {key} 必须为数组")
-        if not isinstance(assignments, list) or not assignments:
-            raise ValueError(f"角色 {role} 至少需要一个绑定")
-        for assignment in assignments:
-            agent, alias = assignment.get("agent"), assignment.get("alias")
-            if agent not in config["agents"] or not alias:
-                raise ValueError(f"角色 {role} 的绑定无效: {assignment}")
-            if alias in aliases:
-                raise ValueError(f"逻辑身份 alias 必须全局唯一: {alias}")
-            aliases.add(alias)
-            grouped_bindings.setdefault((agent, role), []).append(assignment)
-    for (agent, role), assignments in grouped_bindings.items():
-        defaults = [item for item in assignments if item.get("default") is True]
-        if len(assignments) > 1 and len(defaults) != 1:
-            raise ValueError(
-                f"{agent} 的 {role} 角色存在多个逻辑身份时，必须且只能设置一个 default=true"
-            )
-        if len(defaults) > 1:
-            raise ValueError(f"{agent} 的 {role} 角色只能有一个默认逻辑身份")
+        # 全平台统一身份：每个角色有且仅有一个逻辑身份，角色命令 cictl-<role> 全局唯一。
+        if not isinstance(binding, dict) or not binding.get("alias"):
+            raise ValueError(f"角色 {role} 缺少有效的绑定 alias")
+        alias = binding["alias"]
+        if alias in aliases:
+            raise ValueError(f"逻辑身份 alias 必须全局唯一: {alias}")
+        aliases.add(alias)
     return config
 
 def print_result(value: dict[str, Any]) -> None:
@@ -144,7 +132,7 @@ def print_result(value: dict[str, Any]) -> None:
 def ensure_dirs(home: Path) -> None:
     for name in ("data", "bin", "backups", "exports", "logs", "config"):
         (home / name).mkdir(parents=True, exist_ok=True)
-    (home / "internal" / "reviewctl-adapters").mkdir(parents=True, exist_ok=True)
+    (home / "internal" / "cictl-adapters").mkdir(parents=True, exist_ok=True)
 
 def migration_version(path: Path) -> int:
     return int(path.name.split("__", 1)[0][1:])
@@ -224,22 +212,22 @@ def install_routing_metadata(source: Path, home: Path, force: bool) -> None:
             atomic_copy_path(origin, home / "config" / name, force)
 
 
-def reviewctl_launcher_path(home: Path, windows: bool | None = None) -> Path:
-    windows = os.name == "nt" if windows is None else windows
-    return home / "bin" / ("reviewctl.cmd" if windows else "reviewctl")
+def cictl_runtime_path(home: Path) -> Path:
+    """cictl 运行时模块路径；只作为文件被角色命令加载，不生成全局 PATH 命令。"""
+    return home / "bin" / "cictl.py"
 
 
-def reviewctl_adapter_path(home: Path, alias: str) -> Path:
-    return home / "internal" / "reviewctl-adapters" / f"reviewctl-{alias}.py"
+def cictl_adapter_path(home: Path, alias: str) -> Path:
+    return home / "internal" / "cictl-adapters" / f"cictl-{alias}.py"
 
 
 def cictl_command_name(role: str) -> str:
-    """返回 Codex 的角色专用 PATH 命令名。"""
+    """返回全平台通用的角色专用 PATH 命令名。"""
     names = {"developer": "cictl-dev", "inspector": "cictl-insp"}
     try:
         return names[role]
     except KeyError as exc:
-        raise ValueError(f"Codex 不支持为角色生成 cictl 命令: {role}") from exc
+        raise ValueError(f"不支持为角色生成 cictl 命令: {role}") from exc
 
 
 def cictl_launcher_path(home: Path, role: str, windows: bool | None = None) -> Path:
@@ -248,46 +236,30 @@ def cictl_launcher_path(home: Path, role: str, windows: bool | None = None) -> P
     return home / "bin" / f"{cictl_command_name(role)}{suffix}"
 
 
-def install_reviewctl(home: Path, force: bool, windows: bool | None = None) -> Path:
-    """安装全局唯一 CLI 入口 reviewctl。
+def install_cictl_runtime(home: Path, force: bool) -> Path:
+    """安装 cictl 运行时模块（bin/cictl.py）。
 
-    1. 复制 reviewctl.py 到本机 bin 目录；
-    2. 生成可执行 launcher（加入 PATH 后 command -v reviewctl 即可用）。
+    只作为文件被角色命令 cictl-dev / cictl-insp 与私有适配器加载；
+    故意不生成全局 PATH 命令——直接执行缺少受信身份，只会得到权限错误。
     旧 review-db.py 保留为内部兼容层，不出现在使用说明中。
     """
-    atomic_copy_path(SCRIPT_DIR / "runtime" / "reviewctl.py", home / "bin" / "reviewctl.py", force)
-    launcher = reviewctl_launcher_path(home, windows)
-    tool = home / "bin" / "reviewctl.py"
-    if windows:
-        content = (
-            "@echo off\n"
-            "setlocal\n"
-            f'python "{tool}" %*\n'
-            "exit /b %errorlevel%\n"
-        )
-    else:
-        content = (
-            "#!/usr/bin/env bash\n"
-            "set -euo pipefail\n"
-            f'exec python3 "{tool}" "$@"\n'
-        )
-    atomic_write_text(launcher, content, executable=not windows)
-    return launcher
+    atomic_copy_path(SCRIPT_DIR / "runtime" / "cictl.py", cictl_runtime_path(home), force)
+    return cictl_runtime_path(home)
 
 
-def write_reviewctl_adapter(home: Path, alias: str) -> Path:
-    """生成绑定逻辑身份的私有 reviewctl 适配器（不出现在全局 PATH）。
+def write_cictl_adapter(home: Path, alias: str) -> Path:
+    """生成绑定逻辑身份的私有 cictl 适配器（不出现在全局 PATH）。
 
-    适配器只注入 operator alias；reviewctl 从 agent-bindings.json 解析角色，
+    适配器只注入 operator alias；cictl 从 agent-bindings.json 解析角色，
     并按 code-inspector.json 的角色命令集合拦截越权动作。
     """
-    wrapper = reviewctl_adapter_path(home, alias)
+    wrapper = cictl_adapter_path(home, alias)
     adapter = (
         "#!/usr/bin/env python3\n"
         "import importlib.util, sys\n"
         "from pathlib import Path\n"
-        f"tool = Path({str(home / 'bin' / 'reviewctl.py')!r})\n"
-        "spec = importlib.util.spec_from_file_location('code_inspector_reviewctl_adapter', tool)\n"
+        f"tool = Path({str(cictl_runtime_path(home))!r})\n"
+        "spec = importlib.util.spec_from_file_location('code_inspector_cictl_adapter', tool)\n"
         "module = importlib.util.module_from_spec(spec)\n"
         "sys.modules[spec.name] = module\n"
         "spec.loader.exec_module(module)\n"
@@ -298,10 +270,10 @@ def write_reviewctl_adapter(home: Path, alias: str) -> Path:
 
 
 def write_cictl_launcher(home: Path, role: str, alias: str, windows: bool | None = None) -> Path:
-    """安装固定角色的 PATH 命令，避免依赖会话环境传递身份。"""
+    """安装全平台通用的角色 PATH 命令，避免依赖会话环境传递身份。"""
     windows = os.name == "nt" if windows is None else windows
     launcher = cictl_launcher_path(home, role, windows)
-    tool = home / "bin" / "reviewctl.py"
+    tool = cictl_runtime_path(home)
     adapter = (
         "#!/usr/bin/env python3\n"
         "import importlib.util, sys\n"
@@ -324,11 +296,12 @@ def write_cictl_launcher(home: Path, role: str, alias: str, windows: bool | None
 
 
 def link_runtime(home: Path, skill_config: dict[str, Any], force: bool, skill_source: Path | None = None) -> None:
-    install_reviewctl(home, force)
-    write_reviewctl_adapter(home, "web-human")
-    # Codex 的两个角色使用固定 PATH 命令；身份仍由安装器绑定，不取自环境变量。
-    write_cictl_launcher(home, "developer", "codex-dev")
-    write_cictl_launcher(home, "inspector", "codex-insp")
+    install_cictl_runtime(home, force)
+    write_cictl_adapter(home, "web-human")
+    # 角色 PATH 命令全平台通用；身份仍由安装器绑定，不取自环境变量。
+    for role, binding in skill_config["bindings"].items():
+        write_cictl_launcher(home, role, binding["alias"])
+        write_cictl_adapter(home, binding["alias"])
     src = SCRIPT_DIR / "runtime" / "review_db.py"
     dst = home / "bin" / "review-db.py"
     atomic_copy_path(src, dst, force)
@@ -350,42 +323,14 @@ def link_runtime(home: Path, skill_config: dict[str, Any], force: bool, skill_so
     obsolete_capabilities = home / "config" / "runtime-capabilities.json"
     if obsolete_capabilities.exists():
         remove_path(obsolete_capabilities)
-    for role, assignments in skill_config["bindings"].items():
-        for assignment in assignments:
-            alias = assignment["alias"]
-            runtime_role = "inspector" if role == "inspector" else role
-            allowed_commands = tuple(skill_config["roles"][role]["commands"])
-            write_reviewctl_adapter(home, alias)
-            obsolete_public_adapter = home / "bin" / f"reviewctl-{alias}.py"
-            if obsolete_public_adapter.exists() or obsolete_public_adapter.is_symlink():
-                remove_path(obsolete_public_adapter)
-            wrapper = home / "bin" / f"review-db-{alias}.py"
-            atomic_write_text(
-                wrapper,
-                "#!/usr/bin/env python3\n"
-                "import json, os, sys\n"
-                "from pathlib import Path\n"
-                f"tool = Path({str(dst)!r})\n"
-                f"role = {runtime_role!r}\n"
-                f"allowed_commands = {allowed_commands!r}\n"
-                "arguments = sys.argv[1:]\n"
-                "if not arguments or arguments[0] in {'-h', '--help'}:\n"
-                "    print(f'usage: {Path(sys.argv[0]).name} <command> [options]')\n"
-                "    print(f'\\n{role} 可执行命令：')\n"
-                "    print('  ' + '\\n  '.join(allowed_commands))\n"
-                "    raise SystemExit(0)\n"
-                "command = arguments[0]\n"
-                "requests_help = any(argument in {'-h', '--help'} for argument in arguments[1:])\n"
-                "if command not in allowed_commands and requests_help:\n"
-                "    print(json.dumps({\n"
-                "        'error': f'{role} 身份不允许执行命令: {command}',\n"
-                "        'role': role,\n"
-                "        'allowed_commands': list(allowed_commands),\n"
-                "    }, ensure_ascii=False), file=sys.stderr)\n"
-                "    raise SystemExit(2)\n"
-                f"os.execv(sys.executable, [sys.executable, str(tool), '--agent', {runtime_role!r}, '--operator-id', {alias!r}, *sys.argv[1:]])\n",
-                executable=os.name != "nt",
-            )
+    # reviewctl 概念已废弃：清理旧全局入口、旧适配器与逐身份 review-db wrapper。
+    for pattern in ("reviewctl", "reviewctl.cmd", "reviewctl.py", "reviewctl-*.py", "review-db-*.py"):
+        for obsolete in (home / "bin").glob(pattern):
+            if obsolete.exists() or obsolete.is_symlink():
+                remove_path(obsolete)
+    legacy_adapters = home / "internal" / "reviewctl-adapters"
+    if legacy_adapters.exists():
+        remove_path(legacy_adapters)
 
 def remove_path(path: Path) -> None:
     if path.is_symlink() or path.is_file():
@@ -478,7 +423,6 @@ def generated_skill_text(platform: str, identities: list[dict[str, Any]], target
         )
     activation += (
         "启动后将角色和逻辑身份锁定到当前模式，不得根据后续任务自动切换；切换前必须先退出。"
-        "同一角色存在多个逻辑身份时，使用标记为“默认身份”的入口。"
     )
     if "inspector" in roles:
         activation += (
@@ -487,35 +431,33 @@ def generated_skill_text(platform: str, identities: list[dict[str, Any]], target
             "它固定使用 Inspector 身份，不接受 dev 参数，也不从自然语言猜测启动。"
         )
 
-    legacy_to_reviewctl = _load_reviewctl_registry()
+    legacy_to_cictl = _load_cictl_registry()
 
-    def reviewctl_commands(policy_commands: list[str], tool: str) -> str:
+    def role_commands(policy_commands: list[str], tool: str) -> str:
         entries: list[str] = []
         for legacy in policy_commands:
-            for new_command in legacy_to_reviewctl.get(legacy, []):
-                entries.append(new_command.replace("reviewctl ", f"{tool} ", 1))
+            for new_command in legacy_to_cictl.get(legacy, []):
+                entries.append(new_command.replace("cictl ", f"{tool} ", 1))
         return ", ".join(entries) or "（无）"
 
     rows = []
     for item in identities:
         role = item["role"]
         policy = item["role_policy"]
-        runtime_script = target / "tools" / f"reviewctl-{item['alias']}.py"
-        tool = cictl_command_name(role) if platform == "codex" else f'python "{runtime_script}"'
-        default_label = "（默认身份）" if item.get("default") else ""
+        tool = cictl_command_name(role)
         rows.append(
-            f"## {item['alias']} · {role} · {policy['session_selector']}{default_label}\n\n"
+            f"## {item['alias']} · {role} · {policy['session_selector']}\n\n"
             f"固定工具：`{tool}`。当前 Session 的角色和逻辑身份由运行时私有绑定保证，"
             f"命令统一使用 `{tool} <域> <动作>` 格式，"
             "不存在也不得另传 `--agent` 或 `--operator-id`。\n\n"
-            f"可执行命令：{reviewctl_commands(policy['commands'], tool)}。\n\n"
+            f"可执行命令：{role_commands(policy['commands'], tool)}。\n\n"
             f"每轮角色强化块（每个 Action Turn 的输入侧都会重新注入，输出回复必须以 OUTPUT_PREFIX 开头）：\n\n"
             f"```\n{role_identity_block(role)}\n```\n\n"
             f"职责：{'；'.join(policy['responsibilities'])}。\n\n"
             f"禁止：{', '.join(policy['prohibited'])}。"
         )
     watch_path = target / "scripts" / "watch.py"
-    inspector_tool = "cictl-insp" if platform == "codex" else "<fixed_tool>"
+    inspector_tool = "cictl-insp"
     routing = (
         "激活后必须读取 `references/core-workflow.md`，并只读取 "
         "`references/role-workflows.md` 中当前锁定角色的章节。普通 Action Turn 先调用一次 "
@@ -566,19 +508,10 @@ def generated_skill_text(platform: str, identities: list[dict[str, Any]], target
     )
 
 def generated_codex_rules(identities: list[dict[str, Any]], skill_target: Path) -> str:
-    """只允许安装器生成的固定身份 wrapper 越过沙箱访问 Review DB。"""
+    """只允许安装器生成的角色命令 cictl-dev / cictl-insp 越过沙箱访问 Review DB。"""
     lines = [CODEX_RULES_MARKER.rstrip(), ""]
     justification = "Code Inspector 固定身份工具需要访问 Review DB 的 SQLite WAL/SHM 文件。"
     for item in identities:
-        for name in (f"reviewctl-{item['alias']}.py", f"review-db-{item['alias']}.py"):
-            wrapper = str(skill_target / "tools" / name)
-            for pattern in (["python", wrapper], [wrapper]):
-                encoded_pattern = json.dumps(pattern, ensure_ascii=False, separators=(",", ":"))
-                encoded_justification = json.dumps(justification, ensure_ascii=False)
-                lines.append(
-                    f"prefix_rule(pattern={encoded_pattern}, decision=\"allow\", "
-                    f"justification={encoded_justification})"
-                )
         if item["role"] in {"developer", "inspector"}:
             command = cictl_command_name(item["role"])
             launcher = str(skill_target.parents[2] / ".agent-review" / "bin" / command)
@@ -624,11 +557,6 @@ def install_generated_skill(source: Path, target: Path, platform: str, identitie
     agents_dir = staged / "agents"
     agents_dir.mkdir(exist_ok=True)
     shutil.copy2(source / "agents" / "openai.yaml", agents_dir / "openai.yaml")
-    tools_dir = staged / "tools"
-    tools_dir.mkdir(exist_ok=True)
-    for item in identities:
-        shutil.copy2(reviewctl_adapter_path(home, item["alias"]), tools_dir / f"reviewctl-{item['alias']}.py")
-        shutil.copy2(home / "bin" / f"review-db-{item['alias']}.py", tools_dir / f"review-db-{item['alias']}.py")
     try:
         replace_staged_path(staged, target)
     finally:
@@ -652,20 +580,21 @@ def install_role_skills(
     tools_config: dict[str, Any], skill_config: dict[str, Any], source: Path, home: Path, force: bool
 ) -> None:
     bindings: dict[str, Any] = {}
-    by_platform: dict[str, list[dict[str, Any]]] = {}
-    for role, assignments in skill_config["bindings"].items():
-        for assignment in assignments:
-            platform, alias = assignment["agent"], assignment["alias"]
-            by_platform.setdefault(platform, []).append({
-                "alias": alias,
-                "role": role,
-                "default": assignment.get("default", False),
-                "role_policy": skill_config["roles"][role],
-            })
-    for platform, identities in by_platform.items():
-        tool = tools_config["tools"][platform]
+    # 全平台统一身份：每个角色一个逻辑身份，所有启用平台安装同一份角色 Skill。
+    identities = [
+        {
+            "alias": binding["alias"],
+            "role": role,
+            "role_policy": skill_config["roles"][role],
+        }
+        for role, binding in skill_config["bindings"].items()
+    ]
+    for platform in skill_config["agents"]:
+        tool = tools_config["tools"].get(platform)
+        if tool is None:
+            raise ValueError(f"Agent 所属工具未配置: {platform}")
         if not tool.get("enabled", False):
-            raise ValueError(f"Agent 所属工具未启用: {platform}")
+            continue
         target_root = expand_path(tool["skills_dir"])
         remove_legacy_skill_dir(target_root)
         target = target_root / skill_config["skill_name"]
@@ -673,20 +602,13 @@ def install_role_skills(
         if platform == "codex":
             rules_path = install_codex_rules(target_root.parent, identities, target, force)
             print(f"[rules] {rules_path}", file=sys.stderr)
-        for item in identities:
-            fixed_tool = (
-                cictl_launcher_path(home, item["role"])
-                if platform == "codex"
-                else target / "tools" / f"reviewctl-{item['alias']}.py"
-            )
-            bindings[item["alias"]] = {
-                "alias": item["alias"], "agent": platform, "role": item["role"],
-                "agent_platform": platform,
-                "default": item["default"], "role_policy": item["role_policy"],
-                "skill_path": str(target),
-                "fixed_tool_path": str(fixed_tool),
-            }
         print(f"[skills] {target} ({platform}: {', '.join(i['alias'] for i in identities)})", file=sys.stderr)
+    for item in identities:
+        bindings[item["alias"]] = {
+            "alias": item["alias"], "agent": "any", "role": item["role"],
+            "role_policy": item["role_policy"],
+            "fixed_tool_path": str(cictl_launcher_path(home, item["role"])),
+        }
     bindings["web-human"] = {"alias": "web-human", "agent": "webapp", "role": "human"}
     (home / "config" / "agent-bindings.json").write_text(
         json.dumps(bindings, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
@@ -859,9 +781,8 @@ def main() -> int:
                 "database": db.exists(),
                 "schema": schema_ok,
                 "migrations_current": migration_ok,
-                "runtime_reviewctl": (home / "bin" / "reviewctl.py").exists(),
-                "reviewctl_launcher": reviewctl_launcher_path(home).exists(),
-                "web_human_adapter": reviewctl_adapter_path(home, "web-human").exists(),
+                "runtime_cictl": cictl_runtime_path(home).exists(),
+                "web_human_adapter": cictl_adapter_path(home, "web-human").exists(),
                 "runtime_review_db": (home / "bin" / "review-db.py").exists(),
                 "runtime_agent_routing": (home / "bin" / "agent_routing.py").exists(),
                 "routing_capabilities": (home / "config" / "agent-capabilities.yml").exists(),
@@ -869,20 +790,17 @@ def main() -> int:
                 "skill_config": (home / "config" / "code-inspector.json").exists(),
                 "agent_bindings": (home / "config" / "agent-bindings.json").exists(),
             }
-            for role, assignments in skill_config["bindings"].items():
-                for assignment in assignments:
-                    agent_name = assignment["agent"]
-                    tool = config["tools"].get(agent_name, {})
-                    target_root = expand_path(tool.get("skills_dir", "")) if tool else Path("/")
-                    target = target_root / skill_config["skill_name"]
-                    checks[f"skill:{assignment['alias']}:{role}"] = target.is_dir() and (target / ".code-inspector-generated").exists()
-                    checks[f"runtime:{assignment['alias']}"] = (home / "bin" / f"review-db-{assignment['alias']}.py").exists()
-                    checks[f"reviewctl-adapter:{assignment['alias']}"] = reviewctl_adapter_path(
-                        home, assignment["alias"]
-                    ).exists()
-                    checks[f"skill-tool:{assignment['alias']}"] = (
-                        target / "tools" / f"reviewctl-{assignment['alias']}.py"
-                    ).exists()
+            for role, binding in skill_config["bindings"].items():
+                alias = binding["alias"]
+                checks[f"cictl-launcher:{role}"] = cictl_launcher_path(home, role).exists()
+                checks[f"cictl-adapter:{alias}"] = cictl_adapter_path(home, alias).exists()
+            for platform in skill_config["agents"]:
+                tool = config["tools"].get(platform, {})
+                if not tool.get("enabled", False):
+                    continue
+                target_root = expand_path(tool.get("skills_dir", "")) if tool else Path("/")
+                target = target_root / skill_config["skill_name"]
+                checks[f"skill:{platform}"] = target.is_dir() and (target / ".code-inspector-generated").exists()
             print_result({"command": "verify", "status": "ok" if all(checks.values()) else "failed", "checks": checks})
             if not all(checks.values()):
                 return 1
