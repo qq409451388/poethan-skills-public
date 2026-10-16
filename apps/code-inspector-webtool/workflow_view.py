@@ -54,8 +54,8 @@ PATHS = [
     ("DESIGN_REJECTED", "DESIGN_REQUIRED"), ("DESIGN_APPROVED", "IN_PROGRESS"),
     ("DESIGN_APPROVED", "STAGE_PLAN_CREATED"), ("STAGE_PLAN_CREATED", "STAGE_SCOPE_DECLARED"),
     ("STAGE_SCOPE_DECLARED", "STAGE_IN_PROGRESS"), ("STAGE_IN_PROGRESS", "STAGE_SUBMITTED"), ("STAGE_SUBMITTED", "STAGE_APPROVED"),
-    ("STAGE_SUBMITTED", "STAGE_REJECTED"), ("STAGE_REJECTED", "STAGE_SCOPE_DECLARED"),
-    ("STAGE_APPROVED", "STAGE_SCOPE_DECLARED"), ("STAGE_APPROVED", "IMPLEMENTED_PENDING_REVIEW"),
+    ("STAGE_SUBMITTED", "STAGE_REJECTED"), ("STAGE_REJECTED", "STAGE_IN_PROGRESS"),
+    ("STAGE_APPROVED", "STAGE_IN_PROGRESS"), ("STAGE_APPROVED", "IMPLEMENTED_PENDING_REVIEW"),
     ("IN_PROGRESS", "IMPLEMENTED_PENDING_REVIEW"),
     ("IMPLEMENTED_PENDING_REVIEW", "REVIEW_APPROVED"), ("IMPLEMENTED_PENDING_REVIEW", "REVIEW_REJECTED"),
     ("REVIEW_REJECTED", "IN_PROGRESS"), ("REVIEW_APPROVED", "VERIFICATION_PASSED"),
@@ -160,6 +160,45 @@ def workflow_graph(issue, activities, stages, current_execution_stage=None, disc
                   else "STAGE_IN_PROGRESS" if stage.get("prepared_at") else "STAGE_PLAN_CREATED")
         for node in graph["nodes"]:
             node["waiting_here"] = node["key"] == anchor
+    result["stage_context"] = None
+    if current_execution_stage:
+        stage = current_execution_stage
+        prior = [item["stage_no"] for item in stages
+                 if item.get("plan_no") == stage.get("plan_no")
+                 and item.get("stage_no", 0) < stage.get("stage_no", 0)
+                 and item["status"] == "APPROVED"]
+        arrival = None
+        for activity in reversed(activities):
+            metadata = activity.get("metadata") or {}
+            if metadata.get("plan_no") != stage.get("plan_no"):
+                continue
+            if activity["activity_type"] == "STAGE_REJECTED" and metadata.get("stage_no") == stage.get("stage_no"):
+                arrival = "rework"
+                break
+            if activity["activity_type"] == "STAGE_APPROVED" and prior and metadata.get("stage_no") == max(prior):
+                arrival = "next_stage"
+                break
+        if arrival is None and prior:
+            arrival = "next_stage"
+        development_label = {"rework": "驳回返工中", "next_stage": "下一阶段开发中"}.get(arrival, "阶段开发中")
+        if stage["status"] == "PENDING_REVIEW":
+            reason = "本阶段已提交，等待验收。"
+        elif arrival == "rework":
+            reason = "最近一次进入开发的原因：本阶段验收驳回，当前正在返工。"
+        elif arrival == "next_stage":
+            reason = "前序阶段 " + "、".join(map(str, sorted(prior))) + " 已通过，当前进入下一阶段开发。"
+        else:
+            reason = "当前阶段正在开发，尚未提交验收。"
+        result["stage_context"] = {"title": f"Stage {stage.get('stage_no')} · {stage.get('title', '')}", "reason": reason}
+        for node in graph["nodes"]:
+            if node["key"] == "STAGE_IN_PROGRESS" and (node["current"] or node.get("waiting_here")):
+                node["title"] = f"Stage {stage.get('stage_no')} · {development_label}"
+        if stage["status"] == "IN_PROGRESS":
+            for edge in graph["edges"]:
+                if edge["target"] == "STAGE_IN_PROGRESS" and edge["source"] in {"STAGE_REJECTED", "STAGE_APPROVED"}:
+                    edge["current_entry"] = edge["source"] == ("STAGE_REJECTED" if arrival == "rework" else "STAGE_APPROVED" if arrival == "next_stage" else None)
+                    if edge["current_entry"]:
+                        edge["label"] = "本次：" + edge["label"]
     graph["hover_paths"] = hover_paths(graph, trail)
     # 正常前进线与悬浮路径采用同一依据，不能因中间夹着其他动作而显示为未走过。
     recorded_forward_edges = {edge for path in graph["hover_paths"].values() for edge in path["edges"]}
@@ -282,16 +321,16 @@ def diagram_sections(by_key, current, paused, traversed):
              ("DESIGN_REJECTED", "DESIGN_REQUIRED", "M640,212 H425 V124", "修订后重审",525,203),
          ]},
         {"key": "stages", "title": "开发与阶段验收", "note": "无阶段计划时直接开发并提交整体实现；分阶段时逐阶段验收，全部通过后进入最终审核区。", "height": 270,
-         "positions": {"IN_PROGRESS": (20,48), "STAGE_PLAN_CREATED": (220,48), "STAGE_SCOPE_DECLARED": (420,48), "STAGE_IN_PROGRESS": (620,48), "STAGE_SUBMITTED": (820,48), "STAGE_APPROVED": (1020,48), "STAGE_REJECTED": (820,174)},
+         "positions": {"IN_PROGRESS": (20,48), "STAGE_PLAN_CREATED": (265,48), "STAGE_SCOPE_DECLARED": (510,48), "STAGE_IN_PROGRESS": (510,174), "STAGE_SUBMITTED": (755,174), "STAGE_APPROVED": (1000,174), "STAGE_REJECTED": (755,300)},
          "edges": [
-             ("IN_PROGRESS", "STAGE_PLAN_CREATED", "M210,86 H220", "",0,0),
-             ("STAGE_PLAN_CREATED", "STAGE_SCOPE_DECLARED", "M410,86 H420", "",0,0),
-             ("STAGE_SCOPE_DECLARED", "STAGE_IN_PROGRESS", "M610,86 H620", "",0,0),
-             ("STAGE_IN_PROGRESS", "STAGE_SUBMITTED", "M810,86 H820", "",0,0),
-             ("STAGE_SUBMITTED", "STAGE_APPROVED", "M1010,86 H1020", "通过",1015,77),
-             ("STAGE_SUBMITTED", "STAGE_REJECTED", "M915,124 V174", "未通过",953,151),
-             ("STAGE_REJECTED", "STAGE_SCOPE_DECLARED", "M820,212 H515 V124", "修正当前阶段",673,203),
-             ("STAGE_APPROVED", "STAGE_SCOPE_DECLARED", "M1115,48 V16 H515 V48", "下一阶段（如有）",850,10),
+             ("IN_PROGRESS", "STAGE_PLAN_CREATED", "M210,86 H265", "",0,0),
+             ("STAGE_PLAN_CREATED", "STAGE_SCOPE_DECLARED", "M455,86 H510", "",0,0),
+             ("STAGE_SCOPE_DECLARED", "STAGE_IN_PROGRESS", "M605,124 V174", "",0,0),
+             ("STAGE_IN_PROGRESS", "STAGE_SUBMITTED", "M700,212 H755", "",0,0),
+             ("STAGE_SUBMITTED", "STAGE_APPROVED", "M945,212 H1000", "通过",972,203),
+             ("STAGE_SUBMITTED", "STAGE_REJECTED", "M850,250 V300", "未通过",888,277),
+             ("STAGE_REJECTED", "STAGE_IN_PROGRESS", "M755,338 H605 V250", "同一 Stage 驳回 → 返工",680,329),
+             ("STAGE_APPROVED", "STAGE_IN_PROGRESS", "M1095,174 V150 H605 V174", "前一 Stage 通过 → 下一 Stage",850,141),
          ]},
         {"key": "review", "title": "最终审核、验证与关闭", "note": "审核或验证未通过，返回开发修复；确认关闭以实际记录为准。", "height": 270,
          "positions": {"IMPLEMENTED_PENDING_REVIEW": (20,48), "REVIEW_APPROVED": (330,48), "VERIFICATION_PASSED": (640,48), "CONFIRMED": (950,48), "REVIEW_REJECTED": (20,174), "VERIFICATION_FAILED": (330,174)},
@@ -338,7 +377,7 @@ def connected_diagram(diagrams, traversed, current, paused):
     """三个主流程层共用坐标系；跨层前进走右侧，返回开发走左侧。"""
     import re
     nodes, edges, layers = [], [], []
-    for diagram, offset_y in zip(diagrams[:3], (60, 400, 740)):
+    for diagram, offset_y in zip(diagrams[:3], (60, 400, 900)):
         offset_x = 80
         layers.append({"title": diagram["title"], "y": offset_y+17,
                        "line_y": offset_y+33})
@@ -355,18 +394,18 @@ def connected_diagram(diagrams, traversed, current, paused):
                           "label_y": edge["label_y"]+offset_y})
     cross_layer = [
         ("DESIGN_APPROVED", "IN_PROGRESS", "M1220,146 H1340 V365 H195 V448", "方案通过，进入开发", 1020,356),
-        ("STAGE_APPROVED", "IMPLEMENTED_PENDING_REVIEW", "M1290,486 H1360 V705 H195 V788", "全部阶段完成 → 提交整体实现", 1010,696),
+        ("STAGE_APPROVED", "IMPLEMENTED_PENDING_REVIEW", "M1270,612 H1360 V865 H195 V948", "全部阶段完成 → 提交整体实现", 1010,856),
         ("PROPOSED", "IN_PROGRESS", "M195,184 V340 H55 V486 H100", "无需设计，直接开发", 225,331),
-        ("IN_PROGRESS", "IMPLEMENTED_PENDING_REVIEW", "M195,524 V680 H80 V826 H100", "不分阶段时，直接提交整体实现", 335,671),
-        ("REVIEW_REJECTED", "IN_PROGRESS", "M195,990 V1040 H55 V486 H100", "审核未通过，返回开发", 330,1031),
-        ("VERIFICATION_FAILED", "IN_PROGRESS", "M505,990 V1060 H30 V486 H100", "验证未通过，返回开发", 670,1051),
+        ("IN_PROGRESS", "IMPLEMENTED_PENDING_REVIEW", "M195,524 V840 H80 V986 H100", "不分阶段时，直接提交整体实现", 335,831),
+        ("REVIEW_REJECTED", "IN_PROGRESS", "M195,1150 V1200 H55 V486 H100", "审核未通过，返回开发", 330,1191),
+        ("VERIFICATION_FAILED", "IN_PROGRESS", "M505,1150 V1220 H30 V486 H100", "验证未通过，返回开发", 670,1211),
     ]
     for source,target,path,label,x,y in cross_layer:
         edges.append({"source":source,"target":target,"path":path,"label":label,"label_x":x,"label_y":y,
                       "visited":(source,target) in traversed,
                       "flowing":source == current and not paused and (source,target) in PATHS,
                       "cross_layer":True})
-    return {"nodes":nodes,"edges":edges,"layers":layers,"width":1390,"height":1100}
+    return {"nodes":nodes,"edges":edges,"layers":layers,"width":1390,"height":1260}
 
 
 def hover_paths(graph, trail):
@@ -391,8 +430,8 @@ def hover_paths(graph, trail):
                 continue
             if (source, target) in {
                 ("DESIGN_REJECTED", "DESIGN_REQUIRED"),
-                ("STAGE_REJECTED", "STAGE_SCOPE_DECLARED"),
-                ("STAGE_APPROVED", "STAGE_SCOPE_DECLARED"),
+                ("STAGE_REJECTED", "STAGE_IN_PROGRESS"),
+                ("STAGE_APPROVED", "STAGE_IN_PROGRESS"),
                 ("REVIEW_REJECTED", "IN_PROGRESS"),
                 ("VERIFICATION_FAILED", "IN_PROGRESS"),
             }:

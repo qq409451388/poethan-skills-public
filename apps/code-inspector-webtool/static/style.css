@@ -819,3 +819,9 @@ button.queue-pill { font: inherit; cursor: pointer; }
 .workflow-map-node.is-waiting-here rect { fill: #fff6e5; stroke: #d68a18; stroke-width: 2.5; }
 .workflow-map-node.is-waiting-here text { fill: #8c5c17; }
 .workflow-map-node.is-waiting-here circle { fill: #d68a18; }
+
+.workflow-stage-context { padding: 11px 14px; margin-bottom: 12px; border: 1px solid #dbe5fa; border-radius: 8px; background: #f5f8ff; color: #405577; font-size: 13px; }
+.workflow-stage-context p { margin: 5px 0; font-weight: 600; }
+.workflow-stage-context small { color: #70809d; }
+
+.workflow-diagram-edge.is-current-entry { stroke: #3969e7; stroke-width: 2.8; }
