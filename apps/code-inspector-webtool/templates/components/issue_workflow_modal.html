@@ -28,7 +28,7 @@
         <script type="application/json" data-workflow-hover-paths>{{ graph.hover_paths|tojson }}</script>
       </div>
       <details class="workflow-other-branches"{% if workflow.diagram_secondary_open %} open{% endif %}><summary>其他条件分支：确认、重设计、暂停与快速检查</summary><div>{% for diagram in workflow.diagrams if diagram.secondary %}{{ render_diagram(diagram, loop.index) }}{% endfor %}</div></details>
-      <p class="workflow-note">悬浮或聚焦节点可查看本 Issue 到达它的路径，移开恢复。未到达的节点只突出自身。右侧跨层线连接下一环节，左侧回线返回开发。绿色表示有实际记录，不代表整个 Issue 已完成。</p>
+      <p class="workflow-note">悬浮或聚焦节点可查看本 Issue 到达它的正常前进路径（不含返工回线），移开恢复。未到达的节点只突出自身。右侧跨层线连接下一环节，左侧回线返回开发。绿色表示有实际记录，不代表整个 Issue 已完成。</p>
     </div>
   </div>
 </div>

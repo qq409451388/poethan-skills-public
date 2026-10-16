@@ -148,7 +148,13 @@ def workflow_graph(issue, activities, stages, current_execution_stage=None, disc
     result["diagrams"] = diagram_sections(by_key, current, paused, traversed)
     result["diagram_secondary_open"] = any(diagram["open"] and diagram["secondary"] for diagram in result["diagrams"])
     result["connected_diagram"] = connected_diagram(result["diagrams"], traversed, current, paused)
-    result["connected_diagram"]["hover_paths"] = hover_paths(result["connected_diagram"], trail)
+    graph = result["connected_diagram"]
+    graph["hover_paths"] = hover_paths(graph, trail)
+    # 正常前进线与悬浮路径采用同一依据，不能因中间夹着其他动作而显示为未走过。
+    recorded_forward_edges = {edge for path in graph["hover_paths"].values() for edge in path["edges"]}
+    for edge in graph["edges"]:
+        edge["visited"] = edge["visited"] or f"{edge['source']}|{edge['target']}" in recorded_forward_edges
+
     return result
 
 
@@ -352,16 +358,16 @@ def connected_diagram(diagrams, traversed, current, paused):
 
 
 def hover_paths(graph, trail):
-    """截至该节点最近一次到达的已记录路线，避免把后续历史或未走过的捷径高亮。"""
+    """仅高亮已记录的正常前进路径；返工和下一阶段回线不参与祖先回溯。"""
     result = {}
     for node in graph["nodes"]:
         key = node["key"]
         arrivals = [index for index, event in enumerate(trail) if event == key]
-        if not arrivals:
+        if not arrivals and not node.get("visited"):
             result[key] = {"nodes": [key], "edges": []}
             continue
-        prefix = trail[:arrivals[-1]+1]
-        observed = set(prefix)
+        # 计划创建可能先于进入开发落库；按正常流程方向回溯，不能用时间前缀截断。
+        observed = {item["key"] for item in graph["nodes"] if item.get("visited")} | set(trail)
         candidates = []
         for edge in graph["edges"]:
             source, target = edge["source"], edge["target"]
@@ -371,11 +377,16 @@ def hover_paths(graph, trail):
                 continue
             if (source, target) == ("IN_PROGRESS", "IMPLEMENTED_PENDING_REVIEW") and "STAGE_PLAN_CREATED" in observed:
                 continue
-            if (source, target) in {("STAGE_APPROVED", "STAGE_SCOPE_DECLARED"), ("REVIEW_REJECTED", "IN_PROGRESS"), ("VERIFICATION_FAILED", "IN_PROGRESS")}:
-                if not any(prefix.index(source) < index for index, event in enumerate(prefix) if event == target):
-                    continue
+            if (source, target) in {
+                ("DESIGN_REJECTED", "DESIGN_REQUIRED"),
+                ("STAGE_REJECTED", "STAGE_SCOPE_DECLARED"),
+                ("STAGE_APPROVED", "STAGE_SCOPE_DECLARED"),
+                ("REVIEW_REJECTED", "IN_PROGRESS"),
+                ("VERIFICATION_FAILED", "IN_PROGRESS"),
+            }:
+                continue
             candidates.append(edge)
-        # 回溯目标的祖先；只使用在本次到达之前已有记录的节点。
+        # 回溯正常流程的祖先；只使用有实际记录的节点，已排除所有回线。
         ancestors = {key}
         changed = True
         while changed:

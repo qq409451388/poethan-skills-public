@@ -114,9 +114,12 @@ function animateProgressChanges(previous, incoming) {
     window.setTimeout(() => focusable?.focus(), 0);
   }
 
+  document.addEventListener('open-workflow-modal', (event) => openModal(event.detail));
+
   function closeModal(modal) {
     if (!modal) return;
     modal.classList.remove('open');
+    modal.querySelectorAll('.workflow-connected-map').forEach((map) => map.dispatchEvent(new Event('workflow-path-reset', { bubbles: true })));
     if (!document.querySelector('.modal-backdrop.open')) document.body.classList.remove('modal-open');
     lastTrigger?.focus();
   }
@@ -555,7 +558,7 @@ document.querySelectorAll('form[method="post" i]').forEach((form) => {
     const key = window.location.hash.slice(1);
     const modal = target?.matches('.modal-backdrop') ? target
       : queueKeys.includes(key) ? document.getElementById(`${key}-modal`) : null;
-    if (modal) openModal(modal.id);
+    if (modal) document.dispatchEvent(new CustomEvent("open-workflow-modal", { detail: modal.id }));
   }
 
   // tab 行要贴在吸顶标题下面，标题高度随语言和换行变化，所以按实际高度算偏移。
@@ -762,6 +765,7 @@ function animateStageReveal(snapshot, row) {
 // 悬浮与键盘聚焦共用实际历史路径，事件委托兼容页面自动刷新。
 (() => {
   const pathCache = new WeakMap();
+  document.addEventListener('workflow-path-reset', (event) => reset(event.target));
   function reset(map) {
     map.classList.remove('is-path-focused');
     delete map.dataset.pathTarget;
