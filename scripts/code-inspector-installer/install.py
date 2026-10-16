@@ -613,6 +613,10 @@ def install_role_skills(
     (home / "config" / "agent-bindings.json").write_text(
         json.dumps(bindings, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
+    # 角色权限配置是 cictl 运行时拦截越权动作的依据，与 Skill 安装保持同一份。
+    (home / "config" / "code-inspector.json").write_text(
+        json.dumps(skill_config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
 
 def init_workspace(workspace: Path, home: Path, force: bool) -> None:
     target = workspace / ".agents"

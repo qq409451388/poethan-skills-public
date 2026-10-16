@@ -1,6 +1,6 @@
 """Web 工具的领域命令适配层。
 
-页面只读查询可直接使用 SQLite；所有写操作统一调用安装后的 reviewctl WebApp 身份入口，
+页面只读查询可直接使用 SQLite；所有写操作统一调用安装后的 cictl WebApp 身份入口，
 避免在 Web 层复制状态流转、审计和权限规则。
 """
 from __future__ import annotations
@@ -19,7 +19,7 @@ def review_home() -> Path:
 
 
 def run_human_command(domain: str, action: str, *args: str, payload=None, cwd: Path | None = None) -> dict:
-    tool = review_home() / "internal" / "reviewctl-adapters" / "reviewctl-web-human.py"
+    tool = review_home() / "internal" / "cictl-adapters" / "cictl-web-human.py"
     if not tool.exists():
         raise RuntimeError(f"未找到 WebApp 命令入口：{tool}。请重新安装 Code Inspector。")
     result = subprocess.run(

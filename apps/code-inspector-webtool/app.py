@@ -1,6 +1,6 @@
 """Code Inspector 本机 Human 工作台。
 
-SQLite 只用于页面查询；所有写操作必须经过安装后的 reviewctl WebApp 身份入口。
+SQLite 只用于页面查询；所有写操作必须经过安装后的 cictl WebApp 身份入口。
 """
 from __future__ import annotations
 

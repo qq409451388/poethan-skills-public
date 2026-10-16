@@ -154,15 +154,12 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 force=False,
             )
 
-            copied_tool = (
-                root / ".codex" / "skills" / "poethan-code-inspector"
-                / "tools" / "review-db-codex-dev.py"
-            )
+            copied_tool = review_home / "bin" / "cictl-dev"
             self.assertFalse(copied_tool.is_symlink())
             installed_skill = root / ".codex" / "skills" / "poethan-code-inspector"
             self.assertFalse(any(path.is_symlink() for path in installed_skill.rglob("*")))
             result = subprocess.run(
-                [sys.executable, str(copied_tool), "task-list"],
+                [sys.executable, str(copied_tool), "task", "list"],
                 cwd=root,
                 env={
                     **os.environ,
@@ -198,8 +195,8 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             self.run_cmd(home, str(INSTALLER), "install")
             review_home = home / ".agent-review"
             database = review_home / "data" / "review.db"
-            inspector_tool = review_home / "bin" / "review-db-codex-insp.py"
-            developer_tool = review_home / "bin" / "review-db-codex-dev.py"
+            inspector_tool = [str(review_home / "bin" / "review-db.py"), "--agent", "inspector", "--operator-id", "inspector"]
+            developer_tool = [str(review_home / "bin" / "review-db.py"), "--agent", "developer", "--operator-id", "developer"]
             db_tool = review_home / "bin" / "review-db.py"
             with closing(sqlite3.connect(database)) as conn, conn:
                 task_id = conn.execute(
@@ -221,21 +218,21 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 conn.execute("DELETE FROM review_tool_call_metric")
 
             failed = self.run_raw(
-                home, str(inspector_tool), "issue-get", "--issue-key", "RI-NOT-FOUND",
+                home, *inspector_tool, "issue-get", "--issue-key", "RI-NOT-FOUND",
             )
             self.assertNotEqual(failed.returncode, 0)
             self.assertIn("RI-NOT-FOUND", failed.stderr)
 
             secret = "SENSITIVE-CONTENT-MUST-NOT-BE-METRIC"
             self.run_cmd(
-                home, str(inspector_tool), "discussion-append", "--issue-key", "RI-FAST-A",
+                home, *inspector_tool, "discussion-append", "--issue-key", "RI-FAST-A",
                 "--content", secret,
             )
 
             # 普通 activity-append 不能通过伪造 metadata 改变标准审核语义。
             spoof_metadata = json.dumps({"workflow_mode": "FASTMODE"})
             self.run_cmd(
-                home, str(inspector_tool), "activity-append", "--issue-key", "RI-OUTSIDE",
+                home, *inspector_tool, "activity-append", "--issue-key", "RI-OUTSIDE",
                 "--activity-type", "VERIFICATION_FAILED", "--content", "标准审核失败",
                 "--result-status", "FAIL", "--metadata", spoof_metadata,
             )
@@ -257,7 +254,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 "Final Decision: PASS " + "回归证据完整。" * 30,
             ])
             self.run_cmd(
-                home, str(inspector_tool), "activity-append", "--issue-key", "RI-OUTSIDE",
+                home, *inspector_tool, "activity-append", "--issue-key", "RI-OUTSIDE",
                 "--activity-type", "VERIFICATION_PASSED", "--content", long_verification,
                 "--metadata", "", "--code-reference", "",
             )
@@ -274,15 +271,15 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 self.assertNotIn("\n", decision_content)
 
             # FastMode 不依赖 pending_action 或 Developer 会话，专用命令只记录验证事实。
-            self.run_cmd(home, str(inspector_tool), "issue-context-get", "--issue-key", "RI-FAST-B")
+            self.run_cmd(home, *inspector_tool, "issue-context-get", "--issue-key", "RI-FAST-B")
             fast_content = "FAST-REVIEW-CONTENT-MUST-NOT-BE-METRIC"
             fast_evidence = "FAST-REVIEW-EVIDENCE-MUST-NOT-BE-METRIC"
             passed = self.run_cmd(
-                home, str(inspector_tool), "fast-review-record", "--issue-key", "RI-FAST-A",
+                home, *inspector_tool, "fast-review-record", "--issue-key", "RI-FAST-A",
                 "--decision", "pass", "--content", fast_content, "--evidence", fast_evidence,
             )
             failed_review = self.run_cmd(
-                home, str(inspector_tool), "fast-review-record", "--issue-key", "RI-FAST-B",
+                home, *inspector_tool, "fast-review-record", "--issue-key", "RI-FAST-B",
                 "--decision", "fail", "--content", "检查未通过，仍存在边界错误",
             )
             self.assertEqual(passed["activity_type"], "VERIFICATION_PASSED")
@@ -291,7 +288,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             self.assertIsNone(failed_review["evidence_activity_id"])
 
             developer_denied = self.run_raw(
-                home, str(developer_tool), "fast-review-record", "--issue-key", "RI-FAST-A",
+                home, *developer_tool, "fast-review-record", "--issue-key", "RI-FAST-A",
                 "--decision", "pass", "--content", "Developer 越权",
             )
             self.assertNotEqual(developer_denied.returncode, 0)
@@ -309,7 +306,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                     """SELECT a.id FROM issue_activity a JOIN review_issue i ON i.id=a.issue_id
                        WHERE i.issue_key='RI-FAST-A' AND a.activity_type='VERIFICATION_EVIDENCE_ADDED'"""
                 ).fetchone()[0]
-            self.run_cmd(home, str(inspector_tool), "activity-get", str(evidence_activity_id))
+            self.run_cmd(home, *inspector_tool, "activity-get", str(evidence_activity_id))
 
             with closing(sqlite3.connect(database)) as conn:
                 conn.row_factory = sqlite3.Row
@@ -354,7 +351,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             self.assertTrue((codex_skill / "references").is_dir())
             self.assertTrue((codex_skill / "scripts" / "watch.py").is_file())
             self.assertTrue((home / ".agent-review" / "bin" / "review-db.py").is_file())
-            self.assertTrue((home / ".agent-review" / "internal" / "reviewctl-adapters" / "reviewctl-web-human.py").is_file())
+            self.assertTrue((home / ".agent-review" / "internal" / "cictl-adapters" / "cictl-web-human.py").is_file())
             self.assertFalse((home / ".agent-review" / "bin" / "code-inspector-supervisor.py").exists())
             self.assertFalse((home / ".agent-review" / "bin" / "runtime_identity.py").exists())
             self.assertFalse((home / ".agent-review" / "bin" / "session_scope.py").exists())
@@ -368,29 +365,29 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 Path(installed_runtime["database"]).resolve(),
                 (home / ".agent-review" / "data" / "review.db").resolve(),
             )
-            self.assertEqual(bindings["codex-dev"]["role"], "developer")
-            self.assertEqual(bindings["codex-insp"]["role"], "inspector")
-            self.assertEqual(bindings["trae-inspector"]["role"], "inspector")
-            self.assertEqual(bindings["dsh-developer"]["role"], "developer")
-            self.assertEqual(bindings["dsh-inspector"]["role"], "inspector")
-            self.assertTrue((home / ".agent-review" / "bin" / "review-db-trae-inspector.py").exists())
-            self.assertTrue((home / ".agent-review" / "bin" / "review-db-dsh-developer.py").exists())
-            self.assertTrue((home / ".agent-review" / "bin" / "review-db-dsh-inspector.py").exists())
-            wrapper_text = (
-                home / ".agent-review" / "bin" / "review-db-codex-dev.py"
+            self.assertEqual(bindings["developer"]["role"], "developer")
+            self.assertEqual(bindings["inspector"]["role"], "inspector")
+            self.assertTrue((home / ".agent-review" / "bin" / "cictl-dev").exists())
+            self.assertTrue((home / ".agent-review" / "bin" / "cictl-insp").exists())
+            self.assertTrue((home / ".agent-review" / "bin" / "cictl.py").exists())
+            self.assertFalse((home / ".agent-review" / "bin" / "reviewctl").exists())
+            self.assertFalse((home / ".agent-review" / "bin" / "reviewctl.py").exists())
+            launcher_text = (
+                home / ".agent-review" / "bin" / "cictl-dev"
             ).read_text(encoding="utf-8")
-            self.assertIn(str(home / ".agent-review" / "bin" / "review-db.py"), wrapper_text)
-            self.assertNotIn("with_name('review-db.py')", wrapper_text)
+            self.assertIn(str(home / ".agent-review" / "bin" / "cictl.py"), launcher_text)
             codex_skill_text = (codex_skill / "SKILL.md").read_text(encoding="utf-8")
             trae_skill_text = (trae_skill / "SKILL.md").read_text(encoding="utf-8")
             dsh_skill_text = (dsh_skill / "SKILL.md").read_text(encoding="utf-8")
             self.assertIn("固定工具：`cictl-dev`", codex_skill_text)
             self.assertIn("固定工具：`cictl-insp`", codex_skill_text)
-            self.assertNotIn(str(codex_skill / "tools" / "reviewctl-codex-dev.py"), codex_skill_text)
-            self.assertNotIn(str(codex_skill / "tools" / "reviewctl-codex-insp.py"), codex_skill_text)
-            self.assertIn("固定工具：`python ", trae_skill_text)
-            self.assertIn("固定工具：`python ", dsh_skill_text)
-            self.assertNotIn(str(codex_skill / "tools" / "review-db-codex-dev.py"), codex_skill_text)
+            self.assertIn("固定工具：`cictl-dev`", trae_skill_text)
+            self.assertIn("固定工具：`cictl-insp`", trae_skill_text)
+            self.assertIn("固定工具：`cictl-dev`", dsh_skill_text)
+            self.assertIn("固定工具：`cictl-insp`", dsh_skill_text)
+            self.assertNotIn("reviewctl", codex_skill_text)
+            self.assertNotIn("reviewctl", trae_skill_text)
+            self.assertNotIn("reviewctl", dsh_skill_text)
             self.assertIn("$poethan-code-inspector start dev", dsh_skill_text)
             self.assertIn("$poethan-code-inspector start insp", dsh_skill_text)
             self.assertIn("$poethan-code-inspector fastmode RI-XXX [RI-YYY ...]", dsh_skill_text)
@@ -432,7 +429,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             self.assertIn("缺少参数", codex_skill_text)
             self.assertNotIn("Multi-Thread", codex_skill_text)
             self.assertNotIn("SESSION_SCOPE_VIOLATION", codex_skill_text)
-            self.assertIn("当前平台仅配置 `inspector` 角色", trae_skill_text)
+            self.assertIn("当前平台配置了多个角色", trae_skill_text)
             self.assertIn("$poethan-code-inspector fastmode RI-XXX [RI-YYY ...]", trae_skill_text)
 
             activation_text = (
@@ -452,22 +449,13 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             self.assertIn("<issue_key> 不存在", fastmode_text)
             self.assertIn("pending_action=null", fastmode_text)
             self.assertIn("不自动设置 `CONFIRMED`", fastmode_text)
-            self.assertIn("reviewctl fast pass|fail <issue_key> --content", fastmode_text)
+            self.assertIn("cictl-insp fast pass|fail <issue_key> --content", fastmode_text)
             self.assertNotIn("activity-append --issue-key <issue_key> --activity-type VERIFICATION", fastmode_text)
-            self.assertIn("$poethan-code-inspector start` 即可启动", trae_skill_text)
+            self.assertIn("缺少参数、参数未知或角色未配置时，不得激活模式", trae_skill_text)
             self.assertIn("固定工具：`cictl-dev`", codex_skill_text)
             self.assertIn("固定工具：`cictl-insp`", codex_skill_text)
             codex_rules_text = codex_rules.read_text(encoding="utf-8")
-            for alias in ("codex-dev", "codex-insp"):
-                wrapper = str((codex_skill / "tools" / f"review-db-{alias}.py").resolve())
-                self.assertIn(
-                    f'prefix_rule(pattern=["python","{wrapper}"], decision="allow"',
-                    codex_rules_text,
-                )
-                self.assertIn(
-                    f'prefix_rule(pattern=["{wrapper}"], decision="allow"',
-                    codex_rules_text,
-                )
+            self.assertNotIn("reviewctl", codex_rules_text)
             self.assertIn('prefix_rule(pattern=["cictl-dev"], decision="allow"', codex_rules_text)
             self.assertIn('prefix_rule(pattern=["cictl-insp"], decision="allow"', codex_rules_text)
             self.assertNotIn("modify-business-code", codex_skill_text.split("可执行命令：", 1)[1].split("。", 1)[0])
@@ -487,7 +475,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             self.assertIn("Human 只作为极低频最终兜底", core_text)
             self.assertIn("主审核者必须额外串联跨模块数据流", role_text)
             self.assertIn("先做覆盖面回查和补充扫描", role_text)
-            self.assertIn("reviewctl stage prepare", role_text)
+            self.assertIn("cictl-dev stage prepare", role_text)
             self.assertIn("原子创建计划、批准设计和激活 Stage 1", role_text)
             self.assertNotIn("stage-plan-create", role_text)
             self.assertIn("连续两次失败必须重新判断设计是否对齐", role_text)
@@ -509,57 +497,49 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             db_tool = home / ".agent-review" / "bin" / "review-db.py"
             def db(*args: str) -> dict:
                 role, *command = args
-                alias = {"inspector": "trae-inspector", "developer": "codex-dev", "human": "human"}[role]
+                alias = {"inspector": "inspector", "developer": "developer", "human": "human"}[role]
                 return self.run_cmd(
                     home, str(db_tool), "--agent", role, "--operator-id", alias, *command, cwd=workspace
                 )
 
             wrapper_result = self.run_cmd(
-                home, str(codex_skill / "tools" / "review-db-codex-dev.py"), "task-list", cwd=workspace
+                home, str(home / ".agent-review" / "bin" / "cictl-dev"), "task", "list", cwd=workspace
             )
             self.assertEqual(wrapper_result, [])
 
-            inspector_wrapper = codex_skill / "tools" / "review-db-codex-insp.py"
+            inspector_wrapper = home / ".agent-review" / "bin" / "cictl-insp"
             inspector_help = subprocess.run(
-                [sys.executable, str(inspector_wrapper), "--help"],
+                [sys.executable, str(inspector_wrapper), "issue", "create", "--help"],
                 cwd=workspace, env=self.home_env(home), text=True, capture_output=True,
             )
             self.assertEqual(inspector_help.returncode, 0, inspector_help.stderr)
-            self.assertIn("issue-create", inspector_help.stdout)
-            self.assertNotIn("candidate-submit", inspector_help.stdout)
+            self.assertIn("cictl-insp issue create", inspector_help.stdout)
 
-            blocked_inspector_help = subprocess.run(
-                [sys.executable, str(inspector_wrapper), "candidate-submit", "--help"],
+            blocked_inspector = subprocess.run(
+                [sys.executable, str(inspector_wrapper), "candidate", "submit", "RI-X", "@-"],
                 cwd=workspace, env=self.home_env(home), text=True, capture_output=True,
+                input="{}",
             )
-            self.assertEqual(blocked_inspector_help.returncode, 2)
-            self.assertIn("inspector 身份不允许执行命令: candidate-submit", blocked_inspector_help.stderr)
-            self.assertNotIn("usage:", blocked_inspector_help.stdout)
+            self.assertEqual(blocked_inspector.returncode, 2)
+            self.assertIn("PERM_COMMAND_FORBIDDEN", blocked_inspector.stdout)
 
-            allowed_inspector_help = subprocess.run(
-                [sys.executable, str(inspector_wrapper), "issue-create", "--help"],
+            developer_wrapper = home / ".agent-review" / "bin" / "cictl-dev"
+            blocked_developer = subprocess.run(
+                [sys.executable, str(developer_wrapper), "issue", "create", "RT-X", "@-"],
                 cwd=workspace, env=self.home_env(home), text=True, capture_output=True,
+                input="{}",
             )
-            self.assertEqual(allowed_inspector_help.returncode, 0, allowed_inspector_help.stderr)
-            self.assertIn("--trigger-conditions", allowed_inspector_help.stdout)
-
-            developer_wrapper = codex_skill / "tools" / "review-db-codex-dev.py"
-            blocked_developer_help = subprocess.run(
-                [sys.executable, str(developer_wrapper), "issue-create", "--help"],
-                cwd=workspace, env=self.home_env(home), text=True, capture_output=True,
-            )
-            self.assertEqual(blocked_developer_help.returncode, 2)
-            self.assertIn("developer 身份不允许执行命令: issue-create", blocked_developer_help.stderr)
+            self.assertEqual(blocked_developer.returncode, 2)
+            self.assertIn("PERM_COMMAND_FORBIDDEN", blocked_developer.stdout)
 
             allowed_developer_help = subprocess.run(
-                [sys.executable, str(developer_wrapper), "candidate-submit", "--help"],
+                [sys.executable, str(developer_wrapper), "candidate", "submit", "--help"],
                 cwd=workspace, env=self.home_env(home), text=True, capture_output=True,
             )
             self.assertEqual(allowed_developer_help.returncode, 0, allowed_developer_help.stderr)
-            self.assertIn("--candidate-key", allowed_developer_help.stdout)
 
             forged = subprocess.run(
-                [sys.executable, str(db_tool), "--agent", "inspector", "--operator-id", "codex-dev", "task-list"],
+                [sys.executable, str(db_tool), "--agent", "inspector", "--operator-id", "developer", "task-list"],
                 cwd=workspace, env=self.home_env(home), text=True, capture_output=True,
             )
             self.assertNotEqual(forged.returncode, 0)
@@ -588,7 +568,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             self.assertEqual(audit_after, audit_before)
 
             blocked = subprocess.run(
-                [sys.executable, str(db_tool), "--agent", "inspector", "--operator-id", "trae-inspector", "issue-update-status",
+                [sys.executable, str(db_tool), "--agent", "inspector", "--operator-id", "inspector", "issue-update-status",
                  "--issue-key", "RI-TEST", "--status", "CONFIRMED"],
                 cwd=workspace, env=self.home_env(home),
                 text=True, capture_output=True,
@@ -641,7 +621,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
 
             def db(*args: str) -> dict:
                 role, *command = args
-                alias = {"inspector": "trae-inspector", "developer": "codex-dev", "human": "human"}[role]
+                alias = {"inspector": "inspector", "developer": "developer", "human": "human"}[role]
                 return self.run_cmd(
                     home, str(db_tool), "--agent", role, "--operator-id", alias, *command, cwd=workspace
                 )
@@ -749,7 +729,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
 
             def db(*args: str) -> dict | list:
                 role, *command = args
-                alias = {"inspector": "trae-inspector", "developer": "codex-dev", "human": "human"}[role]
+                alias = {"inspector": "inspector", "developer": "developer", "human": "human"}[role]
                 return self.run_cmd(
                     home, str(db_tool), "--agent", role, "--operator-id", alias, *command, cwd=workspace
                 )
@@ -787,7 +767,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
 
             failed_batch = subprocess.run(
                 [
-                    sys.executable, str(db_tool), "--agent", "inspector", "--operator-id", "trae-inspector",
+                    sys.executable, str(db_tool), "--agent", "inspector", "--operator-id", "inspector",
                     "issue-update-assessment-batch", "--updates", json.dumps([
                         {"issue_key": "RI-BATCH-1", "severity": "critical"},
                         {"issue_key": "RI-NOT-FOUND", "severity": "low"},
@@ -873,7 +853,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             activity_count = len(db("developer", "activity-list", "--issue-key", "RI-DIRECT-CONFIRM"))
             invalid_submission = subprocess.run(
                 [
-                    sys.executable, str(db_tool), "--agent", "developer", "--operator-id", "codex-dev",
+                    sys.executable, str(db_tool), "--agent", "developer", "--operator-id", "developer",
                     "implementation-submit", "--issue-key", "RI-DIRECT-CONFIRM",
                     "--content", "不应写入的实现证据",
                 ],
@@ -905,7 +885,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
 
             forbidden_review = subprocess.run(
                 [
-                    sys.executable, str(db_tool), "--agent", "developer", "--operator-id", "codex-dev",
+                    sys.executable, str(db_tool), "--agent", "developer", "--operator-id", "developer",
                     "candidate-update-status", "--candidate-key", "RC-PLAINTEXT-CREDENTIAL",
                     "--status", "ACCEPTED", "--content", "越权接受",
                 ],
@@ -922,7 +902,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             )
             self.assertEqual(accepted["status"], "ACCEPTED")
             accepted_items = db("inspector", "candidate-list", "--status", "ACCEPTED")
-            self.assertEqual(accepted_items[0]["reviewed_by"], "trae-inspector")
+            self.assertEqual(accepted_items[0]["reviewed_by"], "inspector")
 
     def test_task_types_identity_filter_and_continuous_lifecycle(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -934,7 +914,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
 
             def db(*args: str) -> dict | list:
                 role, *command = args
-                alias = {"inspector": "trae-inspector", "developer": "codex-dev", "human": "human"}[role]
+                alias = {"inspector": "inspector", "developer": "developer", "human": "human"}[role]
                 return self.run_cmd(
                     home, str(db_tool), "--agent", role, "--operator-id", alias, *command, cwd=workspace
                 )
@@ -946,7 +926,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             self.assertEqual(created_review["task_type"], "REVIEW")
             db("inspector", "task-update-status", "--task-key", "RT-REVIEW", "--status", "CLOSED")
             inspector_reopen = self.run_raw(
-                home, str(db_tool), "--agent", "inspector", "--operator-id", "trae-inspector",
+                home, str(db_tool), "--agent", "inspector", "--operator-id", "inspector",
                 "task-update-status", "--task-key", "RT-REVIEW", "--status", "IN_PROGRESS",
                 cwd=workspace,
             )
@@ -994,7 +974,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                              (continuous_a["task_key"], "ON_HOLD", False))
             db("human", "task-update-status", "--task-key", continuous_a["task_key"], "--status", "IN_PROGRESS")
             mismatch = self.run_raw(
-                home, str(db_tool), "--agent", "inspector", "--operator-id", "trae-inspector",
+                home, str(db_tool), "--agent", "inspector", "--operator-id", "inspector",
                 "task-resolve", "--task-key", continuous_a["task_key"], "--title", "长期线上 Bug",
                 "--objective", "持续收集线上 Bug", "--review-level", "L2",
                 "--review-scope", "trade-flow", "--task-type", "REVIEW", cwd=workspace,
@@ -1030,13 +1010,13 @@ class CodeInspectorInstallerTest(unittest.TestCase):
 
             def db(*args: str) -> dict | list:
                 role, *command = args
-                alias = {"inspector": "trae-inspector", "developer": "codex-dev", "human": "human"}[role]
+                alias = {"inspector": "inspector", "developer": "developer", "human": "human"}[role]
                 return self.run_cmd(
                     home, str(db_tool), "--agent", role, "--operator-id", alias, *command, cwd=workspace
                 )
 
             def fails(role: str, *command: str) -> subprocess.CompletedProcess:
-                alias = {"inspector": "trae-inspector", "developer": "codex-dev", "human": "human"}[role]
+                alias = {"inspector": "inspector", "developer": "developer", "human": "human"}[role]
                 result = self.run_raw(
                     home, str(db_tool), "--agent", role, "--operator-id", alias, *command, cwd=workspace
                 )
@@ -1087,7 +1067,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                     "SELECT previous_content, replacement_content, amended_by FROM issue_discussion_revision WHERE discussion_id = ?",
                     (developer_discussion["discussion_id"],),
                 ).fetchone()
-            self.assertEqual(revision, ("旧开发说明", "最新开发说明", "codex-dev"))
+            self.assertEqual(revision, ("旧开发说明", "最新开发说明", "developer"))
 
             denied = fails(
                 "inspector", "discussion-amend", "--issue-key", "RI-AMEND",
@@ -1429,13 +1409,13 @@ class CodeInspectorInstallerTest(unittest.TestCase):
 
             def db(*args: str) -> dict | list:
                 role, *command = args
-                alias = {"inspector": "trae-inspector", "developer": "codex-dev", "human": "human"}[role]
+                alias = {"inspector": "inspector", "developer": "developer", "human": "human"}[role]
                 return self.run_cmd(
                     home, str(db_tool), "--agent", role, "--operator-id", alias, *command, cwd=workspace
                 )
 
             def fails(role: str, *command: str) -> subprocess.CompletedProcess:
-                alias = {"inspector": "trae-inspector", "developer": "codex-dev", "human": "human"}[role]
+                alias = {"inspector": "inspector", "developer": "developer", "human": "human"}[role]
                 result = self.run_raw(
                     home, str(db_tool), "--agent", role, "--operator-id", alias, *command, cwd=workspace
                 )
@@ -1737,13 +1717,13 @@ class CodeInspectorInstallerTest(unittest.TestCase):
 
             def db(*args: str) -> dict | list:
                 role, *command = args
-                alias = {"inspector": "trae-inspector", "developer": "codex-dev", "human": "human"}[role]
+                alias = {"inspector": "inspector", "developer": "developer", "human": "human"}[role]
                 return self.run_cmd(
                     home, str(db_tool), "--agent", role, "--operator-id", alias, *command, cwd=workspace
                 )
 
             def fails(role: str, *command: str) -> subprocess.CompletedProcess:
-                alias = {"inspector": "trae-inspector", "developer": "codex-dev", "human": "human"}[role]
+                alias = {"inspector": "inspector", "developer": "developer", "human": "human"}[role]
                 result = self.run_raw(
                     home, str(db_tool), "--agent", role, "--operator-id", alias, *command, cwd=workspace
                 )
@@ -2251,13 +2231,13 @@ class CodeInspectorInstallerTest(unittest.TestCase):
 
             def db(*args: str) -> dict | list:
                 role, *command = args
-                alias = {"inspector": "trae-inspector", "developer": "codex-dev", "human": "human"}[role]
+                alias = {"inspector": "inspector", "developer": "developer", "human": "human"}[role]
                 return self.run_cmd(
                     home, str(db_tool), "--agent", role, "--operator-id", alias, *command, cwd=workspace
                 )
 
             def fails(role: str, *command: str) -> subprocess.CompletedProcess:
-                alias = {"inspector": "trae-inspector", "developer": "codex-dev", "human": "human"}[role]
+                alias = {"inspector": "inspector", "developer": "developer", "human": "human"}[role]
                 result = self.run_raw(
                     home, str(db_tool), "--agent", role, "--operator-id", alias, *command, cwd=workspace
                 )
@@ -2385,7 +2365,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
 
             # Human 在 CLI 里一次就能读完整决策简报，不必反过来追问选项细节。
             brief = self.run_raw(
-                home, str(db_tool), "--agent", "inspector", "--operator-id", "trae-inspector",
+                home, str(db_tool), "--agent", "inspector", "--operator-id", "inspector",
                 "human-brief", "--issue-key", "RI-HUMAN", cwd=workspace,
             )
             self.assertEqual(brief.returncode, 0, brief.stderr)
@@ -2532,7 +2512,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
 
             def db(*args: str) -> dict:
                 role, *command = args
-                alias = {"inspector": "trae-inspector", "developer": "codex-dev", "human": "human"}[role]
+                alias = {"inspector": "inspector", "developer": "developer", "human": "human"}[role]
                 return self.run_cmd(
                     home, str(db_tool), "--agent", role, "--operator-id", alias, *command, cwd=workspace
                 )
@@ -2838,7 +2818,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 self.assertIn("回归项", issue_html)
                 self.assertIn('<code class="language-python">', issue_html)
                 self.assertIn('提交人 <b class="mono">web-human</b> · Human', issue_html)
-                self.assertIn('提交人 <b class="mono">trae-inspector</b> · Inspector', issue_html)
+                self.assertIn('提交人 <b class="mono">inspector</b> · Inspector', issue_html)
 
                 candidates = client.get("/candidates")
                 candidate_html = candidates.get_data(as_text=True)
@@ -2877,7 +2857,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 self.assertIn("本次实现", review_page)
                 self.assertIn("Human 操作台", review_page)
                 self.assertIn("order.py", review_page)
-                self.assertIn('提交人 <b class="mono">codex-dev</b> · Developer', review_page)
+                self.assertIn('提交人 <b class="mono">developer</b> · Developer', review_page)
                 # 三个记录标签共用一份 DOM，靠 data-in-discussion / data-in-history 过滤；
                 # 协作提交（如实现提交）在讨论视图里也会出现。
                 implementation_tag = review_page.split(
@@ -3116,7 +3096,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
 
             def db(*command: str) -> dict | list:
                 return self.run_cmd(
-                    home, str(db_tool), "--agent", "inspector", "--operator-id", "codex-insp",
+                    home, str(db_tool), "--agent", "inspector", "--operator-id", "inspector",
                     *command, cwd=workspace,
                 )
 
@@ -3174,7 +3154,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             db_tool = home / ".agent-review" / "bin" / "review-db.py"
 
             def db(role: str, *command: str) -> dict | list:
-                operator = "codex-dev" if role == "developer" else "codex-insp"
+                operator = "developer" if role == "developer" else "inspector"
                 return self.run_cmd(
                     home, str(db_tool), "--agent", role, "--operator-id", operator,
                     *command, cwd=workspace,
@@ -3210,7 +3190,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 ).fetchone()[0]
                 conn.executemany(
                     """INSERT INTO issue_discussion(issue_id,topic,operator_type,operator_id,content)
-                       VALUES(?,'GENERAL','DEVELOPMENT_AGENT','codex-dev',?)""",
+                       VALUES(?,'GENERAL','DEVELOPMENT_AGENT','developer',?)""",
                     [(issue_id, f"讨论 {index} " + "正文" * 100) for index in range(205)],
                 )
             recent = db("developer", "discussion-list", "--issue-key", "RI-DISCUSSION-BOUND")
@@ -3310,7 +3290,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
 
             output = io.StringIO()
             args = SimpleNamespace(
-                agent="developer", operator_id="codex-dev", issue_key="RI-SNAPSHOT",
+                agent="developer", operator_id="developer", issue_key="RI-SNAPSHOT",
             )
             with mock.patch.dict(os.environ, {
                      "AGENT_REVIEW_DB": str(database),
@@ -3341,12 +3321,12 @@ class CodeInspectorInstallerTest(unittest.TestCase):
 
             def db(*command: str) -> dict | list:
                 return self.run_cmd(
-                    home, str(db_tool), "--agent", "developer", "--operator-id", "codex-dev",
+                    home, str(db_tool), "--agent", "developer", "--operator-id", "developer",
                     *command, cwd=workspace,
                 )
 
             inspector = lambda *command: self.run_cmd(
-                home, str(db_tool), "--agent", "inspector", "--operator-id", "codex-insp",
+                home, str(db_tool), "--agent", "inspector", "--operator-id", "inspector",
                 *command, cwd=workspace,
             )
             inspector("task-create", "--task-key", "RT-STAGE-BOUND", "--title", "Stage 分页", "--objective", "验证有界历史")

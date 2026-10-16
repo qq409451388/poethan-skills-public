@@ -6,7 +6,7 @@
 
 - 页面可以直接读取 SQLite，作为稳定的只读展示层。
 - 页面不会直接写 SQLite，也不保留一份状态机或权限规则。
-- 业务写操作调用 `~/.agent-review/internal/reviewctl-adapters/reviewctl-web-human.py`；状态校验、追加活动与审计日志由 `reviewctl` 统一处理。
+- 业务写操作调用 `~/.agent-review/internal/cictl-adapters/cictl-web-human.py`；状态校验、追加活动与审计日志由 `cictl` 统一处理。
 
 因此，数据库结构和规则只收敛在 Code Inspector 的迁移与运行工具中，Webtool 不会因为规则调整而复制出第二套实现。
 
