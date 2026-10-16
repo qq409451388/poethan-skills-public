@@ -149,6 +149,14 @@ def workflow_graph(issue, activities, stages, current_execution_stage=None, disc
     result["diagram_secondary_open"] = any(diagram["open"] and diagram["secondary"] for diagram in result["diagrams"])
     result["connected_diagram"] = connected_diagram(result["diagrams"], traversed, current, paused)
     graph = result["connected_diagram"]
+    result["waiting_on"] = issue["status"] in {"INSPECTOR_CONFIRMATION_REQUIRED", "HUMAN_CONFIRMATION_REQUIRED", "BLOCKED", "ON_HOLD"}
+    result["paused_stage"] = current_execution_stage if result["waiting_on"] else None
+    if result["paused_stage"]:
+        stage = result["paused_stage"]
+        anchor = ("STAGE_SUBMITTED" if stage["status"] == "PENDING_REVIEW"
+                  else "STAGE_SCOPE_DECLARED" if stage.get("prepared_at") else "STAGE_PLAN_CREATED")
+        for node in graph["nodes"]:
+            node["waiting_here"] = node["key"] == anchor
     graph["hover_paths"] = hover_paths(graph, trail)
     # 正常前进线与悬浮路径采用同一依据，不能因中间夹着其他动作而显示为未走过。
     recorded_forward_edges = {edge for path in graph["hover_paths"].values() for edge in path["edges"]}

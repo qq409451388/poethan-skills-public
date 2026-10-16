@@ -812,3 +812,10 @@ button.queue-pill { font: inherit; cursor: pointer; }
 .workflow-map-edge-group.is-path-highlighted .workflow-diagram-edge { stroke: #315fd4; color: #315fd4; stroke-width: 2.8; stroke-dasharray: none; }
 .workflow-map-edge-group.is-path-highlighted .workflow-diagram-edge-label { fill: #3159ad; font-weight: 650; }
 .workflow-map-node.is-path-target rect, .workflow-map-node:focus-visible rect { stroke: #315fd4; stroke-width: 3; }
+
+.workflow-waiting-context { margin: 0 0 14px; padding: 12px 15px; border: 1px solid #f0cc8b; border-left: 4px solid #d68a18; border-radius: 8px; background: #fff9ed; color: #73501d; font-size: 13px; }
+.workflow-waiting-context p { margin: 5px 0; }
+.workflow-waiting-context small { color: #826a48; }
+.workflow-map-node.is-waiting-here rect { fill: #fff6e5; stroke: #d68a18; stroke-width: 2.5; }
+.workflow-map-node.is-waiting-here text { fill: #8c5c17; }
+.workflow-map-node.is-waiting-here circle { fill: #d68a18; }
