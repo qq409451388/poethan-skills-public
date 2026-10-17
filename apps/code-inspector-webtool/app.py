@@ -535,7 +535,7 @@ def inbox():
                       WHERE d.issue_id=i.id), i.updated_at)) AS active_at
            FROM review_issue i JOIN review_task t ON t.id=i.task_id
            WHERE i.status NOT IN ('CONFIRMED','CANCELLED')
-           ORDER BY i.progress IS NULL, i.progress DESC, active_at DESC, i.id DESC LIMIT 6"""
+           ORDER BY i.progress IS NULL, i.progress DESC, active_at DESC, i.id DESC LIMIT 20"""
     )
     if active_issues:
         placeholders = ",".join("?" for _ in active_issues)

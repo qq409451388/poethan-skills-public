@@ -97,4 +97,4 @@ apps/code-inspector-webtool/
 
 YAML 根参数 `style: 1/2/3` 分别选择曜石渐变、极光玻璃、金属勋章，默认 `1`。等级参照、执行配置列表以及 Issue 的执行者等级标签统一使用该样式；保存后刷新页面生效。
 
-Issue 完成进度由 Inspector 用 `cictl-insp issue progress <issue> <0–100> --reason "依据"` 评估，详情与任务 Issue 列表显示进度和依据，历史数据为“待评估”。首页顶部显示最多 6 个未关闭 Issue，按进度降序、最近活动（Issue/活动/讨论）降序排序，未评估排在最后；仅 CONFIRMED 可评估为 100%，进度允许下调。
+Issue 完成进度由 Inspector 用 `cictl-insp issue progress <issue> <0–100> --reason "依据"` 评估，详情与任务 Issue 列表显示进度和依据，历史数据为“待评估”。首页顶部显示最多 20 个未关闭 Issue，按进度降序、最近活动（Issue/活动/讨论）降序排序，未评估排在最后；仅 CONFIRMED 可评估为 100%，进度允许下调。
