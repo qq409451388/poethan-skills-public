@@ -133,6 +133,11 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                     "trae-cn": {"enabled": True, "skills_dir": str(root / ".trae-cn" / "skills")},
                     "claude": {"enabled": True, "skills_dir": str(root / ".claude" / "skills")},
                     "dsh": {"enabled": True, "skills_dir": str(root / ".dsh" / "skills")},
+                    "opencode": {
+                        "enabled": True,
+                        "skills_dir": str(root / ".config" / "opencode" / "skills"),
+                        "roles": ["developer"],
+                    },
                 }
             }
             INSTALLER_MODULE.ensure_dirs(review_home)
@@ -1562,6 +1567,34 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 "--confirmation", "not-needed", "--content", "错误跳过范围确认",
             )
             self.assertIn("需确认变化", uncovered_change.stderr)
+            human_issue = {**issue, "issue_key": "RI-HUMAN-DESIGN", "title": "人工审批新增同步进度表"}
+            db(
+                "inspector", "issue-create-batch", "--task-key", task["task_key"],
+                "--reason", "验证页面人工直接审核", "--issues", json.dumps([human_issue]),
+            )
+            db(
+                "inspector", "design-request", "--issue-key", "RI-HUMAN-DESIGN",
+                "--content", "请提供设计方案",
+            )
+            human_design = db(
+                "developer", "design-submit", "--issue-key", "RI-HUMAN-DESIGN",
+                "--summary", "新增同步进度表，需要人工决定。", "--content", "新增同步进度表",
+                "--scope-changes", json.dumps([{
+                    "id": "SC-PROGRESS", "summary": "新增同步进度表。",
+                    "impacts": ["new_persistence"],
+                }]),
+            )
+            human_approved = db(
+                "human", "design-review", "--issue-key", "RI-HUMAN-DESIGN",
+                "--decision", "approved", "--design-activity-id", str(human_design["activity_id"]),
+                "--execution-mode", "direct", "--confirmation", "not-needed",
+                "--content", "人工直接确认允许新增同步进度表，批准实现",
+            )
+            self.assertEqual(human_approved["status"], "IN_PROGRESS")
+            self.assertEqual(human_approved["confirmation_ids"], [])
+            human_decisions = db("human", "decision-list", "--issue-key", "RI-HUMAN-DESIGN")
+            self.assertTrue(any(item["decision_type"] == "DESIGN_REVIEW" for item in human_decisions))
+            self.assertFalse(any(item["decision_type"] == "CLI_DESIGN_CONFIRMATION" for item in human_decisions))
             human_choice = fails(
                 "human", "design-choice-record", "--issue-key", "RI-DESIGN",
                 "--design-activity-id", str(resubmitted["activity_id"]),

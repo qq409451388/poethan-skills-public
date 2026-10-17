@@ -1933,10 +1933,13 @@ def design_review(args: argparse.Namespace) -> None:
                     raise ValueError("staged 模式必须通过 --stages 提交非空 Stage 定义")
                 if plan_no is not None and args.stages is not None:
                     raise RuntimeError("当前已有 Stage Plan；兼容旧计划时不得重复传入 --stages")
-            confirmation_ids = validate_design_confirmation(
-                conn, row, submission, args.confirmation, args.confirmation_id,
-                args.confirmation_ids,
-            )
+            # Human 在当前审核中直接作出决定；CLI 确认记录只约束 Agent 代为批准。
+            confirmation_ids = []
+            if args.agent != "human":
+                confirmation_ids = validate_design_confirmation(
+                    conn, row, submission, args.confirmation, args.confirmation_id,
+                    args.confirmation_ids,
+                )
             if execution_mode == "staged":
                 if plan_no is None:
                     plan_no = create_stage_plan(

@@ -587,6 +587,20 @@ def remove_legacy_skill_dir(target_root: Path) -> None:
     print(f"[skills] removed legacy {legacy}", file=sys.stderr)
 
 
+def tool_role_bindings(tools_config_tool: dict[str, Any], skill_config: dict[str, Any], platform: str) -> dict[str, Any]:
+    """解析单个平台实际安装的角色；tools.json 可用可选 roles 字段收窄。"""
+    all_bindings = skill_config["bindings"]
+    selected = tools_config_tool.get("roles")
+    if selected is None:
+        return dict(all_bindings)
+    if not isinstance(selected, list) or not selected:
+        raise ValueError(f"平台 {platform} 的 roles 必须为非空数组")
+    unknown = [role for role in selected if role not in all_bindings]
+    if unknown:
+        raise ValueError(f"平台 {platform} 配置了未绑定角色: {', '.join(unknown)}")
+    return {role: all_bindings[role] for role in selected}
+
+
 def install_role_skills(
     tools_config: dict[str, Any], skill_config: dict[str, Any], source: Path, home: Path, force: bool
 ) -> None:
@@ -605,8 +619,9 @@ def install_role_skills(
             raise ValueError(f"Agent 所属工具未配置: {platform}")
         if not tool.get("enabled", False):
             continue
+        platform_bindings = tool_role_bindings(tool, skill_config, platform)
         identities = []
-        for role, binding in skill_config["bindings"].items():
+        for role, binding in platform_bindings.items():
             suffix = skill_config["roles"][role]["session_selector"]
             alias = f"{platform}-{suffix}"
             fixed_path = write_cictl_launcher(home, role, alias, platform=platform)
@@ -816,7 +831,7 @@ def main() -> int:
                 tool = config["tools"].get(platform, {})
                 if not tool.get("enabled", False):
                     continue
-                for role in skill_config["bindings"]:
+                for role in tool_role_bindings(tool, skill_config, platform):
                     checks[f"platform-launcher:{platform}:{role}"] = cictl_launcher_path(home, role, platform=platform).exists()
                 target_root = expand_path(tool.get("skills_dir", "")) if tool else Path("/")
                 target = target_root / skill_config["skill_name"]

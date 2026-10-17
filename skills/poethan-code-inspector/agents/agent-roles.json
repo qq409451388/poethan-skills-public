@@ -9,7 +9,8 @@
     "codex",
     "trae-cn",
     "claude",
-    "dsh"
+    "dsh",
+    "opencode"
   ],
   "bindings": {
     "developer": {
