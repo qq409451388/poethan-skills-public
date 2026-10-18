@@ -2661,6 +2661,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                         ("RI-SORT-HIGH", 80, "IN_PROGRESS", "2026-01-01 00:00:00"),
                         ("RI-SORT-RECENT", 80, "IN_PROGRESS", "2026-01-02 00:00:00"),
                         ("RI-SORT-UNKNOWN", None, "IN_PROGRESS", "2099-01-01 00:00:00"),
+                        ("RI-SORT-BLOCKED", 100, "BLOCKED", "2099-01-01 00:00:00"),
                         ("RI-SORT-CLOSED", 100, "CONFIRMED", "2099-01-01 00:00:00"),
                     ):
                         row = {**original, "issue_key": key, "dedupe_key": key, "progress": progress,

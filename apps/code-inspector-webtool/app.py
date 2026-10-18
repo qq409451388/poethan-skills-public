@@ -74,6 +74,8 @@ ISSUE_STATUSES = [
 # “已完成”是列表展示概念，不等同于某个具体工作流状态。以后新增完成态时只需扩展这里。
 COMPLETED_ISSUE_STATUSES = ("CONFIRMED",)
 NON_OPEN_ISSUE_STATUSES = (*COMPLETED_ISSUE_STATUSES, "CANCELLED")
+# “待我处理”排行榜只展示仍可推进的 Issue；受阻项通过页头的受阻队列单独查看。
+INBOX_LEADERBOARD_EXCLUDED_STATUSES = (*NON_OPEN_ISSUE_STATUSES, "BLOCKED")
 CANDIDATE_STATUSES = ["SUBMITTED", "UNDER_REVIEW", "ACCEPTED", "REJECTED"]
 DIMENSIONS = [
     ("functional_correctness", "功能正确性"), ("data_security", "数据一致性与安全"),
@@ -528,14 +530,15 @@ def workqueue_data():
 def inbox():
     queue = workqueue_data()
     active_issues = query_all(
-        """SELECT i.*, t.task_key, t.project_name,
+        f"""SELECT i.*, t.task_key, t.project_name,
                   MAX(i.updated_at, COALESCE((SELECT MAX(COALESCE(a.amended_at, a.created_at))
                       FROM issue_activity a WHERE a.issue_id=i.id), i.updated_at),
                       COALESCE((SELECT MAX(COALESCE(d.amended_at, d.created_at)) FROM issue_discussion d
                       WHERE d.issue_id=i.id), i.updated_at)) AS active_at
            FROM review_issue i JOIN review_task t ON t.id=i.task_id
-           WHERE i.status NOT IN ('CONFIRMED','CANCELLED')
-           ORDER BY i.progress IS NULL, i.progress DESC, active_at DESC, i.id DESC LIMIT 20"""
+           WHERE i.status NOT IN ({','.join('?' for _ in INBOX_LEADERBOARD_EXCLUDED_STATUSES)})
+           ORDER BY i.progress IS NULL, i.progress DESC, active_at DESC, i.id DESC LIMIT 20""",
+        INBOX_LEADERBOARD_EXCLUDED_STATUSES,
     )
     if active_issues:
         placeholders = ",".join("?" for _ in active_issues)
