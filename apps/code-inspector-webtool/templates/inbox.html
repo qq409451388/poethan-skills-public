@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% from "components/issue_progress.html" import issue_progress %}
+{% from "components/bookmark_flag.html" import bookmark_flag %}
 {% block title %}待我处理 · 代码检查工作台{% endblock %}
 {% block content %}
 <div class="page-head">
@@ -7,14 +8,14 @@
 </div>
 
 <section class="recent-tasks" aria-labelledby="active-issues-title" data-active-issues>
-  <div class="section-head"><div><h2 id="active-issues-title">处理中的 Issue</h2><p class="section-sub">按 Inspector 评估进度从高到低，同进度按最近活动排序；待评估排在最后，最多显示 6 个。</p></div></div>
+  <div class="section-head"><div><h2 id="active-issues-title">处理中的 Issue</h2><p class="section-sub">加书签（锦旗标记）的 Issue 优先展示；书签之间和其余 Issue 仍按 Inspector 评估进度从高到低，同进度按最近活动排序，待评估排在最后。</p></div></div>
   <ol class="issue-leaderboard">
     {% for issue in active_issues %}
     <li data-issue-key="{{ issue.issue_key }}">
       <a class="issue-ranking-row" href="{{ url_for('issue_detail', issue_key=issue.issue_key) }}">
         <span class="issue-ranking-number" aria-label="第 {{ loop.index }} 名">{{ loop.index }}</span>
         <div class="issue-ranking-progress" title="{{ issue.progress_reason or 'Inspector 尚未评估' }}">{{ issue_progress(issue, compact=true) }}</div>
-        <span class="mono issue-ranking-key">{{ issue.issue_key }}</span>
+        <span class="mono issue-ranking-key">{% if issue.bookmarked %}<span class="issue-flag-badge" title="已加书签，优先展示">{{ bookmark_flag(true) }}</span>{% endif %}{{ issue.issue_key }}</span>
         <div class="issue-ranking-title"><strong>{{ issue.title }}</strong><span class="issue-new-submission" hidden>新提交</span>
           {% if issue.stage_summary %}
           {% set stage = issue.stage_summary %}

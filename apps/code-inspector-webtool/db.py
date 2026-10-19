@@ -71,7 +71,34 @@ def query_one(sql: str, params: Iterable[Any] = ()) -> dict[str, Any] | None:
 def parse_json_field(value: str | None, default: Any) -> Any:
     if not value:
         return default
+
+
+BOOKMARK_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS webapp_issue_bookmark (
+    issue_key  TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+)
+"""
+
+
+def ensure_bookmark_table() -> None:
+    """书签是 WebApp 独有的人工关注标记，只影响页面展示顺序，不进 agent/CLI 领域层。"""
+    conn = connect()
     try:
-        return json.loads(value)
-    except (TypeError, ValueError):
-        return default
+        conn.execute(BOOKMARK_TABLE_SQL)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def bookmarked_keys() -> set[str]:
+    return {row["issue_key"] for row in query_all("SELECT issue_key FROM webapp_issue_bookmark")}
+
+
+def query_exec(sql: str, params: Iterable[Any] = ()) -> None:
+    conn = connect()
+    try:
+        conn.execute(sql, tuple(params))
+        conn.commit()
+    finally:
+        conn.close()

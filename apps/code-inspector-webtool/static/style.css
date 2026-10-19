@@ -622,6 +622,15 @@ tbody tr:last-child td { border-bottom: 0; }
 .issue-progress-track.is-editable.is-dragging { cursor: grabbing; }
 .issue-progress-track.is-editable.is-dragging .issue-progress-fill { transition: none; }
 .issue-progress p { margin: 0; overflow-wrap: anywhere; }
+.bookmark-form { display: inline-flex; margin: 0; }
+.bookmark-btn { display: inline-grid; place-items: center; width: 22px; height: 22px; padding: 0; border: none; border-radius: 6px; background: none; color: #a3aec2; cursor: pointer; }
+.bookmark-btn:hover { color: #d64545; background: #fdeeee; }
+.bookmark-btn.is-active { color: #d64545; }
+.bookmark-flag .flag-cloth { fill: currentColor; fill-opacity: .18; stroke-opacity: .6; }
+.bookmark-flag.is-active .flag-cloth { fill-opacity: 1; stroke-opacity: 1; }
+.bookmark-btn-head { display: inline-flex; align-items: center; gap: 6px; }
+.bookmark-btn-head.is-active { color: #d64545; border-color: #f3c1c1; background: #fdf1f1; }
+.issue-flag-badge { display: inline-flex; align-items: center; margin-right: 5px; color: #d64545; }
 .agent-icon { width: 20px; height: 20px; flex-shrink: 0; vertical-align: middle; color: #2563eb; }
 .agent-assignment { display: flex; gap: 8px; align-items: center; }
 .agent-assignment strong, .agent-assignment small { display: block; }

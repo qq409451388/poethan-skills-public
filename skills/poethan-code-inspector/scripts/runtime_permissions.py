@@ -76,7 +76,6 @@ ACTION_ROLES = {
     "stage-review": {"inspector", "human"},
     "implementation-submit": {"developer", "human"},
     "issue-set-progress": {"inspector", "human"},
-    "issue-set-bookmark": {"inspector", "human"},
     "issue-set-difficulty": {"inspector", "human"},
     "issue-set-assignment": {"inspector", "human"},
     "issue-update-status": {"inspector", "developer", "human"},
@@ -137,8 +136,6 @@ def runtime_issue_actions(state: dict[str, Any]) -> tuple[list[str], list[str]]:
 
     if role in {"inspector", "human"}:
         actions.append("issue-set-progress")
-    if role in {"inspector", "human"}:
-        actions.append("issue-set-bookmark")
 
     if status_targets(status, role):
         actions.append("issue-update-status")

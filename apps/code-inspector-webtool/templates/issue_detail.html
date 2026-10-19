@@ -46,6 +46,7 @@
 {%- endif -%}
 {% endmacro %}
 {% from "components/issue_progress.html" import issue_progress %}
+{% from "components/bookmark_flag.html" import bookmark_flag %}
 {% from "components/agent_icon.html" import agent_icon %}
 {% block title %}{{ issue.issue_key }} · Issue 详情{% endblock %}
 {% block content %}
@@ -57,7 +58,7 @@
     <h1>{{ issue.title }}</h1>
     <div class="meta"><span>总处理用时：<strong>{{ issue.timing.elapsed }}</strong>{% if issue.timing.running %}（截至当前）{% endif %}</span><span>创建：{{ issue.timing.start|localtime }}</span>{% if issue.timing.end %}<span>结束：{{ issue.timing.end|localtime }}</span>{% endif %}<span>问题键：<strong class="mono">{{ issue.issue_key }}</strong></span><span>任务：<strong class="mono">{{ issue.task_key }}</strong></span><span>引入版本：v{{ issue.introduced_version }}</span><span>当前尝试：第 {{ issue.current_attempt_no }} 次</span>{% if issue.parent_issue_id %}<span>父问题 ID：{{ issue.parent_issue_id }}</span>{% endif %}</div>
   </div>
-  <div class="head-actions"><button type="button" class="btn btn-soft" data-modal-open="issue-edit-modal">✎ 编辑当前 Issue</button></div>
+  <div class="head-actions"><form method="post" action="{{ url_for('issue_set_bookmark', issue_key=issue.issue_key) }}" class="bookmark-form"><input type="hidden" name="state" value="{{ 'off' if issue.bookmarked else 'on' }}"><button type="submit" class="btn btn-soft bookmark-btn-head{% if issue.bookmarked %} is-active{% endif %}" title="{% if issue.bookmarked %}移除书签{% else %}加书签，在列表中优先展示{% endif %}">{% if issue.bookmarked %}{{ bookmark_flag(true) }} 已加书签{% else %}{{ bookmark_flag(false) }} 加书签{% endif %}</button></form><button type="button" class="btn btn-soft" data-modal-open="issue-edit-modal">✎ 编辑当前 Issue</button></div>
 </header>
 
 <section class="status-strip" data-live-region="status-strip">

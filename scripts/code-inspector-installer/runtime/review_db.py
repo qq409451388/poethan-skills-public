@@ -1244,28 +1244,6 @@ def issue_set_progress(args: argparse.Namespace) -> None:
     print_json({"issue_key": args.issue_key, "progress": args.progress, "progress_reason": reason})
 
 
-def issue_set_bookmark(args: argparse.Namespace) -> None:
-    require_agent(args.agent)
-    if args.agent not in {"inspector", "human"}:
-        raise PermissionError("只有 inspector 或 human 可以调整问题书签")
-    state = str(args.state).strip().lower()
-    if state not in {"on", "off"}:
-        raise ValueError("state 必须是 on 或 off")
-    bookmarked = 1 if state == "on" else 0
-    with connect() as conn:
-        row = conn.execute(
-            "SELECT id, bookmarked FROM review_issue WHERE issue_key = ?", (args.issue_key,)
-        ).fetchone()
-        if row is None:
-            raise KeyError(f"问题不存在: {args.issue_key}")
-        if row["bookmarked"] != bookmarked:
-            # 书签是人工关注标记，不触碰 updated_at，避免影响最近活动排序。
-            conn.execute("UPDATE review_issue SET bookmarked = ? WHERE id = ?", (bookmarked, row["id"]))
-            audit(conn, actor_id(args), "issue.set-bookmark", "review_issue", args.issue_key, True,
-                  f"bookmarked={bookmarked}")
-    print_json({"issue_key": args.issue_key, "bookmarked": bool(bookmarked)})
-
-
 def apply_assignment_update(
     conn: sqlite3.Connection, args: argparse.Namespace, issue_key: str,
     profile_id: str | None,
@@ -4400,11 +4378,6 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--progress", type=int, required=True)
     p.add_argument("--reason", required=True)
     p.set_defaults(func=issue_set_progress)
-
-    p = sub.add_parser("issue-set-bookmark")
-    p.add_argument("--issue-key", required=True)
-    p.add_argument("--state", choices=("on", "off"), required=True, help="on 加书签，off 移除书签")
-    p.set_defaults(func=issue_set_bookmark)
 
     p = sub.add_parser("issue-set-difficulty")
     p.add_argument("--issue-key", required=True)

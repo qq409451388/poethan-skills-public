@@ -20,13 +20,14 @@ from flask import Flask, abort, g, redirect, render_template, request, session, 
 from markupsafe import Markup
 
 from commands import run_human_command
-from db import parse_json_field, query_all, query_one
+from db import ensure_bookmark_table, parse_json_field, query_all, query_one, query_exec
 import routing
 from workflow_view import workflow_graph
 from issue_timing import attach_timing
 
 BASE_DIR = Path(__file__).resolve().parent
 app = Flask(__name__, template_folder=str(BASE_DIR / "templates"), static_folder=str(BASE_DIR / "static"))
+ensure_bookmark_table()
 # 本地工具，页面会边用边改：模板始终按 mtime 重新读取，避免"改了模板但页面不变、
 # 必须重启进程才生效"的假故障（非 debug 模式下 Jinja 默认会把模板缓存在进程内存里）。
 app.config["TEMPLATES_AUTO_RELOAD"] = True
@@ -531,13 +532,14 @@ def inbox():
     queue = workqueue_data()
     active_issues = query_all(
         f"""SELECT i.*, t.task_key, t.project_name,
+                  EXISTS(SELECT 1 FROM webapp_issue_bookmark b WHERE b.issue_key = i.issue_key) AS bookmarked,
                   MAX(i.updated_at, COALESCE((SELECT MAX(COALESCE(a.amended_at, a.created_at))
                       FROM issue_activity a WHERE a.issue_id=i.id), i.updated_at),
                       COALESCE((SELECT MAX(COALESCE(d.amended_at, d.created_at)) FROM issue_discussion d
                       WHERE d.issue_id=i.id), i.updated_at)) AS active_at
            FROM review_issue i JOIN review_task t ON t.id=i.task_id
            WHERE i.status NOT IN ({','.join('?' for _ in INBOX_LEADERBOARD_EXCLUDED_STATUSES)})
-           ORDER BY i.progress IS NULL, i.progress DESC, active_at DESC, i.id DESC LIMIT 20""",
+           ORDER BY bookmarked DESC, i.progress IS NULL, i.progress DESC, active_at DESC, i.id DESC LIMIT 20""",
         INBOX_LEADERBOARD_EXCLUDED_STATUSES,
     )
     if active_issues:
@@ -788,8 +790,10 @@ def task_detail(task_key: str):
         filters.append(f"AND i.status NOT IN ({','.join('?' for _ in NON_OPEN_ISSUE_STATUSES)})")
         params.extend(NON_OPEN_ISSUE_STATUSES)
     issues = [issue_with_json(row) for row in query_all(
-        f"""SELECT i.* FROM review_issue i {' '.join(filters)}
-            ORDER BY CASE i.severity WHEN 'critical' THEN 4 WHEN 'high' THEN 3 WHEN 'medium' THEN 2 ELSE 1 END DESC,
+        f"""SELECT i.*, EXISTS(SELECT 1 FROM webapp_issue_bookmark b WHERE b.issue_key = i.issue_key) AS bookmarked
+            FROM review_issue i {' '.join(filters)}
+            ORDER BY bookmarked DESC,
+                     CASE i.severity WHEN 'critical' THEN 4 WHEN 'high' THEN 3 WHEN 'medium' THEN 2 ELSE 1 END DESC,
                      i.updated_at DESC, i.issue_key ASC""", params,
     )]
     for issue in issues:
@@ -860,7 +864,8 @@ def task_update_status(task_key: str):
 @app.route("/issues/<issue_key>")
 def issue_detail(issue_key: str):
     issue = query_one(
-        """SELECT i.*, t.task_key, t.project_name, t.project_path
+        """SELECT i.*, t.task_key, t.project_name, t.project_path,
+                  EXISTS(SELECT 1 FROM webapp_issue_bookmark b WHERE b.issue_key = i.issue_key) AS bookmarked
            FROM review_issue i JOIN review_task t ON t.id = i.task_id WHERE i.issue_key = ?""", (issue_key,)
     )
     if not issue:
@@ -1034,6 +1039,23 @@ def issue_update_progress(issue_key: str):
         return redirect_back("issue_detail", issue_key=issue_key, msg="完成进度已更新")
     except Exception as exc:  # noqa: BLE001
         return redirect_back("issue_detail", issue_key=issue_key, err=str(exc))
+
+
+@app.route("/issues/<issue_key>/bookmark", methods=["POST"])
+def issue_set_bookmark(issue_key: str):
+    state = request.form.get("state", "")
+    if state not in {"on", "off"}:
+        return feedback_redirect(safe_return_to(url_for("issue_detail", issue_key=issue_key)), err="未知书签状态")
+    try:
+        if state == "on":
+            query_exec("INSERT OR IGNORE INTO webapp_issue_bookmark (issue_key) VALUES (?)", (issue_key,))
+            message = "已加书签，将在列表中优先展示"
+        else:
+            query_exec("DELETE FROM webapp_issue_bookmark WHERE issue_key = ?", (issue_key,))
+            message = "已移除书签"
+        return feedback_redirect(safe_return_to(url_for("issue_detail", issue_key=issue_key)), msg=message)
+    except Exception as exc:  # noqa: BLE001
+        return feedback_redirect(safe_return_to(url_for("issue_detail", issue_key=issue_key)), err=str(exc))
 
 
 @app.route("/issues/<issue_key>/human-action", methods=["POST"])

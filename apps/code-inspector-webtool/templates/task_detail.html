@@ -2,6 +2,7 @@
 {% from "components/task_modal.html" import task_modal %}
 {% from "components/issue_copy_button.html" import issue_copy_button %}
 {% from "components/issue_progress.html" import issue_progress %}
+{% from "components/bookmark_flag.html" import bookmark_flag %}
 {% from "components/agent_icon.html" import agent_icon %}
 {% from "components/rank_tag.html" import rank_tag %}
 {% block title %}{{ task.task_key }} · 检查任务{% endblock %}
@@ -81,7 +82,8 @@
       <thead><tr><th>问题</th><th>问题摘要</th><th>维度</th><th>严重度</th><th>状态</th><th>进度</th><th>难度</th><th>AI Agent</th><th>更新</th></tr></thead>
       <tbody>{% for issue in issues %}
         <tr class="clickable-row" tabindex="0" data-href="{{ url_for('issue_detail', issue_key=issue.issue_key) }}">
-          <td class="mono nowrap"><span class="issue-key-copy"><a href="{{ url_for('issue_detail', issue_key=issue.issue_key) }}">{{ issue.issue_key }}</a>{{ issue_copy_button(issue.issue_key) }}</span></td>
+          <td class="mono nowrap"><span class="issue-key-copy"><a href="{{ url_for('issue_detail', issue_key=issue.issue_key) }}">{{ issue.issue_key }}</a>{{ issue_copy_button(issue.issue_key) }}</span>
+            <form method="post" action="{{ url_for('issue_set_bookmark', issue_key=issue.issue_key) }}" class="bookmark-form"><input type="hidden" name="state" value="{{ 'off' if issue.bookmarked else 'on' }}"><input type="hidden" name="return_to" value="{{ request.full_path }}"><button type="submit" class="bookmark-btn{% if issue.bookmarked %} is-active{% endif %}" title="{% if issue.bookmarked %}移除书签{% else %}加书签，在列表中优先展示{% endif %}" aria-label="{% if issue.bookmarked %}移除 {{ issue.issue_key }} 书签{% else %}为 {{ issue.issue_key }} 加书签{% endif %}">{% if issue.bookmarked %}{{ bookmark_flag(true) }}{% else %}{{ bookmark_flag(false) }}{% endif %}</button></form></td>
           <td class="issue-title-cell"><strong>{{ issue.title }}</strong><span>{{ issue.summary|truncate(100) }}</span></td>
           <td class="nowrap">{{ issue.dimension|label }}</td><td class="sev-{{ issue.severity }}">{{ issue.severity|label }}</td>
           <td><span class="badge badge-status-{{ issue.status }}">{{ issue.status|label }}</span></td>
