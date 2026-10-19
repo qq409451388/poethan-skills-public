@@ -251,7 +251,7 @@
     </section>
 
   <section class="panel issue-progress-panel" data-live-region="issue-progress">
-    {{ issue_progress(issue, compact=true) }}
+    {{ issue_progress(issue, compact=true, editable=true) }}
     {% if issue.progress_reason or issue.progress_updated_at %}
     <div class="progress-info">
       <button type="button" class="progress-info-button" aria-label="查看进度评估依据" aria-describedby="progress-assessment-tooltip">!</button>
@@ -347,6 +347,20 @@
     <div class="modal-head"><div><h2 class="modal-title" id="issue-status-title">改状态（高级）</h2><div class="modal-sub mono">{{ issue.issue_key }}</div></div><button type="button" class="modal-close" data-modal-close aria-label="关闭">×</button></div>
     <div class="modal-body">
       <form method="post" action="{{ url_for('issue_update_status', issue_key=issue.issue_key) }}"><div class="field"><label>目标状态</label><select name="status">{% for status in issue_statuses %}<option value="{{ status }}" {% if issue.status == status %}selected{% endif %}>{{ status|label }}</option>{% endfor %}</select></div><div class="field"><label>说明</label><textarea name="content" placeholder="建议记录人工覆盖原因，便于后续审计"></textarea></div><p class="form-note">Human 可将问题直接改为任一合法状态，包括进入或离开人工确认状态、直接确认及重开终态；操作会记录状态变更和审计。</p><div class="modal-actions"><button type="button" class="btn" data-modal-close>取消</button><button type="submit" class="btn btn-primary">更新状态</button></div></form>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="issue-progress-reason-modal" role="dialog" aria-modal="true" aria-labelledby="issue-progress-reason-title">
+  <div class="modal-card">
+    <div class="modal-head"><div><h2 class="modal-title" id="issue-progress-reason-title">更新完成进度</h2><div class="modal-sub mono">{{ issue.issue_key }}</div></div><button type="button" class="modal-close" data-modal-close aria-label="关闭">×</button></div>
+    <div class="modal-body">
+      <form method="post" action="{{ url_for('issue_update_progress', issue_key=issue.issue_key) }}">
+        <p class="form-note">目标进度：<strong data-progress-modal-value>—</strong></p>
+        <input type="hidden" name="progress" data-progress-input>
+        <div class="field"><label>进度调整依据 <span class="required">必填</span></label><textarea name="reason" required placeholder="说明为什么调整到该进度，例如已完成范围、剩余工作或返工原因"></textarea></div>
+        <div class="modal-actions"><button type="button" class="btn" data-modal-close>取消</button><button type="submit" class="btn btn-primary">确认</button></div>
+      </form>
     </div>
   </div>
 </div>

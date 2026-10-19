@@ -610,6 +610,17 @@ tbody tr:last-child td { border-bottom: 0; }
 .issue-progress.is-compact { gap: 7px; }
 .issue-progress.is-compact .issue-progress-label strong { font-size: 18px; }
 .issue-progress.is-compact .issue-progress-track { height: 6px; }
+.issue-progress.is-editable { cursor: ew-resize; user-select: none; -webkit-user-select: none; }
+.issue-progress.is-editable.is-dragging { cursor: grabbing; }
+.issue-progress-track.is-editable { cursor: ew-resize; touch-action: none; overflow: visible; }
+.issue-progress-track.is-editable::before { content: ''; position: absolute; left: 0; right: 0; top: -12px; bottom: -12px; }
+.issue-progress-track.is-editable:focus-visible { outline: 2px solid var(--progress-color, #3869e8); outline-offset: 2px; }
+.issue-progress-thumb { position: absolute; top: 50%; z-index: 2; width: 14px; height: 14px; border: 2px solid #fff; border-radius: 50%; background: var(--progress-color, #3869e8); box-shadow: 0 1px 3px #18345a2e; transform: translate(-50%, -50%); opacity: 1; transition: transform .15s ease, box-shadow .15s ease; pointer-events: none; }
+.issue-progress-track.is-editable:hover .issue-progress-thumb,
+.issue-progress-track.is-editable:focus-visible .issue-progress-thumb,
+.issue-progress-track.is-editable.is-dragging .issue-progress-thumb { transform: translate(-50%, -50%) scale(1.18); box-shadow: 0 1px 6px #18345a40; }
+.issue-progress-track.is-editable.is-dragging { cursor: grabbing; }
+.issue-progress-track.is-editable.is-dragging .issue-progress-fill { transition: none; }
 .issue-progress p { margin: 0; overflow-wrap: anywhere; }
 .agent-icon { width: 20px; height: 20px; flex-shrink: 0; vertical-align: middle; color: #2563eb; }
 .agent-assignment { display: flex; gap: 8px; align-items: center; }
@@ -627,12 +638,13 @@ tbody tr:last-child td { border-bottom: 0; }
 .issue-leaderboard li:nth-child(3) .issue-ranking-number { background: #ffedd5; color: #9a3412; }
 .issue-ranking-progress .issue-progress { margin: 0; }
 .issue-ranking-title, .issue-ranking-key { min-width: 0; overflow-wrap: anywhere; }
-.issue-progress-panel { display: grid; grid-template-columns: minmax(0, 1fr) 24px; align-items: center; gap: 14px; }
+.issue-progress-panel { display: grid; grid-template-columns: minmax(0, 1fr) 24px; align-items: center; gap: 14px; cursor: ew-resize; user-select: none; -webkit-user-select: none; }
 .issue-progress-panel .issue-progress { margin: 0; gap: 12px; }
 .issue-progress-panel .issue-progress-label strong { font-size: 24px; }
 .issue-progress-panel .issue-progress-track { height: 8px; }
 .progress-info { position: relative; align-self: center; }
 .progress-info-button { display: grid; place-items: center; width: 20px; height: 20px; padding: 0; border: 1px solid #b8c5db; border-radius: 50%; background: #f4f7fc; color: #64748b; font-size: 12px; font-weight: 750; cursor: help; }
+.progress-info-button:hover { cursor: help; }
 .progress-info-button:focus-visible { outline: 2px solid #3b6cf6; outline-offset: 3px; }
 .progress-info-tooltip { position: absolute; z-index: 30; top: 100%; right: 0; width: min(380px, 75vw); padding: 14px 16px; border: 1px solid var(--border); border-radius: 10px; background: #fff; box-shadow: 0 8px 28px #172b4d26; visibility: hidden; opacity: 0; pointer-events: none; }
 .progress-info:hover .progress-info-tooltip, .progress-info:focus-within .progress-info-tooltip { visibility: visible; opacity: 1; pointer-events: auto; }

@@ -1017,6 +1017,25 @@ def issue_update_status(issue_key: str):
         return redirect_back("issue_detail", issue_key=issue_key, err=str(exc))
 
 
+@app.route("/issues/<issue_key>/progress", methods=["POST"])
+def issue_update_progress(issue_key: str):
+    raw = request.form.get("progress", "").strip()
+    reason = request.form.get("reason", "").strip()
+    try:
+        progress = int(raw)
+        if not 0 <= progress <= 100:
+            raise ValueError
+    except ValueError:
+        return redirect_back("issue_detail", issue_key=issue_key, err="完成进度必须是 0–100 的整数")
+    if not reason:
+        return redirect_back("issue_detail", issue_key=issue_key, err="请填写进度调整依据")
+    try:
+        run_human_command("issue", "progress", issue_key, str(progress), "--reason", reason)
+        return redirect_back("issue_detail", issue_key=issue_key, msg="完成进度已更新")
+    except Exception as exc:  # noqa: BLE001
+        return redirect_back("issue_detail", issue_key=issue_key, err=str(exc))
+
+
 @app.route("/issues/<issue_key>/human-action", methods=["POST"])
 def issue_human_action(issue_key: str):
     action = request.form.get("action", "")

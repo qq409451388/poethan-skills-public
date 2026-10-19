@@ -381,6 +381,7 @@ document.querySelectorAll('form[method="post" i]').forEach((form) => {
     return document.hidden
       || document.body.classList.contains('modal-open')
       || document.querySelector('form[data-user-dirty="true"]')
+      || document.querySelector('.issue-progress.is-dragging')
       || active?.matches('input, textarea, select, [contenteditable="true"]');
   }
 
@@ -614,6 +615,7 @@ document.querySelectorAll('form[method="post" i]').forEach((form) => {
         renderRecordPreviews(replacement);
         syncStickyOffsets();
         addCsrfTokens(replacement);
+        document.dispatchEvent(new CustomEvent('issue-region-replaced', { detail: replacement }));
         changed = true;
       });
 
@@ -804,4 +806,120 @@ function animateStageReveal(snapshot, row) {
       if (node && !node.contains(event.relatedTarget)) reset(node.closest('.workflow-connected-map'));
     });
   }
+})();
+
+// Issue 详情页进度条：拖动松开后弹出“调整依据”弹窗，确认才提交。
+(() => {
+  const modalId = 'issue-progress-reason-modal';
+  const sliderSelector = '[data-progress-slider]';
+
+  function render(track, value) {
+    const fill = track.querySelector('.issue-progress-fill');
+    const thumb = track.querySelector('.issue-progress-thumb');
+    const label = track.closest('.issue-progress')?.querySelector('.issue-progress-label strong');
+    if (fill) fill.style.width = `${value}%`;
+    if (thumb) thumb.style.left = `${value}%`;
+    if (label) label.innerHTML = `${value}<small>%</small>`;
+    track.setAttribute('aria-valuenow', String(value));
+  }
+
+  function readValue(track, event) {
+    const rect = track.getBoundingClientRect();
+    if (!rect.width) return Number(track.dataset.initialProgress || 0);
+    const ratio = (event.clientX - rect.left) / rect.width;
+    return Math.min(100, Math.max(0, Math.round(ratio * 100)));
+  }
+
+  function bind(track) {
+    if (track.dataset.sliderBound) return;
+    track.dataset.sliderBound = '1';
+    const area = track.closest('.issue-progress-panel') || track.closest('.issue-progress') || track;
+    const block = track.closest('.issue-progress') || track;
+    const setDragging = (on) => {
+      area.classList.toggle('is-dragging', on);
+      block.classList.toggle('is-dragging', on);
+      track.classList.toggle('is-dragging', on);
+    };
+
+    const openReasonModal = () => {
+      const value = Number(track.getAttribute('aria-valuenow') || track.dataset.initialProgress || 0);
+      const modal = document.getElementById(modalId);
+      if (!modal) return;
+      modal.querySelector('[data-progress-input]').value = String(value);
+      const shown = modal.querySelector('[data-progress-modal-value]');
+      if (shown) shown.textContent = `${value}%`;
+      modal.dataset.pendingValue = String(value);
+      document.dispatchEvent(new CustomEvent('open-workflow-modal', { detail: modalId }));
+      modal.querySelector('textarea')?.focus();
+    };
+
+    area.addEventListener('pointerdown', (event) => {
+      // 面板内的按钮等交互元素保持自身行为，不进入拖拽。
+      if (event.target.closest('button, a, input, textarea, select')) return;
+      event.preventDefault();
+      try { area.setPointerCapture(event.pointerId); } catch (_error) { /* 指针已释放时忽略 */ }
+      setDragging(true);
+      render(track, readValue(track, event));
+    });
+    area.addEventListener('pointermove', (event) => {
+      if (!area.classList.contains('is-dragging')) return;
+      render(track, readValue(track, event));
+    });
+    area.addEventListener('pointerup', (event) => {
+      if (!area.classList.contains('is-dragging')) return;
+      setDragging(false);
+      const value = readValue(track, event);
+      render(track, value);
+      openReasonModal();
+    });
+    area.addEventListener('pointercancel', () => {
+      setDragging(false);
+      render(track, Number(track.dataset.initialProgress || 0));
+    });
+    track.addEventListener('keydown', (event) => {
+      const current = Number(track.getAttribute('aria-valuenow') || 0);
+      let next = null;
+      if (event.key === 'ArrowLeft' || event.key === 'ArrowDown') next = Math.max(0, current - 1);
+      if (event.key === 'ArrowRight' || event.key === 'ArrowUp') next = Math.min(100, current + 1);
+      if (event.key === 'Home') next = 0;
+      if (event.key === 'End') next = 100;
+      if (next !== null) {
+        event.preventDefault();
+        track.dataset.initialProgress = String(next);
+        render(track, next);
+        return;
+      }
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        openReasonModal();
+      }
+    });
+  }
+
+  const bindAll = (scope) => scope.querySelectorAll?.(sliderSelector).forEach(bind);
+  bindAll(document);
+  document.addEventListener('issue-region-replaced', (event) => bindAll(event.detail));
+
+  // 取消弹窗时把进度条恢复为打开弹窗前的值。
+  const restore = () => {
+    const modal = document.getElementById(modalId);
+    if (!modal) return;
+    const value = modal.dataset.pendingValue;
+    if (value === undefined) return;
+    const track = document.querySelector(sliderSelector);
+    if (track) {
+      track.dataset.initialProgress = value;
+      render(track, Number(value));
+    }
+    delete modal.dataset.pendingValue;
+  };
+  document.addEventListener('click', (event) => {
+    if (!event.target.closest(`#${modalId} [data-modal-close]`) && event.target.id !== modalId) return;
+    restore();
+  });
+  document.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape') return;
+    const modal = document.getElementById(modalId);
+    if (modal?.classList.contains('open')) restore();
+  });
 })();

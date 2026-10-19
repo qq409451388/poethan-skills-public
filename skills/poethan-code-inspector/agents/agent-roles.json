@@ -187,6 +187,7 @@
     "human": {
       "session_selector": "human",
       "commands": [
+        "issue-set-progress",
         "task-create",
         "task-resolve",
         "task-list",

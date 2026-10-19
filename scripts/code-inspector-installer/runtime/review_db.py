@@ -1219,8 +1219,8 @@ def issue_set_difficulty(args: argparse.Namespace) -> None:
 
 def issue_set_progress(args: argparse.Namespace) -> None:
     require_agent(args.agent)
-    if args.agent != "inspector":
-        raise PermissionError("只有 inspector 可以评估问题进度")
+    if args.agent not in {"inspector", "human"}:
+        raise PermissionError("只有 inspector 或 human 可以评估问题进度")
     if not 0 <= args.progress <= 100:
         raise ValueError("progress 必须是 0–100 的整数")
     reason = args.reason.strip()
@@ -1242,6 +1242,28 @@ def issue_set_progress(args: argparse.Namespace) -> None:
         audit(conn, actor_id(args), "issue.set-progress", "review_issue", args.issue_key, True,
               dumps({"before": row["progress"], "progress": args.progress, "reason": reason}))
     print_json({"issue_key": args.issue_key, "progress": args.progress, "progress_reason": reason})
+
+
+def issue_set_bookmark(args: argparse.Namespace) -> None:
+    require_agent(args.agent)
+    if args.agent not in {"inspector", "human"}:
+        raise PermissionError("只有 inspector 或 human 可以调整问题书签")
+    state = str(args.state).strip().lower()
+    if state not in {"on", "off"}:
+        raise ValueError("state 必须是 on 或 off")
+    bookmarked = 1 if state == "on" else 0
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT id, bookmarked FROM review_issue WHERE issue_key = ?", (args.issue_key,)
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"问题不存在: {args.issue_key}")
+        if row["bookmarked"] != bookmarked:
+            # 书签是人工关注标记，不触碰 updated_at，避免影响最近活动排序。
+            conn.execute("UPDATE review_issue SET bookmarked = ? WHERE id = ?", (bookmarked, row["id"]))
+            audit(conn, actor_id(args), "issue.set-bookmark", "review_issue", args.issue_key, True,
+                  f"bookmarked={bookmarked}")
+    print_json({"issue_key": args.issue_key, "bookmarked": bool(bookmarked)})
 
 
 def apply_assignment_update(
@@ -1401,7 +1423,7 @@ def apply_status_update(
     if status == "INSPECTOR_CONFIRMATION_REQUIRED" and args.agent == "developer" and not (content or "").strip():
         raise ValueError("开发端请求审核确认时必须通过 --content 说明待确认边界或疑问")
     row = conn.execute(
-        "SELECT id, status, current_attempt_no FROM review_issue WHERE issue_key = ?",
+        "SELECT id, status, current_attempt_no, progress FROM review_issue WHERE issue_key = ?",
         (issue_key,),
     ).fetchone()
     if not row:
@@ -1454,15 +1476,30 @@ def apply_status_update(
             conn, args, row, content or "Issue 进入 REDESIGN_REQUIRED，旧 Stage Plan 已废弃",
         )
 
+    # 确认为终态时，脚本内部把进度自动置为 100%，无需调用方额外传参。
+    confirmed_progress = status == "CONFIRMED" and row["progress"] != 100
+    if confirmed_progress:
+        auto_reason = (content or "").strip() or "已确认为终态，进度自动置为 100%"
+
     conn.execute(
         """UPDATE review_issue
            SET status = ?, current_attempt_no = ?,
                confirmed_at = CASE WHEN ?='CONFIRMED' THEN CURRENT_TIMESTAMP ELSE confirmed_at END,
                cancelled_at = CASE WHEN ?='CANCELLED' THEN CURRENT_TIMESTAMP ELSE cancelled_at END,
+               progress = CASE WHEN ?='CONFIRMED' THEN 100 ELSE progress END,
+               progress_reason = CASE WHEN ?='CONFIRMED' AND (progress IS NULL OR progress < 100) THEN ? ELSE progress_reason END,
+               progress_updated_at = CASE WHEN ?='CONFIRMED' AND (progress IS NULL OR progress < 100) THEN CURRENT_TIMESTAMP ELSE progress_updated_at END,
+               progress_updated_by = CASE WHEN ?='CONFIRMED' AND (progress IS NULL OR progress < 100) THEN ? ELSE progress_updated_by END,
                updated_at = CURRENT_TIMESTAMP
            WHERE issue_key = ?""",
-        (status, attempt_no, status, status, issue_key),
+        (status, attempt_no, status, status, status, status,
+         auto_reason if confirmed_progress else None, status, status,
+         actor_id(args) if confirmed_progress else None, issue_key),
     )
+    if confirmed_progress:
+        audit(conn, actor_id(args), "issue.set-progress", "review_issue", issue_key, True,
+              dumps({"before": row["progress"], "progress": 100,
+                     "reason": auto_reason, "auto": True}))
     activity_cursor = insert_activity(
         conn, args, """INSERT INTO issue_activity(
             issue_id, attempt_no, activity_type, operator_type, operator_id, content, result_status
@@ -1473,7 +1510,10 @@ def apply_status_update(
         ),
     )
     audit(conn, actor_id(args), "issue.update-status", "review_issue", issue_key, True)
-    return {"issue_key": issue_key, "status": status, "attempt_no": attempt_no}
+    return {
+        "issue_key": issue_key, "status": status, "attempt_no": attempt_no,
+        "progress": 100 if status == "CONFIRMED" else row["progress"],
+    }
 
 def issue_update_status(args: argparse.Namespace) -> None:
     require_agent(args.agent)
@@ -4360,6 +4400,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--progress", type=int, required=True)
     p.add_argument("--reason", required=True)
     p.set_defaults(func=issue_set_progress)
+
+    p = sub.add_parser("issue-set-bookmark")
+    p.add_argument("--issue-key", required=True)
+    p.add_argument("--state", choices=("on", "off"), required=True, help="on 加书签，off 移除书签")
+    p.set_defaults(func=issue_set_bookmark)
 
     p = sub.add_parser("issue-set-difficulty")
     p.add_argument("--issue-key", required=True)

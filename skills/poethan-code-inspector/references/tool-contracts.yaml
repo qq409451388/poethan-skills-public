@@ -73,9 +73,9 @@ commands:
     difficulty: 可选正整数，只描述任务本身的抽象困难程度；不写具体模型名称，也不做模型能力判断。缺少时不产生推荐执行配置。
     recommended_executors: 读取时由本机 Model Router 按 level>=difficulty 动态计算；Router 未配置时为空列表，命令照常成功。
   issue-set-progress:
-    agent: inspector
+    roles: [inspector, human]
     required: [--issue-key, --progress, --reason]
-    note: Inspector 评估 0–100 整数完成进度并提供非空依据，允许下调；100 仅限 CONFIRMED。独立于流程状态，历史未评估为 null。show/context 返回 progress、progress_reason、progress_updated_at 和 progress_updated_by。
+    note: Inspector 或 Human 评估 0–100 整数完成进度并提供非空依据，允许下调；100 仅限 CONFIRMED。独立于流程状态，历史未评估为 null。状态改为 CONFIRMED 时脚本内部自动置为 100%，无需额外传参。show/context 返回 progress、progress_reason、progress_updated_at 和 progress_updated_by。
   issue-set-difficulty:
     roles: [inspector, human]
     required: [--issue-key, --difficulty]
