@@ -1,6 +1,8 @@
 {% extends "base.html" %}
 {% from "components/issue_progress.html" import issue_progress %}
 {% from "components/bookmark_flag.html" import bookmark_flag %}
+{% from "components/rank_tag.html" import rank_tag %}
+{% from "components/agent_icon.html" import agent_icon %}
 {% block title %}待我处理 · 代码检查工作台{% endblock %}
 {% block content %}
 <div class="page-head">
@@ -25,7 +27,14 @@
             {% elif stage.active_total %}<span class="ranking-stage-current">Plan #{{ stage.active_plan_no }} · 已验收 {{ stage.active_approved }}/{{ stage.active_total }} 阶段</span>
             {% else %}<span class="ranking-stage-inactive">历史计划已结束，暂无活动阶段</span>{% endif %}
           </div>
-          {% endif %}
+        {% endif %}
+        </div>
+        <div class="issue-ranking-meta">
+          <span class="badge badge-status-{{ issue.status }}">{{ issue.status|label }}</span>
+          {% if issue.difficulty is not none %}{{ rank_tag(issue.difficulty, level_roles.get(issue.difficulty, ''), rank_skin) }}{% else %}<span class="muted">难度待评</span>{% endif %}
+          {% if issue.assignment %}
+          <span class="ranking-agent">{{ agent_icon() }} <strong>{{ issue.assignment.agent }}</strong><small class="mono">{{ issue.assignment.model }}</small>{% if issue.assignment_status == 'STALE' %}<span class="badge badge-red" title="{{ issue.assignment_invalid_reason|assignment_reason }}">分配已失效</span>{% endif %}</span>
+          {% else %}<span class="muted">未分配</span>{% endif %}
         </div>
       </a>
     </li>

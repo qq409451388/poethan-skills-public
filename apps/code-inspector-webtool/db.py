@@ -71,6 +71,10 @@ def query_one(sql: str, params: Iterable[Any] = ()) -> dict[str, Any] | None:
 def parse_json_field(value: str | None, default: Any) -> Any:
     if not value:
         return default
+    try:
+        return json.loads(value)
+    except (TypeError, ValueError):
+        return default
 
 
 BOOKMARK_TABLE_SQL = """

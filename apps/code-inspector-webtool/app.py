@@ -539,7 +539,9 @@ def inbox():
                       WHERE d.issue_id=i.id), i.updated_at)) AS active_at
            FROM review_issue i JOIN review_task t ON t.id=i.task_id
            WHERE i.status NOT IN ({','.join('?' for _ in INBOX_LEADERBOARD_EXCLUDED_STATUSES)})
-           ORDER BY bookmarked DESC, i.progress IS NULL, i.progress DESC, active_at DESC, i.id DESC LIMIT 20""",
+           ORDER BY bookmarked DESC,
+                    CASE WHEN i.status = 'ON_HOLD' THEN 1 ELSE 0 END,
+                    i.progress IS NULL, i.progress DESC, active_at DESC, i.id DESC LIMIT 20""",
         INBOX_LEADERBOARD_EXCLUDED_STATUSES,
     )
     if active_issues:
@@ -549,6 +551,10 @@ def inbox():
             [item["id"] for item in active_issues],
         )
         for item in active_issues:
+            issue_with_json(item)
+            item["assignment_status"], item["assignment_invalid_reason"] = routing.assignment_state(
+                item.get("assignment"), item.get("difficulty"),
+            )
             history = [row for row in stage_rows if row["issue_id"] == item["id"]]
             if not history:
                 continue
@@ -565,6 +571,7 @@ def inbox():
     return render_template(
         "inbox.html", metrics=queue["metrics"],
         active_issues=active_issues,
+        level_roles=routing.LEVEL_ROLES, rank_skin=routing.rank_skin(),
     )
 
 
