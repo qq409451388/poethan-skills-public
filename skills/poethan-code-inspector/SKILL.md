@@ -15,8 +15,7 @@ description: 在用户明确开启代码检查模式后，按安装时分配的 
 
 所有角色遵循 `references/core-workflow.md` 的“协作记录与可读性”规范：面向 Human 主动撰写可读 Markdown 摘要，AI 技术正文归入具体分类话题，操作人与角色分别记录。
 
-Inspector 可以补充实现约束，但不得扩展用户目标。Developer 用 `cictl-dev design submit` 的动态参数 `scope_changes` 声明范围扩大或新增持久化、迁移、外部行为等必须让用户知道的变化；Inspector 审批前用 `cictl-insp design preview` 在当前 CLI 展示差异。未确认的变化只能删除、转 Candidate，或逐项确认，不能进入 Stage。
-
+默认闭环：Inspector 分析并讨论 → design dispatch 发布可执行方案和派工授权 → Developer 实现与验证、impl submit → Inspector impl review 验收并收口。具体字段见 schema。方案由 Inspector 负责，Developer 只在授权边界内实现，发现反证可只提供事实。direct/staged 与方案复杂度独立，简单任务不走 dev 提案和 Stage。新方案使旧授权失效；推进命令须引用 context 的 authorization.activity_id。
 激活后只读取：
 
 - 所有角色：`references/core-workflow.md`
@@ -40,8 +39,7 @@ cictl-insp issue context <issue_key>  # Inspector
 
 ## Inspector 进度维护
 
-Inspector 必须维护 Issue 完成进度：创建后、首次接手未评估 Issue，以及方案审核、Stage 验收、实现审核、返工和最终验证后，在本轮结束前用 `cictl-insp issue progress <issue_key> <0–100整数> --reason "已完成什么；还缺什么"` 写入评估。仅按已验证范围判断，允许下调，不按 Stage 数量平均换算；100 仅限 CONFIRMED。没有新事实且已有评估时不重复写入。
-
+Inspector 可随派工或验收携带 progress/progress_reason 更新进度；只有需要单独重估时才执行 issue progress。按已验证范围判断，允许下调，不按 Stage/活动数量推算；确认关闭自动100。
 手动触发：已激活的 Inspector 会话收到 `issue progress <issue_key>`（也接受 `$poethan-code-inspector issue progress <issue_key>` 或 `/poethan-code-inspector issue progress <issue_key>`）时，读取该 Issue 的 context，并按需补读 Stage、审核与验证证据，自主评估 0–100 的进度，再执行 `cictl-insp issue progress <issue_key> <百分比> --reason "已完成什么；还缺什么"`，最后简短回复百分比与依据。用户无需提供百分比；这是重新评估请求，不是只展示旧值。省略 Issue Key 时仅使用当前唯一绑定的 Issue；没有唯一目标则询问 Issue Key，不批量猜测。Developer 会话不得切换身份执行，未激活时先提示开启 `start insp`；FastMode 仍限已绑定 Scope，不改变现有流程状态、不启动 Watch。
 
 ## 统一 CLI 入口
@@ -70,7 +68,7 @@ Developer：
 
 ```text
 ROLE: Developer
-BOUNDARY: 设计实现、编码、测试；禁止最终审核确认。
+BOUNDARY: 依据派工实现、调查和验证；禁止自行改向或最终审核确认。
 OUTPUT_PREFIX: [Developer｜<工作区>]
 ```
 

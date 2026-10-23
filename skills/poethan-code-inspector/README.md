@@ -158,26 +158,31 @@ Inspector 修改 Task 状态时遵守标准状态机。Human 可将 Task 设为�
 
 正式 Issue 默认只需要标题、短摘要、维度和严重度；完成标准、技术补充、本项目术语和证据按需填写。摘要可用轻量 Markdown 拆成少量要点，但不保存 Agent 推理过程、长日志、完整代码和重复评级。代码定位优先使用文件加类/方法/符号，行号只作快照提示。通用技术词不解释，只定义项目内、业务内或 Agent 临时创造且人工可能不知道的词。
 
-讨论消息使用独立的 `discussion-*` 命令，不再用 `COMMENT_ADDED / DESIGN_GUIDANCE` 塞进处理历史。`discussion-list` 默认只返回最近 20 条摘要，并支持 `--cursor` / `--since` 增量读取；正文通过 `discussion-get` 按 id 获取。页面“讨论”视图还会只读投影设计、Stage 和实现正式提交；这些提交仍以 Activity 作为唯一数据源并保留在处理历史，“全部”视图去重后按最新优先展示。Developer、Inspector 修正自己的讨论消息时直接 `discussion-amend`；待审核的设计、Stage、实现提交可用 `activity-amend`，一旦被审核就锁定。讨论达成一致后由 Inspector 用 `decision-record` 写入短结论并关联讨论；同一类型和作用域的新结论成为当前有效版本，历史版本只留审计。
+讨论消息使用独立的 `discussion-*` 命令，不再用 `COMMENT_ADDED / DESIGN_GUIDANCE` 塞进处理历史。`discussion-list` 默认只返回最近 20 条摘要，并支持 `--cursor` / `--since` 增量读取；正文通过 `discussion-get` 按 id 获取。页面“讨论”视图还会只读投影设计、Stage 和实现正式提交；这些提交仍以 Activity 作为唯一数据源并保留在处理历史，“全部”视图去重后按最新优先展示。Developer、Inspector 修正自己的讨论消息时直接 `discussion-amend`；待审核的设计、Stage、实现提交可用 `activity-amend`，一旦被审核就锁定。仅独立讨论结论未被正式动作记录时，由 Inspector 用 `decision-record` 写入并关联讨论；同一类型和作用域的新结论成为当前有效版本，历史版本只留审计。
 
-用户与 Inspector 的当前 CLI 对话是需求澄清和关键设计确认入口，Issue/Web 只用于自动留档、回看和管理纠错。明确 Bug、唯一合理实现、普通代码细节或用户已明确允许的变化无需重复询问；新增持久化或基础设施、数据变更、对外行为变化、新依赖、范围扩大或多种影响不同的方案，必须先由 Inspector 在 CLI 用日常中文简短询问。用户回答后用 `cictl-insp design confirm` 绑定当前设计，再用 `cictl-insp design approve` 批准；设计修订后旧确认失效。其余设计在审批动态参数中声明 `confirmation: not-needed`。
+## 方案、派工与验收
 
-## 设计与实现协作
+默认闭环：Inspector 核实需求、事实与原因，形成可执行方案并完成必要讨论 → design dispatch → Developer 实现与验证、impl submit → Inspector impl review 原子验收并收口。
 
-设计职责按层划分：Inspector 用 `cictl-insp design request` 负责 What / Why / Boundary / Architecture Direction / Acceptance——根因、应在哪一层解决、推荐和禁止的架构方向、不可破坏语义、方案必须回答的问题和验收条件；Developer 用 `cictl-dev design submit` 在该框架内决定具体 How——修改哪些类和方法、数据流与 API/DB/状态落地、幂等并发事务、测试方案。Inspector 不下沉到具体代码实现，Developer 不重新决定已确定的架构方向；Developer 认为方向有事实错误时通过讨论反馈，由 Inspector 修订，不得静默改向。Inspector 用 `cictl-insp design approve|reject` 绑定当前设计提交并明确批准或驳回，审批时检查方向遵守、根因解决、边界、Design Questions 回答、验收可验证、无必要复杂化和 scope change；实现方式与自身偏好不同不构成驳回理由。
+方案由 Inspector 负责；Developer 对命名、局部组织等自主决定，但不得擅自改向。发现前提不成立只需提供前提、证据、影响和未知项，由 Inspector 澄清或修订。方向变化重新派工，旧授权与旧 Stage Plan 失效。
 
-设计深度随复杂度分级（规则见 `references/workflow.yaml` 的 `design_depth`）：SIMPLE 问题确认边界后直接实现，不要求 design-request 和 Stage Plan；NORMAL 问题设计至少覆盖 Root Cause、Boundaries、Design Questions、Acceptance；COMPLEX / HIGH-RISK 问题（跨模块职责、核心链路、状态机、并发事务一致性、持久化模型、数据迁移、对外行为、新依赖、大重构、高回归风险）还必须给出明确到架构层的 Architecture Direction（状态归属、source of truth、push/pull、生命周期管理、允许与禁止路径、必须幂等的路径），禁止“注意兼容”“考虑并发”这类空话。批准时必须选择 `direct` 或 `staged`；staged 会在同一事务中创建 Stage Plan、批准设计并默认激活 Stage 1。设计状态下 Developer 不得修改业务代码或提交实现。
+简单方案几句话即可，包含 content、boundaries、acceptance、execution_mode。方案复杂度与 direct/staged 独立；中间成果有独立验收价值才分 Stage。无需选择时一次 dispatch 开工；有范围/风险选择时先 design request 保存 Inspector 草稿，再 preview/confirm 绑定真实回答，dispatch 引用 draft_id 与 confirmation_ids，不重抄方案或重复到 Web 确认。
 
-```text
-SIMPLE      Inspector(问题+边界) → Developer(实现) → Inspector(验证)
-NORMAL      Inspector(四段式设计要求) → Developer(方案) → Inspector(审) → Developer(实现) → Inspector(验证)
-COMPLEX     Inspector(五段式含架构方向) → Developer(方案) → Inspector(审/Stage Plan)
-            → 分 Stage 实施与验收 → 最终实现 → 最终验证
+```sh
+cictl-insp design dispatch RI-1 @plan.json
+cictl-dev impl submit RI-1 --authorization-id 123 --content '实现与验证结果' @evidence.json
+cictl-insp impl review RI-1 @review.json
 ```
 
-实现审核失败时，若只是代码未按批准方案正确落地，则记录 `VERIFICATION_FAILED` 并回 `IN_PROGRESS`；若方向本身被新证据推翻，则转 `REDESIGN_REQUIRED`。转入后 当前待办先交由 Inspector，领域命令拒绝 Developer 直接重交方案：Inspector 必须重新检查 Root Cause、Architecture Direction、Boundaries、Acceptance 哪些判断失误，先用 `design-request` 提交修订后的架构级指导，Developer 再提交新方案。连续两次失败后 Inspector 必须主动重新判断失败属于实现还是设计，避免重复阅读与大范围返工。
+context 提供有效授权 ID。Runtime 在状态、Stage、实现提交与收口入口检查授权，不能只改 IN_PROGRESS 状态就开工；这些检查不是文件系统隔离。历史真实批准仍保留兼容入口，不存在批准的旧任务不会自动放行。没有新表、新状态或新调度平台。
 
-复杂 Issue 可在设计批准前创建 Stage Plan。Stage 独立于 Issue 状态，按 `PLANNED → IN_PROGRESS → PENDING_REVIEW → APPROVED` 串行推进。Developer 在改码前先用 `cictl-dev stage prepare` 声明影响范围和原因，历史保护项默认从既有 baseline 继承；完成后通过 `cictl-dev stage submit` 提交 commit 和当前测试，命令自动关联 Git Diff 与上一轮阻断 finding。Inspector 默认从 `cictl-insp stage show` 读取当前 Stage、合并后的有界保护约束和历史摘要；确需核验证据时再用 `cictl-insp stage history` 读取完整 baseline。审核使用 BLOCKER/MUST/SHOULD/NIT 四级 finding，只有前两级阻断。通过时建立包含已验证行为、输入输出契约、业务语义和测试集合的 `PASSED` baseline，自动激活下一 Stage。第二轮起不得新增无关 SHOULD/NIT，新 BLOCKER/MUST 必须解释此前遗漏原因和实际风险；阻断项清零且所有验收通过后必须 PASS。若发现整案错误则用 `cictl-insp stage redesign` 进入 `REDESIGN_REQUIRED`，旧计划完整保留。所有 Stage 通过后才允许 `cictl-dev impl submit`，且仍需最终整体验证。简单 Issue 无需 Stage。
+新派工 Stage 继承方案边界和 baseline，不再强制额外 stage prepare；旧计划保留准备约束。Stage 审核的四级 findings、Gate、baseline 和自动激活复用。全部 Stage 通过后可引用有效证据，保留轻量最终交付和整体/集成验收。
+
+impl review 绑定当前 submission_id、submission_revision、authorization_id，requirements 核对原始需求，checks 使用 AC-1..AC-n。通过关闭，fix 沿原方案修复，replan 由 Inspector 重新规划。只有 SHOULD/NIT 不阻断；照方案实现却不满足需求也不能通过。快照、依赖、环境和验证范围仍适用才复用证据；已变更需说明依据或补验，不机械重跑。
+
+双方遵守最小充分设计：新增机制必须有具体收益和有依据的失败场景，说明维护成本，不为未来假设无限加固，不吞异常或随意降级。局部精简由 Developer 自主；方向变化先由 Inspector 判断，必要时询问 Human，不新增长审批清单。
+
+短记录可复用正文作摘要，长正文才另给人话摘要；讨论可自动关联话题；正式动作已生成结论就不重复 decision add。派工/验收可附进度，最终关闭自动100。必要审计继续由 Runtime 自动生成。
 
 ## Human 最终兜底
 

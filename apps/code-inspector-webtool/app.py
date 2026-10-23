@@ -5,6 +5,7 @@ SQLite 只用于页面查询；所有写操作必须经过安装后的 cictl Web
 from __future__ import annotations
 
 from collections import OrderedDict
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from html import escape
 import json
@@ -12,6 +13,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import sys
 import traceback
 from urllib.parse import urlencode
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -20,12 +22,14 @@ from flask import Flask, abort, g, redirect, render_template, request, session, 
 from markupsafe import Markup
 
 from commands import run_human_command
-from db import ensure_bookmark_table, parse_json_field, query_all, query_one, query_exec
+from db import connect, ensure_bookmark_table, parse_json_field, query_all, query_one, query_exec
 import routing
 from workflow_view import workflow_graph
 from issue_timing import attach_timing
 
 BASE_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(BASE_DIR.parents[1] / 'skills/poethan-code-inspector/scripts'))
+from issue_projection import dispatch_authorization
 app = Flask(__name__, template_folder=str(BASE_DIR / "templates"), static_folder=str(BASE_DIR / "static"))
 ensure_bookmark_table()
 # 本地工具，页面会边用边改：模板始终按 mtime 重新读取，避免"改了模板但页面不变、
@@ -934,6 +938,11 @@ def issue_detail(issue_key: str):
     latest_implementation = implementations[-1] if implementations else None
     design_submissions = [a for a in activities if a["activity_type"] == "DESIGN_SUBMITTED"]
     latest_design_submission = design_submissions[-1] if design_submissions else None
+    inspector_plans = [a for a in activities if a['activity_type'] in {'DESIGN_REQUESTED','DESIGN_APPROVED'}
+                       and a['metadata'].get('plan_owner') == 'inspector']
+    latest_inspector_plan = inspector_plans[-1] if inspector_plans else None
+    with closing(connect()) as connection:
+        current_authorization = dispatch_authorization(connection, issue['id'])
     verification_activities = [a for a in current_activities if a["activity_type"].startswith("VERIFICATION_")]
     human_requests = [a for a in activities if a["activity_type"] == "HUMAN_CONFIRMATION_REQUESTED"]
     latest_human_request = human_requests[-1] if human_requests else None
@@ -961,6 +970,7 @@ def issue_detail(issue_key: str):
         decisions=decisions, discussions=discussions, discussion_records=discussion_records,
         all_records=all_records, all_content_count=sum(record["in_all"] for record in all_records), history_records=history_records, issue_topics=topics,
         latest_implementation=latest_implementation, latest_design_submission=latest_design_submission,
+        latest_inspector_plan=latest_inspector_plan, current_authorization=current_authorization,
         verification_activities=verification_activities,
         latest_human_request=latest_human_request,
         stage_plans=stage_plans, active_stage_plan=active_stage_plan,
@@ -1071,19 +1081,12 @@ def issue_human_action(issue_key: str):
     content = request.form.get("content", "").strip()
     try:
         if action == "confirm":
-            verification_content = content or "Human 已复核本次实现与验证结果，验证通过。"
+            # 人工覆盖是独立管理动作，不伪造一次标准 Inspector 验收。
             run_human_command(
-                "activity", "add", issue_key, "--activity-type", "VERIFICATION_PASSED",
-                "--content", verification_content,
+                'issue','status',issue_key,'CONFIRMED',
+                '--content',content or 'Human 人工确认关闭；标准验收证据以实际记录为准。',
             )
-            try:
-                run_human_command(
-                    "issue", "status", issue_key, "CONFIRMED",
-                    "--content", content or "Human 验证通过并确认问题。",
-                )
-            except Exception as exc:  # noqa: BLE001
-                raise RuntimeError(f"验证通过活动已追加，但确认状态失败：{exc}") from exc
-            message = "验证通过，问题已确认"
+            message = '已按 Human 决定确认关闭，未生成额外标准验收记录'
         elif action == "confirmation":
             if not content:
                 raise ValueError("请填写审核确认结论")

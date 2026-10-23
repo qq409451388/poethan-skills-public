@@ -56,6 +56,19 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             text=True, capture_output=True,
         )
 
+    def dispatch(self, db, key):
+        return db('inspector', 'design-dispatch', '--issue-key', key, '--plan', json.dumps({
+            'content': '按当前需求修复并验证。', 'boundaries': '只修改本问题范围。',
+            'acceptance': ['满足当前原始需求'], 'execution_mode': 'direct'}))
+
+    def accept(self, db, key, authorization, submission):
+        return db('inspector', 'implementation-review', '--issue-key', key, '--review', json.dumps({
+            'authorization_id': authorization['authorization_id'],
+            'submission_id': submission['activity_id'], 'submission_revision': 0,
+            'content': '原始需求及实际行为验证通过。',
+            'requirements': {'status': 'PASS', 'evidence': '原始需求独立核对通过'},
+            'checks': [{'id': 'AC-1', 'status': 'PASS', 'evidence': '回归测试通过'}]}))
+
     def test_install_path_uses_copy_and_replaces_atomically(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -234,6 +247,15 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 "--content", secret,
             )
 
+            self.run_cmd(home, *inspector_tool, 'design-request', '--issue-key', 'RI-OUTSIDE', '--content', '兼容旧流程')
+            legacy = self.run_cmd(home, str(db_tool), '--agent', 'human', 'design-submit',
+                '--issue-key', 'RI-OUTSIDE', '--summary', '旧方案', '--content', '旧方案正文')
+            self.run_cmd(home, *inspector_tool, 'design-review', '--issue-key', 'RI-OUTSIDE',
+                '--design-activity-id', str(legacy['activity_id']), '--decision', 'approved',
+                '--execution-mode', 'direct', '--confirmation', 'not-needed', '--content', '兼容批准')
+            self.run_cmd(home, str(db_tool), '--agent', 'human', 'implementation-submit',
+                '--issue-key', 'RI-OUTSIDE', '--content', '旧流程交付')
+
             # 普通 activity-append 不能通过伪造 metadata 改变标准审核语义。
             spoof_metadata = json.dumps({"workflow_mode": "FASTMODE"})
             self.run_cmd(
@@ -261,7 +283,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             self.run_cmd(
                 home, *inspector_tool, "activity-append", "--issue-key", "RI-OUTSIDE",
                 "--activity-type", "VERIFICATION_PASSED", "--content", long_verification,
-                "--metadata", "", "--code-reference", "",
+                "--metadata", "", "--code-reference", "", "--human-summary", "兼容审核通过。",
             )
             with closing(sqlite3.connect(database)) as conn:
                 activity_content, decision_content = conn.execute(
@@ -471,19 +493,19 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             role_text = (trae_skill / "references" / "role-workflows.md").read_text(encoding="utf-8")
             watch_text = (trae_skill / "references" / "watch-mode.md").read_text(encoding="utf-8")
             self.assertIn("Issue 默认正文只写", core_text)
-            self.assertIn("讨论达成一致后", core_text)
+            self.assertIn("发布方案并派工", core_text)
             self.assertIn("所有写入 Review DB", core_text)
             self.assertIn("先说明“发生了什么、影响谁、当前结论、验证结果、下一步或是否可发布”", core_text)
             self.assertIn("新写的代码注释默认使用中文", core_text)
             self.assertIn("Git 提交标题和正文也属于人类可读交付物", core_text)
             self.assertIn("refactor(analytics): 统一淘宝数据源边界", core_text)
             self.assertIn("Human 只作为极低频最终兜底", core_text)
-            self.assertIn("主审核者必须额外串联跨模块数据流", role_text)
-            self.assertIn("先做覆盖面回查和补充扫描", role_text)
-            self.assertIn("cictl-dev stage prepare", role_text)
-            self.assertIn("原子创建计划、批准设计和激活 Stage 1", role_text)
+            self.assertIn("跨模块数据流", role_text)
+            self.assertIn("覆盖面回查和补充扫描", role_text)
+            self.assertIn("不强制 stage prepare", role_text)
+            self.assertIn("design dispatch", role_text)
             self.assertNotIn("stage-plan-create", role_text)
-            self.assertIn("连续两次失败必须重新判断设计是否对齐", role_text)
+            self.assertIn("方向错误自己修订方案并重新派工", role_text)
             self.assertIn("默认关闭", watch_text)
             self.assertIn("禁止创建或维持宿主 Goal", watch_text)
             workflow_text = (trae_skill / "references" / "workflow.yaml").read_text(encoding="utf-8")
@@ -579,20 +601,16 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 text=True, capture_output=True,
             )
             self.assertNotEqual(blocked.returncode, 0)
-            self.assertIn("VERIFICATION_PASSED", blocked.stderr)
-
-            db("developer", "issue-update-status", "--issue-key", "RI-TEST", "--status", "IN_PROGRESS")
-            db("developer", "issue-update-status", "--issue-key", "RI-TEST",
-               "--status", "INSPECTOR_CONFIRMATION_REQUIRED", "--content", "请确认验收边界")
-            db("inspector", "activity-append", "--issue-key", "RI-TEST",
-               "--activity-type", "INSPECTOR_CONFIRMATION_PROVIDED", "--content", "按当前边界继续")
-            db("inspector", "issue-update-status", "--issue-key", "RI-TEST", "--status", "IN_PROGRESS")
-            db("developer", "issue-update-status", "--issue-key", "RI-TEST",
-               "--status", "IMPLEMENTED_PENDING_REVIEW")
-            db("inspector", "activity-append", "--issue-key", "RI-TEST",
-               "--activity-type", "VERIFICATION_PASSED", "--content", "通过")
-            result = db("inspector", "issue-update-status", "--issue-key", "RI-TEST", "--status", "CONFIRMED")
-            self.assertEqual(result["status"], "CONFIRMED")
+            self.assertIn("派工授权", blocked.stderr)
+            authorization = self.dispatch(db, 'RI-TEST')
+            db('developer', 'issue-update-status', '--issue-key', 'RI-TEST',
+               '--status', 'INSPECTOR_CONFIRMATION_REQUIRED', '--content', '请确认验收边界')
+            db('inspector', 'issue-update-status', '--issue-key', 'RI-TEST', '--status', 'IN_PROGRESS',
+               '--authorization-id', str(authorization['authorization_id']), '--content', '原边界内继续实现')
+            submitted = db('developer', 'implementation-submit', '--issue-key', 'RI-TEST',
+                '--authorization-id', str(authorization['authorization_id']), '--content', '实现及测试完成')
+            result = self.accept(db, 'RI-TEST', authorization, submitted)
+            self.assertEqual(result['status'], 'CONFIRMED')
 
     def test_install_removes_legacy_skill_dir_but_keeps_foreign_content(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -681,20 +699,13 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 "inspector", "issue-create-batch", "--task-key", first["task_key"],
                 "--reason", "补充已验证问题", "--issues", json.dumps([confirmed_issue], ensure_ascii=False),
             )
-            db(
-                "inspector", "activity-append", "--issue-key", "RI-TASK-CLOSE-CONFIRMED",
-                "--activity-type", "VERIFICATION_PASSED", "--content", "验证通过",
-            )
-            db(
-                "inspector", "issue-update-status", "--issue-key", "RI-TASK-CLOSE-CONFIRMED",
-                "--status", "CONFIRMED", "--content", "完成技术确认",
-            )
-
-            direct_submit = db(
-                "developer", "issue-update-status", "--issue-key", created["created"][0],
-                "--status", "IMPLEMENTED_PENDING_REVIEW",
-            )
-            self.assertEqual(direct_submit["status"], "IMPLEMENTED_PENDING_REVIEW")
+            db('human', 'issue-update-status', '--issue-key', 'RI-TASK-CLOSE-CONFIRMED',
+               '--status', 'CONFIRMED', '--content', '人工确认，供 Task 关闭联动验证')
+            key = created['created'][0]
+            authorization = self.dispatch(db, key)
+            direct_submit = db('developer', 'implementation-submit', '--issue-key', key,
+                '--authorization-id', str(authorization['authorization_id']), '--content', '已完成实现，待验收')
+            self.assertEqual(direct_submit['status'], 'IMPLEMENTED_PENDING_REVIEW')
 
             db("inspector", "task-update-status", "--task-key", first["task_key"], "--status", "ON_HOLD")
             self.assertEqual(
@@ -812,27 +823,24 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 [],
             )
 
-            status_updates = [
-                {"issue_key": "RI-BATCH-1", "status": "IMPLEMENTED_PENDING_REVIEW"},
-                {"issue_key": "RI-BATCH-2", "status": "IMPLEMENTED_PENDING_REVIEW"},
-            ]
-            updated = db(
-                "developer", "issue-update-status-batch", "--updates", json.dumps(status_updates),
-            )
-            self.assertEqual(len(updated["updated"]), 2)
-            pending = db("inspector", "issue-list-pending-review", "--task-key", task["task_key"])
-            self.assertEqual({item["issue_key"] for item in pending}, {"RI-BATCH-1", "RI-BATCH-2"})
-
-            in_progress = db(
-                "inspector", "issue-update-status", "--issue-key", "RI-BATCH-3", "--status", "IN_PROGRESS",
-            )
-            self.assertEqual(in_progress["status"], "IN_PROGRESS")
-            submitted = db(
-                "developer", "implementation-submit", "--issue-key", "RI-BATCH-3",
-                "--content", "已修复并补充测试", "--code-reference",
-                json.dumps([{"file_path": "src/3.py", "line_start": 3}]),
-                "--metadata", json.dumps({"tests": ["test_three"]}),
-            )
+            authorizations = {key: self.dispatch(db, key)['authorization_id']
+                              for key in ('RI-BATCH-1', 'RI-BATCH-2', 'RI-BATCH-3')}
+            for key in ('RI-BATCH-1', 'RI-BATCH-2'):
+                db('developer', 'issue-update-status', '--issue-key', key, '--status', 'ON_HOLD')
+            status_updates = [{'issue_key': key, 'status': 'IN_PROGRESS', 'authorization_id': authorizations[key]}
+                              for key in ('RI-BATCH-1', 'RI-BATCH-2')]
+            updated = db('developer', 'issue-update-status-batch', '--updates', json.dumps(status_updates))
+            self.assertEqual(len(updated['updated']), 2)
+            for key in ('RI-BATCH-1', 'RI-BATCH-2'):
+                db('developer', 'implementation-submit', '--issue-key', key,
+                   '--authorization-id', str(authorizations[key]), '--content', '实现完成')
+            pending = db('inspector', 'issue-list-pending-review', '--task-key', task['task_key'])
+            self.assertEqual({item['issue_key'] for item in pending}, {'RI-BATCH-1', 'RI-BATCH-2'})
+            submitted = db('developer', 'implementation-submit', '--issue-key', 'RI-BATCH-3',
+                '--authorization-id', str(authorizations['RI-BATCH-3']),
+                '--content', '已修复并补充测试', '--code-reference',
+                json.dumps([{'file_path': 'src/3.py', 'line_start': 3}]),
+                '--metadata', json.dumps({'tests': ['test_three']}))
             self.assertEqual(submitted["status"], "IMPLEMENTED_PENDING_REVIEW")
             implementation_activity = [
                 item for item in db("developer", "activity-list", "--issue-key", "RI-BATCH-3")
@@ -847,13 +855,8 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 "inspector", "issue-create-batch", "--task-key", task["task_key"],
                 "--reason", "异议复核", "--issues", json.dumps([direct], ensure_ascii=False),
             )
-            db(
-                "inspector", "activity-append", "--issue-key", "RI-DIRECT-CONFIRM",
-                "--activity-type", "VERIFICATION_PASSED", "--content", "用户降级后复核通过",
-            )
-            confirmed = db(
-                "inspector", "issue-update-status", "--issue-key", "RI-DIRECT-CONFIRM", "--status", "CONFIRMED",
-            )
+            confirmed = db('human', 'issue-update-status', '--issue-key', 'RI-DIRECT-CONFIRM',
+                           '--status', 'CONFIRMED', '--content', '人工复核直接确认')
             self.assertEqual(confirmed["status"], "CONFIRMED")
             activity_count = len(db("developer", "activity-list", "--issue-key", "RI-DIRECT-CONFIRM"))
             invalid_submission = subprocess.run(
@@ -997,11 +1000,8 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 "inspector", "issue-create-batch", "--task-key", continuous_a["task_key"],
                 "--reason", "报告线上问题", "--issues", json.dumps([issue], ensure_ascii=False),
             )
-            db(
-                "inspector", "activity-append", "--issue-key", "RI-CONTINUOUS",
-                "--activity-type", "VERIFICATION_PASSED", "--content", "无需改码，事实已消除",
-            )
-            db("inspector", "issue-update-status", "--issue-key", "RI-CONTINUOUS", "--status", "CONFIRMED")
+            db('human', 'issue-update-status', '--issue-key', 'RI-CONTINUOUS',
+               '--status', 'CONFIRMED', '--content', '人工确认事实已消除')
             still_open = db("inspector", "task-list", "--task-type", "CONTINUOUS")
             self.assertEqual(still_open[0]["status"], "IN_PROGRESS")
 
@@ -2584,7 +2584,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 updated = db("inspector", "issue-set-progress", "--issue-key", issue_key,
                              "--progress", str(value), "--reason", "实现已完成，待验证")
                 self.assertEqual(updated["progress"], value)
-            for role, value, reason in (("developer", "60", "自评"), ("human", "60", "自评"),
+            for role, value, reason in (("developer", "60", "自评"),
                                         ("inspector", "101", "越界"), ("inspector", "100", "未确认"),
                                         ("inspector", "50", " ")):
                 with self.assertRaises(AssertionError):
@@ -2729,14 +2729,8 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                     json.dumps([completed_continuous_issue], ensure_ascii=False),
                 )
                 completed_issue_key = completed_created["created"][0]
-                db(
-                    "inspector", "activity-append", "--issue-key", completed_issue_key,
-                    "--activity-type", "VERIFICATION_PASSED", "--content", "验证通过",
-                )
-                db(
-                    "inspector", "issue-update-status", "--issue-key", completed_issue_key,
-                    "--status", "CONFIRMED", "--content", "完成治理",
-                )
+                db('human', 'issue-update-status', '--issue-key', completed_issue_key,
+                   '--status', 'CONFIRMED', '--content', '人工关闭，用于持续治理列表筛选')
                 ordered_listing = client.get("/tasks?project_name=project").get_data(as_text=True)
                 self.assertLess(ordered_listing.index(continuous_web_task["task_key"]), ordered_listing.index(task["task_key"]))
                 self.assertIn("badge-task-type-CONTINUOUS", ordered_listing)
@@ -2942,8 +2936,10 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 self.assertEqual(rejected.status_code, 302)
                 self.assertEqual(db("inspector", "candidate-list", "--status", "REJECTED")[0]["status"], "REJECTED")
 
+                authorization = self.dispatch(db, issue_key)
                 submitted = db(
                     "developer", "implementation-submit", "--issue-key", issue_key,
+                    "--authorization-id", str(authorization["authorization_id"]),
                     "--content", "已增加幂等键校验\n\n- 单测通过\n- 集成测试通过",
                     "--code-reference", json.dumps([{"file_path": "order.py", "line_start": 10, "line_end": 14, "code_excerpt": "if key in seen:\n    return"}]),
                     "--metadata", json.dumps({"tests": "passed"}),
@@ -2975,7 +2971,7 @@ class CodeInspectorInstallerTest(unittest.TestCase):
                 final_issue = db("inspector", "issue-list", "--task-key", task["task_key"])[0]
                 self.assertEqual(final_issue["status"], "CONFIRMED")
                 activities = db("inspector", "activity-list", "--issue-key", issue_key)
-                self.assertIn("VERIFICATION_PASSED", {item["activity_type"] for item in activities})
+                self.assertNotIn("VERIFICATION_PASSED", {item["activity_type"] for item in activities})
                 rejected_transition = client.post(
                     f"/issues/{issue_key}/status",
                     data={"status": "CANCELLED", "content": "终态后再次操作"}, follow_redirects=True,
@@ -3339,8 +3335,8 @@ class CodeInspectorInstallerTest(unittest.TestCase):
             self.assertIn("讨论 204", full["content"])
 
             context = db("developer", "issue-context-get", "--issue-key", "RI-DISCUSSION-BOUND")
-            self.assertEqual(context["pending_action"], "triage_or_implement_issue")
-            self.assertIn("implementation-submit", context["permitted_actions"])
+            self.assertIsNone(context["pending_action"])
+            self.assertNotIn("implementation-submit", context["permitted_actions"])
             self.assertEqual(context["exception_actions"], [])
             self.assertEqual(context["issue"]["review_level"], "L2")
             self.assertEqual(context["issue"]["review_scope"], "src/payments")

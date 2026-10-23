@@ -1,34 +1,26 @@
 # Role Workflows
 
-只读取并执行当前会话锁定角色对应的章节，不得读取另一角色流程后自行切换身份。
+只执行当前会话绑定角色，不通过阅读另一角色说明切换身份。共同方案、授权、证据和过度设计约束见 core-workflow.md。
 
 ## Developer
 
-1. 已绑定 Issue 的 Action Turn 先且通常只调用一次 `cictl-dev issue context`；只有 Working Set 摘要明确指向必要正文时才用 `cictl-dev discussion show`、`cictl-dev activity show` 或 `cictl-dev stage history`。发现待处理 Issue 时才使用精简的列表命令。不要创建 Task、版本或正式 Issue，不要修改评级或最终确认。
-2. `DESIGN_REQUIRED` 或 `REDESIGN_REQUIRED` 时只阅读、分析和讨论，用 `cictl-dev design submit` 提交方案；`--summary` 写白话概要，动态参数 `scope_changes` 明确列出超出用户目标的变化（没有则省略），完整技术细节放 `--content`。方案在 Inspector 给出的 Root Cause、Architecture Direction、Boundaries、Design Questions、Acceptance 框架内决定具体 How，并逐项回答全部 Design Questions；发现 Architecture Direction 有事实错误或无法实现时，先用讨论或 `INSPECTOR_CONFIRMATION_REQUIRED` 反馈，不得静默改成另一套方向。`REDESIGN_REQUIRED` 下必须等 Inspector 用 `cictl-dev design request` 修订架构指导后才能重交方案，Runtime 会直接拒绝抢跑。`DESIGN_PENDING_REVIEW` 时等待审核，不得编码或自行批准。
-3. 只有简单问题或设计批准后的 `IN_PROGRESS` 才能编码。Stage Plan 由 Inspector 在 staged 设计审批中原子创建，Developer 不得创建或承担计划制定责任。存在 Stage Plan 时先使用 Working Set 中的当前 Stage 与历史保护约束；只有约束摘要不足时才按 id 读取历史 PASSED baseline。修改前用 `cictl-dev stage prepare` 声明影响范围、原因和不得改变的历史行为；只实现当前 Stage。
-4. 用 `cictl-dev stage submit` 提交 commit、Diff 摘要、代码引用、当前验收测试和历史累计回归；上轮有 BLOCKER/MUST 时逐项回应 finding id。提交后立即等待验收，不得自行宣布 PASS。
-5. 无 Stage Plan 时可直接实现；有计划时必须等全部 Stage `APPROVED` 后，才能用 `cictl-dev impl submit` 提交整个 Issue 的最终实现证据。
-6. 方案按复杂度说明修改模块、类或方法、数据流、状态/幂等/并发、DB/历史/API 兼容、测试和风险，长度随问题复杂度伸缩，不机械套模板。验收口径或成立性有疑问时只能转 `INSPECTOR_CONFIRMATION_REQUIRED`，不得绕过 Inspector 请求 Human。
-7. `HUMAN_CONFIRMATION_REQUIRED` 时等待 Human 决策。发现不属于现有 Issue 的新问题时用 `cictl-dev candidate submit`，绝不调用 `cictl-dev issue create`。默认聊天仅说明处理对象、方案或改动、测试和下一步。
+1. 用 cictl-dev issue context 取得当前授权、方案、Stage、验收标准与有界历史；只有必要时按 ID 补读正文。没有有效授权不推进实现，不能自行判断“简单所以直接改”。
+2. 按方案实现与验证。命名、局部组织和函数提取自主决定；方向性选择、范围扩大和新机制先交 Inspector 判断，不先做后解释。
+3. 前提不成立时暂停受影响实现，用讨论或 issue status ... INSPECTOR_CONFIRMATION_REQUIRED --content 汇报前提、证据、影响与未知项即可，不要求替代方案。
+4. direct 使用 impl submit；staged 只做当前 Stage，stage submit/review 通过后再继续。新派工不强制 stage prepare，既定边界和历史保护自动继承；已有旧计划仍保留其原准备约束。推进动作引用 --authorization-id。
+5. 全部 Stage 通过后保留一次轻量 impl submit，可引用有效证据，只补整体及集成缺口。只修 BLOCKER/MUST，不因偏好性建议扩大任务。
+6. 提交后等待 Inspector；发现旁支问题使用 candidate submit。Human 异常状态等待真实决定。历史 dev 设计提案仅用于明确保留的旧流程。
 
 ## Inspector
 
-1. 已绑定 Issue 的 Action Turn 先且通常只调用一次 `cictl-insp issue context`，按其 `pending_action/permitted_actions/exception_actions` 工作；仅在专项规则审计时读取完整 `workflow.yaml`，创建或继续扫描时才按需读取 `review-levels.yaml` 并使用 `cictl-insp task ensure`。
-2. 区分 `scan` 与 `report`：扫描期间先收集候选，主审核者必须额外串联跨模块数据流；向 `CONTINUOUS` 报告单个线上问题只核实证据、判定成立和去重。
-3. 初步合并后先做覆盖面回查和补充扫描，再按根因、修复边界和风险链路去重、评级，最后用 `cictl-insp issue create-many` 创建正式 Issue。每个 Issue 同时给出抽象 `difficulty`（1–5 的整数，5 为上限）和可选的 `difficulty_reason` 要点；先确定本次最小必要修复范围，再按 `report-schema.yaml` 的 `difficulty_guide` 判级，修正已有 Issue 的 difficulty 时也遵循同一口径。不得把 severity、所在系统的复杂度或“边界不确定”直接换算成高 difficulty；判 5 必须写出不可逆后果，或跨系统核心改造的耦合、回滚和验证证据。只描述任务本身有多难，禁止出现具体模型名称、模型能力对比、“应该用哪个模型”或执行者等级/职称。Router 未配置时 difficulty 照常保存，只是没有推荐执行配置。
-4. 创建 Issue 后为它选定执行者：读取该 Issue 的 `recommendedExecutors`（由 difficulty + 本机 Routing 配置实时计算），用 `cictl-insp issue assign` 记录选中的 `profileId`。只有一个合法候选时可直接选择；多个候选时按任务复杂度选择。`recommendedExecutors` 是候选、`assignment` 是真正选定的执行者，两者生命周期不同：Routing 配置变化只会让 assignment 变为 `STALE`，不会自动改选，也不会改写历史分配，需由你重新选择或清除。`cictl-insp issue show` / `cictl-insp issue context` 会返回 `assignmentStatus`（VALID / STALE / NONE）与 `assignmentInvalidReason`；`STALE` 时必须在继续实现前重新分配。Model 能力映射只存在于 Routing 层，禁止在 Issue 正文或讨论里写“某模型更强/更适合”这类具体模型判断；Issue 里只保留抽象 `difficulty`。
-5. 按复杂度决定设计深度：SIMPLE 问题确认边界后直接放行实现，不发起设计；NORMAL 问题用 `cictl-insp design request` 写清 Root Cause、Boundaries、Design Questions、Acceptance（Architecture Direction 仅在确有方向性约束时给）；COMPLEX / HIGH-RISK 问题（跨模块职责、核心链路、状态机、并发事务、持久化模型、迁移、对外行为、新依赖、大重构、高回归风险、多方向且影响差异明显）的 `cictl-insp design request` 必须补齐明确到架构层的 Architecture Direction——归属层级、source of truth、push/pull、生命周期归属、允许与禁止的路径、必须幂等的路径、不应继续扩展的旧方案；禁止只写“注意兼容”“考虑并发”“避免破坏现有逻辑”“请给出合理方案”。不指定具体类、方法和代码结构；旁支发现转 Candidate，不能写成当前 MUST。
-6. 审批前执行 `cictl-insp design preview` 并在 CLI 展示短范围对比。没有额外变化用 `not-needed`；有则删除、转 Candidate，或提问后以 `cictl-insp design confirm` 记录。每项变化必须被确认覆盖，不能用一个无关回答批准整案。
-7. 批准时选择 `direct` 或 `staged`。staged 在同一次 `cictl-insp design approve` 提交少量串行 Stage；涉及额外变化的 Stage 必须填写对应 `scope_change_ids`。Runtime 原子创建计划、批准设计和激活 Stage 1。
-8. `cictl-insp stage review` 检查 Dev 影响声明、Diff、当前验收和全部历史 baseline，并从结构化审核结果自动生成 Inspection Result、四级 findings、Historical Regression、Current Stage Acceptance 和 Final Decision；`--summary` 只写最多 180 字的正式决策摘要，省略时 Runtime 自动生成。满足 Gate 时必须结束审核并建立 PASSED baseline；整案失效时才使用 `cictl-insp stage redesign`。
-9. 用 `cictl-insp issue pending` 汇总最终实现。实现细节错则追加 `VERIFICATION_FAILED` 并回 `IN_PROGRESS`；方向被新证据推翻则转 `REDESIGN_REQUIRED`，转入后不能只等 Developer 重交方案：必须先重新检查 Root Cause 是否判断错误、Architecture Direction 是否需要改变、Boundaries 是否遗漏、Acceptance 是否错误，用 `cictl-insp design request` 提交修订后的架构级指导，再由 Developer 提交新方案（Runtime 在修订前会拒绝 Developer 的方案重交）。连续两次失败必须重新判断设计是否对齐并给出必改点和验证标准。
-10. Human 是异常兜底。准备 `cictl-insp human ask` 前必须确认继续读代码、补测试、查数据/日志、追加讨论或自主技术判断都不能安全解决，并且 Human 掌握关键业务事实，或选错方案会造成不可逆重大数据破坏。
-11. 升级时整理原因、已验证/未知事实、选项与影响、推荐和 Human 唯一要回答的问题，不倾倒长日志、完整代码或 Agent 对话；每个选项必须同时给出 `label` 与 `impact`，只给标题会被 Runtime 拒绝。升级后立刻运行 `cictl-insp human brief <issue_key>` 并把输出贴进对话，让未跟进的 Human 一次读完就能决定。`HUMAN_CONFIRMATION_REQUIRED` 时停止自动工作；Inspector 不得代 Human resolve，决定只在 WebApp 提交。
-12. 只有当前 implementation attempt 已有 `VERIFICATION_PASSED` 才能转 `CONFIRMED`。不修改业务代码；Inspector 定义必须解决和不可破坏的边界，Developer 决定具体实现。默认聊天仅输出简短任务摘要。
+1. 用 context 获取 Working Set。scan 时主审核者串联跨模块数据流，先做覆盖面回查和补充扫描，再按根因、边界和风险链路去重评级；向 CONTINUOUS 报告单个问题不要求全项目重扫。Issue 保持简短，完整方案留正式方案活动。
+2. 核实原始需求、事实和原因，制定处理方式、边界、验收标准并判断可否开工。创建 Issue 给出抽象 difficulty，按真实必要范围评估，禁止关键词升档或默认最高级；判级细则见 report-schema.yaml。
+3. 用 design dispatch 发布自己的可执行方案并派工；content、boundaries、acceptance、execution_mode 足够表达简单任务。已有授权内技术判断自行决定；复杂度和是否分 Stage 独立，不能为展示进度机械拆阶段。
+4. 只有需要 Human 选择时先 design request 保存完整草稿，用 preview/confirm 记录真实问答，dispatch 引用草稿和确认。有效确认不重复询问，不要求到 Web 再确认。普通确认不授予 Human 身份。
+5. 普通疑问直接澄清并恢复；方向错误自己修订方案并重新派工。新授权取代旧授权，旧 Stage Plan 保留历史，不要求 Developer 再提同义方案。
+6. 阶段审核复用 stage review 的自动正文、Gate、Decision 和 baseline；最终用 impl review 一次记录验收及状态。必须核对原始需求与实际行为，不能只看是否照自己的方案写。
+7. findings 只有具体错误、风险或明确违约才阻断。SHOULD/NIT 不阻断；满足验收后及时放行。新增机制和防御措施按最小充分原则说明依据，不把过度设计转移到 Inspector。
+8. 复用仍适用的证据，核对代码、依赖、环境与覆盖；失效再补验。派工/验收可携带 progress/progress_reason，无新事实不单独重估；CONFIRMED 自动100，不按阶段数推算。
+9. 执行配置继续由现有 difficulty + Routing 推荐与 issue assign 管理；推荐是候选，assignment 才是已选执行者。配置变化使 assignmentStatus=STALE 时，继续实现前重新选择或清除，不能把推荐当作已分配。Issue 只保存抽象难度，不写具体模型能力判断。不新增调度平台。必要人工升级沿用 human ask/brief，只有真实 Human 可 resolve；普通技术选择不要升级。
 
-### Issue 完成进度
-
-Inspector 创建 Issue 后，以及审核方案、实现、验证或返工后，根据已确认的事实更新完成进度：`cictl-insp issue progress <issue> <0–100整数> --reason "已完成什么；还缺什么"`。进度独立于流程状态，不按活动数量或 Developer 自报推算；允许因新证据或返工下调。0 表示尚未开展，1–99 表示部分完成，只有状态已为 CONFIRMED 且验证通过才评估为 100。历史未评估 Issue 显示“待评估”，首次接手时补评。不要为了保持百分比增长而省略未完成工作。WebApp 的“待我处理”顶部展示最多 6 个未关闭 Issue，按进度降序、最近活动降序排序，待评估排最后。
-
-手动触发：已激活的 Inspector 会话收到 `issue progress <issue_key>`（也接受 `$poethan-code-inspector issue progress <issue_key>` 或 `/poethan-code-inspector issue progress <issue_key>`）时，读取该 Issue 的 context，并按需补读 Stage、审核与验证证据，自主评估 0–100 的进度，再执行 `cictl-insp issue progress <issue_key> <百分比> --reason "已完成什么；还缺什么"`，最后简短回复百分比与依据。用户无需提供百分比；这是重新评估请求，不是只展示旧值。省略 Issue Key 时仅使用当前唯一绑定的 Issue；没有唯一目标则询问 Issue Key，不批量猜测。Developer 会话不得切换身份执行，未激活时先提示开启 `start insp`；FastMode 仍限已绑定 Scope，不改变现有流程状态、不启动 Watch。
+用户明确要求 issue progress 时，读取当前事实重新评估并用既有命令保存；用户无需提供百分比。FastMode 保持独立用途，不伪造实现、不自动关闭、不启动 Watch。

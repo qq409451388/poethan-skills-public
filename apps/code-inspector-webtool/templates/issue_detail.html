@@ -156,6 +156,16 @@
     </details>
 
     <div data-live-region="implementation">
+    {% if latest_inspector_plan %}
+    {% set plan = latest_inspector_plan.metadata.plan %}
+    <section class="panel implementation-panel">
+      <div class="section-head"><div><h2>Inspector 方案与派工</h2><p class="section-sub">方案记录 #{{ latest_inspector_plan.id }}</p></div>
+        <span class="badge">{% if current_authorization %}已派工{% elif latest_inspector_plan.activity_type == 'DESIGN_REQUESTED' %}等待方案确认与派工{% else %}历史方案{% endif %}</span></div>
+      <div class="markdown-body">{{ plan.content|markdown }}</div>
+      <dl><dt>修改边界</dt><dd>{{ plan.boundaries|markdown }}</dd><dt>验收标准</dt><dd><ol>{% for criterion in plan.acceptance %}<li>{{ criterion }}</li>{% endfor %}</ol></dd></dl>
+      <p class="muted">{% if plan.execution_mode == 'staged' %}按独立阶段实施与验收{% else %}直接实施，无阶段计划{% endif %}{% if current_authorization %} · 当前派工 #{{ current_authorization.activity_id }}{% endif %}</p>
+    </section>
+    {% endif %}
     {% if latest_implementation %}
     <section class="panel implementation-panel">
       <div class="section-head"><div><h2>本次实现</h2><p class="section-sub">当前第 {{ latest_implementation.attempt_no }} 轮 · {{ latest_implementation.created_at|localtime }}</p></div><span class="badge badge-status-IMPLEMENTED_PENDING_REVIEW">Developer 提交</span></div>
@@ -220,9 +230,9 @@
       <form method="post" action="{{ url_for('issue_human_action', issue_key=issue.issue_key) }}">
         <div class="field action-comment"><label>处理说明（可选）</label><textarea name="content" placeholder="记录验证范围、驳回原因或阻塞事项"></textarea></div>
         <div class="action-list">
-          <button class="action-btn action-primary" name="action" value="confirm"><span class="action-icon">✓</span><span><strong>验证通过并确认问题</strong><small>先追加 VERIFICATION_PASSED，再转 CONFIRMED</small></span><span>›</span></button>
+          <button class="action-btn action-primary" name="action" value="confirm"><span class="action-icon">✓</span><span><strong>人工确认关闭</strong><small>按人工决定关闭，保留状态与审计记录</small></span><span>›</span></button>
           <button class="action-btn action-secondary" name="action" value="retry"><span class="action-icon">↻</span><span><strong>实现有误，按原方案修正</strong><small>设计方向成立，返回 IN_PROGRESS</small></span><span>›</span></button>
-          <button class="action-btn action-danger" name="action" value="redesign"><span class="action-icon">!</span><span><strong>设计方向错误，要求重做方案</strong><small>转 REDESIGN_REQUIRED，必须重新过设计审核</small></span><span>›</span></button>
+          <button class="action-btn action-danger" name="action" value="redesign"><span class="action-icon">!</span><span><strong>设计方向错误，要求重做方案</strong><small>由 Inspector 修订方案并重新派工</small></span><span>›</span></button>
           <button class="action-btn action-secondary" name="action" value="blocked"><span class="action-icon">×</span><span><strong>标记为受阻</strong><small>等待外部信息、依赖或人工协调</small></span><span>›</span></button>
         </div>
         <details class="secondary-actions"><summary>次要操作</summary><div><button class="btn btn-small" name="action" value="hold">暂时搁置</button><button class="btn btn-small btn-danger-outline" name="action" value="cancel">取消问题</button></div></details>

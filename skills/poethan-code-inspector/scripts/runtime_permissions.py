@@ -63,6 +63,8 @@ ALLOWED_ACTIVITY_BY_AGENT = {
 
 
 ACTION_ROLES = {
+    "design-dispatch": {"inspector"},
+    "implementation-review": {"inspector", "human"},
     "discussion-append": {"inspector", "developer", "human"},
     "discussion-topic-create": {"inspector", "developer", "human"},
     "discussion-topic-list": {"inspector", "developer", "human"},
@@ -99,6 +101,7 @@ def runtime_issue_actions(state: dict[str, Any]) -> tuple[list[str], list[str]]:
     stage_governance_version = int(state.get("current_stage_governance_version") or 1)
     has_active_plan = bool(state.get("has_active_plan"))
     active_plan_complete = bool(state.get("active_plan_complete"))
+    authorized = bool(state.get('has_dispatch'))
 
     actions: list[str] = []
     if role in ACTION_ROLES["discussion-append"]:
@@ -106,29 +109,36 @@ def runtime_issue_actions(state: dict[str, Any]) -> tuple[list[str], list[str]]:
     if role in ACTION_ROLES["activity-append"]:
         actions.append("activity-append")
 
-    if role in ACTION_ROLES["design-request"] and status in {"PROPOSED", "IN_PROGRESS", "REDESIGN_REQUIRED"}:
+    if role in ACTION_ROLES["design-request"] and status in {"PROPOSED", "DESIGN_REQUIRED", "IN_PROGRESS", "REDESIGN_REQUIRED", "INSPECTOR_CONFIRMATION_REQUIRED"}:
         actions.append("design-request")
+    if role in ACTION_ROLES['design-dispatch'] and status in {'PROPOSED','DESIGN_REQUIRED','DESIGN_PENDING_REVIEW','IN_PROGRESS','REDESIGN_REQUIRED','INSPECTOR_CONFIRMATION_REQUIRED','ON_HOLD','BLOCKED'}:
+        actions.append('design-dispatch')
+    if role in ACTION_ROLES['implementation-review'] and status == 'IMPLEMENTED_PENDING_REVIEW' and authorized:
+        actions.append('implementation-review')
     if (
         role in ACTION_ROLES["design-submit"]
         and status in {"DESIGN_REQUIRED", "REDESIGN_REQUIRED"}
         and not (status == "REDESIGN_REQUIRED" and state.get("redesign_guidance_required"))
+        and not state.get('inspector_plan')
     ):
         actions.append("design-submit")
+    if status == "DESIGN_REQUIRED" and state.get("inspector_plan") and role == "inspector":
+        actions.append("design-choice-record")
     if status == "DESIGN_PENDING_REVIEW":
         if role in ACTION_ROLES["design-choice-record"]:
             actions.append("design-choice-record")
         if role in ACTION_ROLES["design-review"]:
             actions.append("design-review")
 
-    if status == "IN_PROGRESS" and stage_status == "IN_PROGRESS":
+    if status == "IN_PROGRESS" and authorized and stage_status == "IN_PROGRESS":
         if role in ACTION_ROLES["stage-prepare"]:
             actions.append("stage-prepare")
-        if role in ACTION_ROLES["stage-submit"] and (stage_prepared or stage_governance_version < 2):
+        if role in ACTION_ROLES["stage-submit"] and (stage_prepared or stage_governance_version < 2 or state.get('inspector_dispatch')):
             actions.append("stage-submit")
-    if role in ACTION_ROLES["stage-review"] and status == "IN_PROGRESS" and stage_status == "PENDING_REVIEW":
+    if role in ACTION_ROLES["stage-review"] and status == "IN_PROGRESS" and authorized and stage_status == "PENDING_REVIEW":
         actions.append("stage-review")
 
-    implementation_ready = status in {"PROPOSED", "IN_PROGRESS"} and (
+    implementation_ready = status == "IN_PROGRESS" and authorized and (
         not has_active_plan or active_plan_complete
     )
     if role in ACTION_ROLES["implementation-submit"] and implementation_ready:

@@ -1,4 +1,4 @@
-version: 5.0.0
+version: 6.0.0
 
 public_entrypoint: cictl-dev（Developer）/ cictl-insp（Inspector）
 format: <角色命令> <操作域> <动作> [位置参数] [动态参数]
@@ -14,7 +14,7 @@ internal_compat_layer:
 domain_action_map:
   task: {list: task-list, show: task-get, ensure: task-resolve, edit: task-update, status: task-update-status}
   issue: {list: issue-list, pending: issue-list-pending-review, show: issue-get, context: issue-context-get, create: issue-create, create-many: issue-create-batch, edit: issue-update-body, rate: issue-update-assessment, rate-many: issue-update-assessment-batch, status: issue-update-status, status-many: issue-update-status-batch, progress: issue-set-progress, difficulty: issue-set-difficulty, assign: issue-set-assignment}
-  design: {request: design-request, submit: design-submit, preview: design-preview, confirm: design-choice-record, approve: "design-review(decision=approved)", reject: "design-review(decision=rejected)"}
+  design: {dispatch: design-dispatch, request: design-request, submit: design-submit, preview: design-preview, confirm: design-choice-record, approve: "design-review(decision=approved)", reject: "design-review(decision=rejected)"}
   stage: {list: stage-list, show: stage-get, history: stage-history-get, prepare: stage-prepare, submit: stage-submit, review-template: 只读模板生成, review: "stage-review（decision/content/summary/plan_no 自动推导，验收项使用 AC-n 稳定 ID）", redesign: "stage-review(decision=redesign)"}
   discussion: {list: discussion-list, show: discussion-get, add: discussion-append, edit: discussion-amend}
   activity: {list: activity-list, recent: activity-list-recent, show: activity-get, revisions: activity-revision-list, add: activity-append, edit: activity-amend}
@@ -22,7 +22,7 @@ domain_action_map:
   candidate: {list: candidate-list, submit: candidate-submit, accept: "candidate-update-status(ACCEPTED)", reject: "candidate-update-status(REJECTED)"}
   human: {ask: human-escalate, brief: human-brief, resolve: human-confirmation-resolve}
   fast: {pass: "fast-review-record(pass)", fail: "fast-review-record(fail)"}
-  impl: {submit: implementation-submit}
+  impl: {submit: implementation-submit, review: implementation-review}
   watch: {issue: "watch-probe(issue-status)", stage: "watch-probe(stage-status)", activity: "watch-probe(activity)", task: "watch-probe(task-status)"}
 
 commands:
@@ -116,7 +116,7 @@ commands:
     roles: [inspector, developer, human]
     required: [--issue-key]
     purpose: 一次返回当前角色处理 Issue 所需的有界 Working Set。
-    returns: [projection_revision, issue, current_stage, effective_decisions, latest_activities, latest_discussions, protected_constraints, pending_action, permitted_actions, exception_actions, resources, lazy_load]
+    returns: [projection_revision, issue, authorization, current_implementation, current_stage, effective_decisions, latest_activities, latest_discussions, protected_constraints, pending_action, permitted_actions, exception_actions, resources, lazy_load]
     issue_governance_fields: [task_key, project_name, review_level, review_scope, baseline_ref, evidence, local_terms]
     bounded_issue_fields:
       evidence: 最多 12 项；单项过长时保留代码定位字段及不超过 400 字的摘要，并返回 evidence_count/evidence_truncated。
@@ -155,32 +155,35 @@ commands:
     required: [--updates]
     json_arguments: [--updates]
     item_required: [issue_key, status]
-    item_optional: [content]
+    item_optional: [content, authorization_id]
     note: 整批在同一事务中更新；任一项失败则全部回滚；同一批次不得重复 issue_key。
   implementation-submit:
     roles: [developer, human]
     purpose: 原子追加 IMPLEMENTATION_SUBMITTED 证据并转为 IMPLEMENTED_PENDING_REVIEW。
     required: [--issue-key, --content]
-    optional: [--status-content, --code-reference, --metadata]
+    optional: [--status-content, --code-reference, --metadata, --authorization-id]
     json_arguments: [--code-reference, --metadata]
-    note: 实现证据与状态变更使用同一新 attempt 和同一事务；设计阶段及 REDESIGN_REQUIRED 禁止提交；存在 active Stage Plan 时必须全部 APPROVED；任一步失败则全部回滚。
+    note: 实现证据与状态变更使用同一新 attempt 和同一事务；须有当前有效派工；新派工必须显式引用authorization-id，设计阶段及REDESIGN_REQUIRED禁止提交；存在active Stage Plan时必须全部APPROVED；任一步失败则全部回滚。
+  design-dispatch:
+    roles: [inspector]
+    public_format: cictl-insp design dispatch ISSUE @plan.json
+    required: [content, boundaries, acceptance, execution_mode]
+    optional: [stages, scope_changes, human_summary, progress, progress_reason]
+    confirmed_draft: 使用draft_id与confirmation_ids引用当前已确认Inspector草稿，不覆盖正文。
+    effects: 原子保存方案授权、有效结论、必要Stage并进入IN_PROGRESS；不伪造dev活动。
+  implementation-review:
+    roles: [inspector, human]
+    public_format: cictl-insp impl review ISSUE @review.json
+    required: [submission_id, submission_revision, authorization_id, content, requirements, checks]
+    optional: [decision, findings, evidence_refs, snapshot, human_summary, progress, progress_reason]
+    decisions: [pass, fix, replan]
+    effects: 原子生成验证与有效结论，pass关闭，fix修实现，replan交Inspector重新规划。
+    evidence: 复用引用须校验活动修订及适用性；原始需求未满足时不得通过。
   design-request:
     roles: [inspector, human]
-    purpose: 原子追加 DESIGN_REQUESTED 并将问题转为 DESIGN_REQUIRED。
-    required: [--issue-key, --content]
-    allowed_from: [PROPOSED, IN_PROGRESS, REDESIGN_REQUIRED]
-    content_required: true
-    content_rule: >-
-      正文为自由文本，按 workflow.yaml design_depth 分级组织：
-      NORMAL 至少覆盖 root_cause、boundaries、design_questions、acceptance；
-      COMPLEX 还必须包含明确到架构层的 architecture_direction（归属层级、source of truth、
-      push/pull、生命周期归属、允许/禁止的路径、必须幂等的路径、明确不应继续扩展的旧方案），
-      禁止只写“注意兼容”“考虑并发”“避免破坏现有逻辑”“请给出合理方案”等无实际指导的话；
-      不指定具体类、方法和代码结构。SIMPLE 问题不发起 design-request。
-    redesign_rule: >-
-      从 REDESIGN_REQUIRED 调用时是修订版架构指导：Inspector 必须重新检查 Root Cause、
-      Architecture Direction、Boundaries、Acceptance 哪些需要修正并写明修订结论；
-      该调用会解除对 Developer design-submit 的重设计门槛。
+    purpose: 保存Inspector方案草稿以便确认；旧自由文本入口保留历史协作。
+    public_format: cictl-insp design request ISSUE @plan.json
+    effect: DESIGN_REQUESTED与DESIGN_REQUIRED，旧授权及旧Stage Plan失效。
   design-submit:
     roles: [developer, human]
     purpose: 原子追加 DESIGN_SUBMITTED 并将问题转为 DESIGN_PENDING_REVIEW。
@@ -202,7 +205,7 @@ commands:
     note: Inspector 审批前必须把该短对比展示在当前 CLI；不返回完整设计正文。
   design-review:
     roles: [inspector, human]
-    purpose: 绑定当前设计提交并原子记录审核结论；staged 批准同时创建并激活 Stage Plan。
+    purpose: 兼容旧 Developer 设计提交的审批；Inspector 新方案使用 design-dispatch。
     required: [--issue-key, --decision, --design-activity-id, --content]
     quality_checks: >-
       审批时 Inspector 应检查：是否遵守 Architecture Direction、是否解决 Root Cause 而非局部打补丁、
@@ -230,7 +233,7 @@ commands:
     json_arguments: [--impacts, --change-ids]
     impact_values: [new_persistence, data_migration, external_behavior, new_dependency, scope_expansion, multiple_solutions]
     constraints:
-      - 只能绑定当前 Issue 最新的 DESIGN_SUBMITTED，且状态必须为 DESIGN_PENDING_REVIEW
+      - 绑定最新 Inspector 草稿（DESIGN_REQUIRED）或旧 DESIGN_SUBMITTED（DESIGN_PENDING_REVIEW），修订后须重新确认
       - change-ids 必须来自当前设计的 scope_changes，impacts 必须与这些变化完全一致
       - question 和 summary 不超过 300 字，必须使用用户能直接理解的日常中文
       - 不能要求用户打开 Web、阅读 Issue 或理解未解释的技术术语
@@ -270,7 +273,7 @@ commands:
     purpose: 原子提交当前 Stage 的实现证据并转为 PENDING_REVIEW。
     required: [--issue-key, --stage-no, --content, --commit-sha]
     public_format: cictl-dev stage submit <issue_key> <stage_no> @evidence.json --content <content> --commit-sha <sha>
-    governance_v2_required: [test_evidence, 已执行 stage prepare]
+    governance_v2_required: [test_evidence, 有效派工授权；Inspector新派工不强制额外prepare]
     automatic: [从 commit_sha 关联 code_reference 与 diff_summary, 关联上一轮 BLOCKER/MUST finding id]
     dynamic_optional: [code_reference, resolved_findings]
     allowed_issue_status: IN_PROGRESS
@@ -353,7 +356,7 @@ commands:
       pass: [追加 VERIFICATION_PASSED, 写入 VERIFICATION APPROVED decision]
       fail: [追加 VERIFICATION_FAILED, 写入 VERIFICATION REJECTED decision]
       evidence_present: [先追加 VERIFICATION_EVIDENCE_ADDED]
-    metadata: 命令内部固定写入 workflow_mode=FASTMODE，仅用于审计展示，不参与权限或控制流判断。
+    metadata: 命令内部固定写入 workflow_mode=FASTMODE；不授予推进权限，快速检查结果不能代替正式验收关闭。
     forbidden_effects: [修改 Issue 状态, 自动 CONFIRMED, 自动 CANCELLED]
   activity-append:
     roles: [inspector, developer, human]
@@ -362,6 +365,8 @@ commands:
     json_arguments: [--code-reference, --metadata]
     forbidden_atomic_types: [DESIGN_REQUESTED, DESIGN_SUBMITTED, DESIGN_APPROVED, DESIGN_REJECTED, STAGE_PLAN_CREATED, STAGE_SCOPE_DECLARED, STAGE_SUBMITTED, STAGE_APPROVED, STAGE_REJECTED, STAGE_PLAN_SUPERSEDED, HUMAN_CONFIRMATION_REQUESTED, HUMAN_CONFIRMATION_PROVIDED]
     forbidden_discussion_types: [COMMENT_ADDED, DESIGN_GUIDANCE]
+    forbidden_submission_types: [IMPLEMENTATION_SUBMITTED, REDESIGN_SUBMITTED, STATUS_CHANGED]
+    dispatch_review_rule: Inspector 新派工的正式验收必须用 implementation-review；旧流程正式活动仍绑定当前实现版本与授权。
     note: 讨论一律使用 discussion-append；审核、验证等结论会同步建立 issue_decision，核心工作流活动必须由对应原子命令生成。正式结论类型可用 --summary 提供短摘要；省略时 Runtime 从 --content 生成，完整内容仍保留在 Activity。metadata 只记录业务事实，不能改变权限、模式或控制流；FastMode 结论必须使用 fast-review-record。普通 VERIFICATION_FAILED 按标准 Workflow 记录验证失败。
     content_format:
       short: 单行纯文本，不添加 Markdown 装饰。
@@ -419,7 +424,7 @@ commands:
     roles: [inspector, developer, human]
     required: [--issue-key, --content]
     optional: [--topic, --topic-id, --human-summary]
-    ai_required: [--topic-id, --human-summary]
+    ai_required: [长技术正文需要--human-summary；话题可自动关联]
     defaults: {topic: GENERAL}
     topic_values: [GENERAL, DESIGN, IMPLEMENTATION, VERIFICATION]
     purpose: 追加尚未定论的协作消息，不写入处理历史。
@@ -505,9 +510,9 @@ activity_types:
   human_confirmation: [HUMAN_CONFIRMATION_REQUESTED, HUMAN_CONFIRMATION_PROVIDED]
   legacy_compatible: [REVIEW_APPROVED, REVIEW_REJECTED, REDESIGN_SUBMITTED]
 
-# Human 摘要与 Issue 内具体话题是独立字段，不复用技术正文。
+# 摘要与话题仍独立存储；短正文可直接作为展示摘要。
 collaboration_records:
-  human_summary: AI 内容写入与修订必须主动提供 --human-summary；最多 600 字、12 行，支持 Markdown，面向初中级开发说明结论、影响、验证和下一步。已有 --summary 可提供短摘要。旧数据缺失时兼容旧展示。
+  human_summary: 短正文可原样作为摘要；长正文需要独立摘要，最多600字、12行。正式动作已有结论不重复填写decision。
   topic_create: discussion topic-create <issue> --category <GENERAL|DESIGN|IMPLEMENTATION|BLOCKER|REVIEW|VERIFICATION|SCOPE> --title <具体事项> [--plan-no N --stage-no N]
   topic_list: discussion topics <issue>
   relation: issue_discussion_topic.issue_id 关联 Issue；issue_discussion.topic_id 与正式提交 issue_activity.topic_id 关联具体话题，禁止跨 Issue。

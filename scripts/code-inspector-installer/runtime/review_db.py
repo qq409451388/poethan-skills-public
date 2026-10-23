@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from issue_projection import current_projection
+    from issue_projection import current_projection, dispatch_authorization
     from runtime_permissions import (
         ALLOWED_STATUS_BY_AGENT,
         ALLOWED_TRANSITIONS,
@@ -24,7 +24,7 @@ try:
     )
 except ModuleNotFoundError:  # 仓库内直接执行时，模块尚未复制到安装目录。
     sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "skills" / "poethan-code-inspector" / "scripts"))
-    from issue_projection import current_projection
+    from issue_projection import current_projection, dispatch_authorization
     from runtime_permissions import (
         ALLOWED_STATUS_BY_AGENT,
         ALLOWED_TRANSITIONS,
@@ -306,7 +306,8 @@ def actor_id(args: argparse.Namespace) -> str:
 def require_issue_action(
     action: str, role: str, issue_status: str, *, stage: sqlite3.Row | None = None,
     has_active_plan: bool = False, active_plan_complete: bool = False,
-    redesign_guidance_required: bool = False,
+    redesign_guidance_required: bool = False, authorization: dict[str, Any] | None = None,
+    inspector_plan: bool = False,
 ) -> None:
     state = {
         "role": role,
@@ -317,6 +318,9 @@ def require_issue_action(
         "has_active_plan": has_active_plan,
         "active_plan_complete": active_plan_complete,
         "redesign_guidance_required": redesign_guidance_required,
+        'has_dispatch': authorization is not None,
+        'inspector_dispatch': bool(authorization and authorization.get('plan_owner') == 'inspector'),
+        'inspector_plan': inspector_plan,
     }
     if not issue_action_permitted(action, state):
         if (
@@ -1394,7 +1398,7 @@ def issue_update_body(args: argparse.Namespace) -> None:
 
 def apply_status_update(
     conn: sqlite3.Connection, args: argparse.Namespace, issue_key: str, status: str,
-    content: str | None,
+    content: str | None, *, submitting: bool = False,
 ) -> dict[str, Any]:
     if status not in ALLOWED_STATUS_BY_AGENT[args.agent]:
         raise PermissionError(f"agent {args.agent} 无权设置状态 {status}")
@@ -1407,6 +1411,23 @@ def apply_status_update(
     if not row:
         raise KeyError(f"问题不存在: {issue_key}")
     human_override = args.agent == "human"
+    authorization = dispatch_authorization(conn, row['id'])
+    if not human_override:
+        if status in {'IN_PROGRESS','IMPLEMENTED_PENDING_REVIEW','CONFIRMED'}:
+            authorization = require_dispatch(conn, row, args)
+        if status == 'IMPLEMENTED_PENDING_REVIEW' and not submitting:
+            raise RuntimeError('请使用 impl submit 正式提交实现，不能只修改待审核状态')
+        if status == 'CONFIRMED':
+            submission = current_implementation(conn, row)
+            verification = conn.execute("""SELECT metadata_json FROM issue_activity
+                WHERE issue_id=? AND attempt_no=? AND activity_type='VERIFICATION_PASSED'
+                ORDER BY id DESC LIMIT 1""", (row['id'], row['current_attempt_no'])).fetchone()
+            verified = loads(verification['metadata_json'], {}) if verification else {}
+            if (verified.get('submission_id') != submission['id'] or
+                    verified.get('submission_revision') != submission['amendment_count'] or
+                    verified.get('authorization_id') != authorization['activity_id'] or
+                    verified.get('workflow_mode') == 'FASTMODE'):
+                raise RuntimeError('必须有绑定当前实现版本的 VERIFICATION_PASSED；旧验证或 FastMode 结果不能代替本轮验收')
     if status not in status_targets(row["status"], args.agent):
         raise RuntimeError(f"不允许状态流转: {row['status']} -> {status} ({args.agent})")
     if (
@@ -1425,15 +1446,22 @@ def apply_status_update(
             ).fetchone()
             if not failed:
                 raise RuntimeError("按原设计退回 IN_PROGRESS 前必须为当前 attempt 追加 VERIFICATION_FAILED")
-    if not human_override and row["status"] == "INSPECTOR_CONFIRMATION_REQUIRED" and args.agent in {"inspector", "human"}:
-        confirmation = conn.execute(
-            """SELECT 1 FROM issue_activity
-               WHERE issue_id = ? AND activity_type = 'INSPECTOR_CONFIRMATION_PROVIDED'
-               LIMIT 1""",
-            (row["id"],),
-        ).fetchone()
-        if not confirmation:
-            raise RuntimeError("审核端结束待审核确认前必须追加 INSPECTOR_CONFIRMATION_PROVIDED 活动")
+    if not human_override and row['status'] == 'INSPECTOR_CONFIRMATION_REQUIRED' and status == 'IN_PROGRESS':
+        if not (content or '').strip():
+            raise ValueError('恢复执行须说明本次疑问的澄清结论；方向变化应修订方案后重新派工')
+        question = conn.execute("""SELECT id FROM issue_activity WHERE issue_id=?
+            AND activity_type='STATUS_CHANGED' AND result_status='INSPECTOR_CONFIRMATION_REQUIRED'
+            ORDER BY id DESC LIMIT 1""", (row['id'],)).fetchone()
+        cursor = insert_activity(conn, args, """INSERT INTO issue_activity(
+            issue_id,attempt_no,activity_type,operator_type,operator_id,content,result_status,metadata_json)
+            VALUES(?,?,'INSPECTOR_CONFIRMATION_PROVIDED','INSPECTOR_AGENT',?,?,'IN_PROGRESS',?)""",
+            (row['id'],row['current_attempt_no'],actor_id(args),content,
+             dumps({'question_activity_id': question['id'] if question else None,
+                    'authorization_id': authorization['activity_id']})))
+        record_issue_decision(conn,args,row,'SCOPE_CONFIRMATION','PROVIDED',
+                              decision_summary(None, supplied_human_summary(args) or content, '澄清结论'),
+                              source_activity_id=cursor.lastrowid,
+                              scope_key=f"question:{question['id'] if question else cursor.lastrowid}")
     # Agent 确认问题仍需验证证据；Human 可直接人工指定确认状态。
     if status == "CONFIRMED" and not human_override:
         verified = conn.execute(
@@ -1499,6 +1527,125 @@ def issue_update_status(args: argparse.Namespace) -> None:
         result = apply_status_update(conn, args, args.issue_key, args.status, args.content)
     print_json(result)
 
+
+def require_dispatch(conn: sqlite3.Connection, issue: sqlite3.Row, args: argparse.Namespace) -> dict[str, Any]:
+    """所有推进入口共享检查，不能通过改状态或换一个提交命令绕过派工。
+
+    新派工必须显式携带 context 给出的活动 ID，避免旧上下文误用最新方案。
+    旧审批活动本身也是授权，兼容其原命令，但不存在审批时绝不自动放行。
+    """
+    if not conn.in_transaction:
+        conn.execute('BEGIN')
+    current = conn.execute('SELECT status,current_attempt_no FROM review_issue WHERE id=?', (issue['id'],)).fetchone()
+    if current is None or current['status'] != issue['status'] or current['current_attempt_no'] != issue['current_attempt_no']:
+        raise RuntimeError('Issue状态或实现版本已变化，请重新读取context')
+    authorization = dispatch_authorization(conn, issue['id'])
+    if authorization is None:
+        raise RuntimeError('没有有效的 Inspector 派工授权；请先发布可执行方案')
+    expected = getattr(args, 'authorization_id', None)
+    if expected is not None and expected != authorization['activity_id']:
+        raise RuntimeError('派工授权已失效；请读取当前方案，不能继续提交旧方案的实现')
+    if authorization.get('plan_owner') == 'inspector' and expected is None and args.agent != 'human':
+        raise ValueError('必须提供 context 中的 --authorization-id，不能隐式采用最新方案')
+    return authorization
+
+
+def current_implementation(conn: sqlite3.Connection, issue: sqlite3.Row) -> sqlite3.Row:
+    submission = conn.execute(
+        """SELECT * FROM issue_activity WHERE issue_id=? AND attempt_no=?
+           AND activity_type='IMPLEMENTATION_SUBMITTED' ORDER BY id DESC LIMIT 1""",
+        (issue['id'], issue['current_attempt_no']),
+    ).fetchone()
+    if submission is None:
+        raise RuntimeError('当前 attempt 没有正式实现提交；不能用状态或快速审核代替实现交付')
+    return submission
+
+
+def validate_plan(plan: dict[str, Any]) -> dict[str, Any]:
+    for key in ('content', 'boundaries'):
+        if not isinstance(plan.get(key), str) or not plan[key].strip():
+            raise ValueError(f'方案必须说明 {key}；简单问题可以使用简短日常语言')
+    if not isinstance(plan.get('acceptance'), list) or not plan['acceptance'] or any(
+            not isinstance(item, str) or not item.strip() for item in plan['acceptance']):
+        raise ValueError('方案必须包含非空 acceptance 验收标准')
+    if len(set(plan['acceptance'])) != len(plan['acceptance']):
+        raise ValueError('acceptance 不能重复')
+    if plan.get('execution_mode') not in ('direct', 'staged'):
+        raise ValueError('必须选择 direct 或 staged；方案复杂度不决定是否分阶段')
+    plan = {**plan, 'scope_changes': validate_scope_changes(dumps(plan.get('scope_changes', [])))}
+    if plan['execution_mode'] == 'direct' and 'stages' in plan:
+        raise ValueError('direct 不创建 Stage，也不得提供 stages')
+    if plan['execution_mode'] == 'staged':
+        prepare_stage_definitions(dumps(plan.get('stages')), {item['id'] for item in plan['scope_changes']})
+    return plan
+
+
+def update_action_progress(conn: sqlite3.Connection, args: argparse.Namespace, issue: sqlite3.Row,
+                           payload: dict[str, Any]) -> None:
+    if 'progress' not in payload:
+        return
+    progress, reason = payload['progress'], str(payload.get('progress_reason') or '').strip()
+    if type(progress) is not int or not 0 <= progress < 100 or not reason:
+        raise ValueError('动作中的 progress 须为 0–99 整数并提供 progress_reason；100 由确认关闭自动设置')
+    conn.execute("""UPDATE review_issue SET progress=?,progress_reason=?,
+                 progress_updated_at=CURRENT_TIMESTAMP,progress_updated_by=? WHERE id=?""",
+                 (progress, reason, actor_id(args), issue['id']))
+    audit(conn, actor_id(args), 'issue.set-progress', 'review_issue', issue['issue_key'], True,
+          dumps({'progress': progress, 'reason': reason}))
+
+
+def design_dispatch(args: argparse.Namespace) -> None:
+    """Inspector 自己发布方案并授权执行，不生成或冒充 Developer 的设计提交。"""
+    if args.agent != 'inspector':
+        raise PermissionError('只有 Inspector 可以发布派工授权')
+    payload = parse_json_argument(args.plan, 'plan', dict)
+    with connect() as conn:
+        conn.execute('BEGIN')
+        issue = issue_row(conn, args.issue_key)
+        require_issue_action('design-dispatch', args.agent, issue['status'])
+        draft_id = payload.get('draft_id')
+        if draft_id is not None:
+            if set(payload) - {'draft_id','confirmation_ids','progress','progress_reason'}:
+                raise ValueError('引用草稿时不能覆盖正文；内容变化须保存新草稿并重新确认')
+            draft = current_design_submission(conn, issue['id'], draft_id)
+            metadata = loads(draft['metadata_json'], {})
+            if draft['activity_type'] != 'DESIGN_REQUESTED' or metadata.get('plan_owner') != 'inspector':
+                raise ValueError('draft_id 必须引用当前 Inspector 方案草稿')
+            plan = validate_plan(metadata['plan'])
+            confirmation_ids = validate_design_confirmation(
+                conn, issue, draft, 'recorded' if plan['scope_changes'] else 'not-needed',
+                None, dumps(payload['confirmation_ids']) if payload.get('confirmation_ids') else None)
+        else:
+            plan = validate_plan(payload)
+            if plan['scope_changes'] or payload.get('confirmation_ids'):
+                raise ValueError('需人工确认的变化必须先保存 Inspector 草稿并绑定确认，不能先派工后确认')
+            confirmation_ids = []
+        supersede_active_stage_plan(conn, args, issue, '发布新的 Inspector 方案，旧计划仅保留历史')
+        plan_no = None
+        if plan['execution_mode'] == 'staged':
+            plan_no = create_stage_plan(conn, args, issue, prepare_stage_definitions(
+                dumps(plan['stages']), {item['id'] for item in plan['scope_changes']}))
+            conn.execute("UPDATE issue_stage SET status='IN_PROGRESS' WHERE issue_id=? AND plan_no=? AND stage_no=1",
+                         (issue['id'], plan_no))
+        metadata = {'plan_owner': 'inspector', 'plan': plan, 'plan_no': plan_no,
+                    'execution_mode': plan['execution_mode'], 'confirmation_ids': confirmation_ids,
+                    'draft_id': draft_id}
+        content = plan['content']
+        args.content = content
+        args.human_summary = getattr(args,'human_summary',None) or plan.get('human_summary')
+        cursor = insert_activity(conn, args, """INSERT INTO issue_activity(
+            issue_id,attempt_no,activity_type,operator_type,operator_id,content,result_status,metadata_json)
+            VALUES(?,?,'DESIGN_APPROVED','INSPECTOR_AGENT',?,?,'IN_PROGRESS',?)""",
+            (issue['id'], issue['current_attempt_no'], actor_id(args), content, dumps(metadata)))
+        record_issue_decision(conn, args, issue, 'DESIGN_REVIEW', 'APPROVED',
+                              decision_summary(None, supplied_human_summary(args) or content, '自动结论'),
+                              source_activity_id=cursor.lastrowid, metadata=metadata)
+        conn.execute("UPDATE review_issue SET status='IN_PROGRESS',updated_at=CURRENT_TIMESTAMP WHERE id=?", (issue['id'],))
+        update_action_progress(conn, args, issue, payload)
+        audit(conn, actor_id(args), 'design.dispatch', 'review_issue', args.issue_key, True)
+    print_json({'issue_key': args.issue_key, 'status': 'IN_PROGRESS', 'authorization_id': cursor.lastrowid,
+                'plan_no': plan_no, 'execution_mode': plan['execution_mode']})
+
 def issue_update_status_batch(args: argparse.Namespace) -> None:
     require_agent(args.agent)
     updates = json.loads(args.updates)
@@ -1509,7 +1656,7 @@ def issue_update_status_batch(args: argparse.Namespace) -> None:
     for update in updates:
         if not isinstance(update, dict) or not update.get("issue_key") or not update.get("status"):
             raise ValueError("updates 中每项必须是包含 issue_key 和 status 的对象")
-        unknown = sorted(set(update) - {"issue_key", "status", "content"})
+        unknown = sorted(set(update) - {"issue_key", "status", "content", "authorization_id"})
         if unknown:
             raise ValueError(f"未知状态更新字段: {', '.join(unknown)}")
         issue_key = str(update["issue_key"])
@@ -1519,11 +1666,12 @@ def issue_update_status_batch(args: argparse.Namespace) -> None:
         status = str(update["status"])
         if status not in ALLOWED_STATUS_BY_AGENT[args.agent]:
             raise PermissionError(f"agent {args.agent} 无权设置状态 {status}")
-        prepared.append((issue_key, status, update.get("content")))
+        prepared.append((issue_key, status, update.get("content"), update.get('authorization_id')))
     result = []
     with connect() as conn:
-        for issue_key, status, content in prepared:
-            result.append(apply_status_update(conn, args, issue_key, status, content))
+        for issue_key, status, content, authorization_id in prepared:
+            item_args = argparse.Namespace(**{**vars(args), 'authorization_id': authorization_id})
+            result.append(apply_status_update(conn, item_args, issue_key, status, content))
         audit(conn, actor_id(args), "issue.update-status-batch", "review_issue", None, True, f"count={len(result)}")
     print_json({"updated": result})
 
@@ -1577,10 +1725,16 @@ def design_request(args: argparse.Namespace) -> None:
     """记录 Inspector 的设计要求；从 REDESIGN_REQUIRED 调用时即修订版架构指导。"""
     require_agent(args.agent)
     with connect() as conn:
+        conn.execute('BEGIN')
         row = issue_row(conn, args.issue_key)
+        plan = validate_plan(parse_json_argument(args.plan, 'plan', dict)) if getattr(args,'plan',None) else None
+        if plan:
+            args.content = plan['content']
+            args.human_summary = getattr(args, 'human_summary', None) or plan.get('human_summary')
         result = apply_design_transition(
             conn, args, target_status="DESIGN_REQUIRED",
             activity_type="DESIGN_REQUESTED",
+            metadata={'plan_owner':'inspector','plan':plan,'scope_changes':plan['scope_changes']} if plan else None,
         )
         supersede_active_stage_plan(conn, args, row, args.content)
     print_json(result)
@@ -1597,6 +1751,11 @@ def design_submit(args: argparse.Namespace) -> None:
     scope_changes = validate_scope_changes(args.scope_changes or "[]")
     metadata = {**metadata, "human_summary": human_summary, "scope_changes": scope_changes}
     with connect() as conn:
+        conn.execute("BEGIN")
+        issue = issue_row(conn, args.issue_key)
+        draft = conn.execute("SELECT metadata_json FROM issue_activity WHERE issue_id=? AND activity_type IN ('DESIGN_REQUESTED','DESIGN_APPROVED') ORDER BY id DESC LIMIT 1", (issue['id'],)).fetchone()
+        if draft and loads(draft['metadata_json'], {}).get('plan_owner') == 'inspector':
+            raise RuntimeError('当前方案由 Inspector 制定；Developer 只汇报事实，不需要再提交同义方案')
         result = apply_design_transition(
             conn, args, target_status="DESIGN_PENDING_REVIEW", activity_type="DESIGN_SUBMITTED",
             code_reference=code_reference, metadata=metadata,
@@ -1611,11 +1770,12 @@ def current_design_submission(
            FROM issue_activity WHERE id = ?""",
         (design_activity_id,),
     ).fetchone()
-    if not submission or submission["issue_id"] != issue_id or submission["activity_type"] != "DESIGN_SUBMITTED":
+    if not submission or submission["issue_id"] != issue_id or submission["activity_type"] not in {'DESIGN_SUBMITTED','DESIGN_REQUESTED'}:
         raise RuntimeError("design-activity-id 必须属于当前 Issue 的 DESIGN_SUBMITTED")
     latest = conn.execute(
         """SELECT id FROM issue_activity
-           WHERE issue_id = ? AND activity_type = 'DESIGN_SUBMITTED'
+           WHERE issue_id = ? AND (activity_type = 'DESIGN_SUBMITTED' OR
+             (activity_type='DESIGN_REQUESTED' AND json_extract(metadata_json,'$.plan_owner')='inspector'))
            ORDER BY id DESC LIMIT 1""",
         (issue_id,),
     ).fetchone()
@@ -1720,6 +1880,7 @@ def design_choice_record(args: argparse.Namespace) -> None:
     if len(impacts) != len(set(impacts)):
         raise ValueError("impacts 不能重复")
     with connect() as conn:
+        conn.execute("BEGIN")
         issue = issue_row(conn, args.issue_key)
         submission = current_design_submission(conn, issue["id"], args.design_activity_id)
         changes = submission_scope_changes(submission)
@@ -1735,9 +1896,10 @@ def design_choice_record(args: argparse.Namespace) -> None:
         }
         if set(impacts) != declared_impacts:
             raise ValueError("impacts 必须与 change-ids 对应范围变化的影响类型完全一致")
-        if issue["status"] != "DESIGN_PENDING_REVIEW":
+        if issue["status"] not in {'DESIGN_PENDING_REVIEW','DESIGN_REQUIRED'}:
             raise RuntimeError("只能为 DESIGN_PENDING_REVIEW 的当前设计记录用户选择")
-        require_issue_action("design-choice-record", args.agent, issue["status"])
+        if args.agent != 'inspector':
+            raise PermissionError('agent 无权执行 design-choice-record：只有 Inspector 可登记 CLI 方案确认，操作人仍是 Inspector')
         decision_id = record_issue_decision(
             conn, args, issue, "CLI_DESIGN_CONFIRMATION", "CONFIRMED", summary,
             scope_key=f"design:{args.design_activity_id}:{','.join(sorted(change_ids))}",
@@ -1933,8 +2095,11 @@ def design_review(args: argparse.Namespace) -> None:
     target_status = "IN_PROGRESS" if args.decision == "approved" else "DESIGN_REQUIRED"
     activity_type = "DESIGN_APPROVED" if args.decision == "approved" else "DESIGN_REJECTED"
     with connect() as conn:
+        conn.execute('BEGIN')
         row = issue_row(conn, args.issue_key)
         submission = current_design_submission(conn, row["id"], args.design_activity_id)
+        if submission['activity_type'] != 'DESIGN_SUBMITTED':
+            raise RuntimeError('Inspector 自有方案使用 design dispatch 发布，不走 Developer 提案审批')
         plan_no = active_stage_plan_no(conn, row["id"])
         execution_mode = args.execution_mode
         if args.decision == "approved":
@@ -2324,7 +2489,7 @@ def issue_context_get(args: argparse.Namespace) -> None:
                 for item in stage_rows[-STAGE_HISTORY_LIMIT:]
             ]
         activities = conn.execute(
-            """SELECT id, activity_type, result_status,
+            """SELECT id, activity_type, result_status, amendment_count,
                       COALESCE(amended_at, created_at) AS time,
                       CASE WHEN length(trim(content)) > 160
                         THEN substr(trim(replace(replace(replace(content,char(13),' '),char(10),' '),char(9),' ')),1,157) || '...'
@@ -2354,6 +2519,16 @@ def issue_context_get(args: argparse.Namespace) -> None:
             human_request_view(conn, projection["issue_id"])
             if issue["status"] == "HUMAN_CONFIRMATION_REQUIRED" else None
         )
+        implementation = conn.execute(
+            """SELECT id AS activity_id, amendment_count AS submission_revision, metadata_json
+               FROM issue_activity WHERE issue_id=? AND attempt_no=?
+                 AND activity_type='IMPLEMENTATION_SUBMITTED' ORDER BY id DESC LIMIT 1""",
+            (projection['issue_id'], issue['current_attempt_no']),
+        ).fetchone()
+        implementation_ref = ({'activity_id': implementation['activity_id'],
+            'submission_revision': implementation['submission_revision'],
+            'authorization_id': loads(implementation['metadata_json'], {}).get('authorization_id')}
+            if implementation else None)
         conn.commit()
     # 审计在 read snapshot 释放后单独写入，避免并发提交后把旧快照升级为写事务时触发
     # SQLITE_BUSY_SNAPSHOT。
@@ -2382,10 +2557,19 @@ def issue_context_get(args: argparse.Namespace) -> None:
         "projection_revision": projection["projection_revision"],
         "issue": issue_json,
         **({"progress_guidance": {
-            "command": f'cictl-insp issue progress {args.issue_key} <0–100> --reason "已完成什么；还缺什么"',
+            "command": f'cictl-insp issue progress {args.issue_key} <0–100> --reason "评估依据"',
             "unassessed": issue_json.get("progress") is None,
-            "instruction": "首次接手未评估 Issue，或本轮方案审核、阶段验收、实现审核、返工、最终验证后，结束本轮前评估并写入进度；按已验证范围判断，允许下调；100 仅限 CONFIRMED。无新事实时不重复写入。",
+            "instruction": "可随派工或验收更新进度，只有单独重估时使用 issue progress；按已验证范围判断，100 在确认关闭时自动设置，不按阶段数换算。",
         }} if role == "inspector" else {}),
+        "authorization": ({"activity_id": projection['authorization']['activity_id'],
+            "execution_mode": projection['authorization'].get('execution_mode'),
+            "plan_no": projection['authorization'].get('plan_no'),
+            "plan_summary": truncate_context_text(projection['authorization']['content'], 600),
+            "plan": {'boundaries': truncate_context_text(projection['authorization'].get('plan', {}).get('boundaries',''),600),
+                     'acceptance': [truncate_context_text(item,600) for item in projection['authorization'].get('plan', {}).get('acceptance',[])[:CONSTRAINT_ITEM_LIMIT]]},
+            "plan_truncated": len(projection['authorization'].get('plan', {}).get('acceptance',[])) > CONSTRAINT_ITEM_LIMIT,
+        } if projection.get('authorization') else None),
+        "current_implementation": implementation_ref,
         "current_stage": stage,
         "effective_decisions": [dict(item) for item in decisions],
         "latest_activities": [dict(item) for item in activities],
@@ -2424,6 +2608,7 @@ def stage_prepare(args: argparse.Namespace) -> None:
 
     with connect() as conn:
         issue = issue_row(conn, args.issue_key)
+        authorization = require_dispatch(conn, issue, args)
         if issue["status"] != "IN_PROGRESS":
             raise RuntimeError(f"Issue 状态 {issue['status']} 不允许准备 Stage")
         plan_no = active_stage_plan_no(conn, issue["id"])
@@ -2438,7 +2623,7 @@ def stage_prepare(args: argparse.Namespace) -> None:
         if stage["status"] != "IN_PROGRESS":
             raise RuntimeError(f"Stage {args.stage_no} 当前为 {stage['status']}，不能声明开发范围")
         require_issue_action(
-            "stage-prepare", args.agent, issue["status"], stage=stage, has_active_plan=True,
+            "stage-prepare", args.agent, issue["status"], stage=stage, has_active_plan=True, authorization=authorization,
         )
         previous = conn.execute(
             """SELECT stage_no, title, baseline_json, baseline_status
@@ -2504,6 +2689,7 @@ def stage_submit(args: argparse.Namespace) -> None:
         raise ValueError("resolved-findings 必须是 finding id 字符串组成的 JSON 数组")
     with connect() as conn:
         issue = issue_row(conn, args.issue_key)
+        authorization = require_dispatch(conn, issue, args)
         if issue["status"] != "IN_PROGRESS":
             raise RuntimeError(f"Issue 状态 {issue['status']} 不允许提交 Stage")
         plan_no = active_stage_plan_no(conn, issue["id"])
@@ -2518,10 +2704,10 @@ def stage_submit(args: argparse.Namespace) -> None:
         if stage["status"] != "IN_PROGRESS":
             raise RuntimeError(f"Stage {args.stage_no} 当前为 {stage['status']}，不能提交")
         require_issue_action(
-            "stage-submit", args.agent, issue["status"], stage=stage, has_active_plan=True,
+            "stage-submit", args.agent, issue["status"], stage=stage, has_active_plan=True, authorization=authorization,
         )
         if int(stage["governance_version"]) >= 2:
-            if not stage["prepared_at"]:
+            if not stage["prepared_at"] and authorization.get("plan_owner") != "inspector":
                 raise RuntimeError("修改业务代码前必须先用 stage-prepare 声明影响范围和历史保护项")
             if not diff_summary or not code_reference or not test_evidence:
                 raise ValueError("Stage v2 提交必须提供 --diff-summary、非空 --code-reference 和 --test-evidence")
@@ -2538,6 +2724,7 @@ def stage_submit(args: argparse.Namespace) -> None:
                     "再次提交必须在 resolved-findings 中逐项确认已处理 BLOCKER/MUST: "
                     + ", ".join(missing_resolutions)
                 )
+        metadata["authorization_id"] = authorization["activity_id"]
         conn.execute(
             """UPDATE issue_stage
                SET status = 'PENDING_REVIEW', submitted_commit_sha = ?, developer_summary = ?,
@@ -2574,6 +2761,7 @@ def stage_review(args: argparse.Namespace) -> None:
         raise ValueError("stage-review 必须通过 --content 记录验收结论")
     with connect() as conn:
         issue = issue_row(conn, args.issue_key)
+        authorization = require_dispatch(conn, issue, args)
         if issue["status"] != "IN_PROGRESS":
             raise RuntimeError(f"Issue 状态 {issue['status']} 不允许验收 Stage")
         plan_no = active_stage_plan_no(conn, issue["id"])
@@ -2590,7 +2778,7 @@ def stage_review(args: argparse.Namespace) -> None:
         if stage["status"] != "PENDING_REVIEW":
             raise RuntimeError(f"Stage {args.stage_no} 当前为 {stage['status']}，不能验收")
         require_issue_action(
-            "stage-review", args.agent, issue["status"], stage=stage, has_active_plan=True,
+            "stage-review", args.agent, issue["status"], stage=stage, has_active_plan=True, authorization=authorization,
         )
 
         review_result: dict[str, Any] | None = None
@@ -2685,6 +2873,8 @@ def stage_review(args: argparse.Namespace) -> None:
             result_status = "REDESIGN_REQUIRED"
 
         activity_metadata = {
+            "authorization_id": authorization["activity_id"],
+            "snapshot": loads(stage["submission_metadata_json"], {}).get("snapshot"),
             "plan_no": plan_no, "stage_no": args.stage_no, "decision": decision,
             "requested_decision": args.decision,
             "review_round": review_round, "inspection_result": "PASS" if passed else "FAIL",
@@ -3233,7 +3423,9 @@ def implementation_submit(args: argparse.Namespace) -> None:
         ).fetchone()
         if not row:
             raise KeyError(f"问题不存在: {args.issue_key}")
-        if row["status"] not in {"PROPOSED", "IN_PROGRESS"}:
+        authorization = require_dispatch(conn, row, args)
+        metadata["authorization_id"] = authorization["activity_id"]
+        if row["status"] != "IN_PROGRESS":
             raise RuntimeError(
                 f"状态 {row['status']} 禁止提交实现；设计阶段必须先完成 design-review approved"
             )
@@ -3251,7 +3443,7 @@ def implementation_submit(args: argparse.Namespace) -> None:
                 raise RuntimeError(f"Stage Plan #{plan_no} 尚未全部验收通过: {summary}")
         require_issue_action(
             "implementation-submit", args.agent, row["status"],
-            has_active_plan=plan_no is not None, active_plan_complete=active_plan_complete,
+            has_active_plan=plan_no is not None, active_plan_complete=active_plan_complete, authorization=authorization,
         )
         next_attempt = row["current_attempt_no"] + 1
         activity_cursor = insert_activity(
@@ -3265,10 +3457,105 @@ def implementation_submit(args: argparse.Namespace) -> None:
             ),
         )
         result = apply_status_update(
-            conn, args, args.issue_key, "IMPLEMENTED_PENDING_REVIEW", args.status_content,
+            conn, args, args.issue_key, "IMPLEMENTED_PENDING_REVIEW", args.status_content, submitting=True,
         )
         audit(conn, actor_id(args), "implementation.submit", "review_issue", args.issue_key, True)
-    print_json({**result, "activity_type": "IMPLEMENTATION_SUBMITTED"})
+    print_json({**result, "activity_type": "IMPLEMENTATION_SUBMITTED", "activity_id": activity_cursor.lastrowid, "submission_revision": 0})
+
+
+def validate_evidence_references(conn: sqlite3.Connection, issue_id: int, refs: list[dict[str, Any]],
+                                 snapshot: dict[str, Any]) -> None:
+    """核对已有证据身份和修订；适用性由 Inspector 明示，不能由引用本身推断。
+
+    不自动推导测试依赖。已记录的代码/依赖/环境发生变化时，必须说明仍适用的依据，
+    无法说明则应补验；没有保存快照的旧证据也须明确补充来源条件。
+    """
+    if not isinstance(refs, list):
+        raise ValueError('evidence_refs 必须是数组')
+    for ref in refs:
+        if not isinstance(ref, dict) or not str(ref.get('applicability') or '').strip():
+            raise ValueError('证据复用必须说明 applicability，不能仅凭以前通过')
+        row = conn.execute('SELECT * FROM issue_activity WHERE id=? AND issue_id=?',
+                           (ref.get('activity_id'), issue_id)).fetchone()
+        if row is None or row['activity_type'] not in {'STAGE_APPROVED','VERIFICATION_PASSED','VERIFICATION_EVIDENCE_ADDED','EVIDENCE_ADDED'}:
+            raise ValueError('证据引用不存在、不属于本 Issue 或不是可引用的验证记录')
+        if ref.get('amendment_count') != row['amendment_count']:
+            raise RuntimeError('引用的证据正文已经修订，请核对当前版本')
+        previous = loads(row['metadata_json'], {}).get('snapshot')
+        if not previous:
+            if not str(ref.get('source_conditions') or '').strip():
+                raise ValueError('旧证据没有快照，需要 source_conditions 说明原代码、依赖和环境依据')
+        elif not snapshot or previous != snapshot:
+            if not str(ref.get('differences') or '').strip():
+                raise ValueError('证据快照与本轮不同；说明代码、依赖和环境变化为何不影响覆盖，或补验')
+
+
+def implementation_review(args: argparse.Namespace) -> None:
+    """一次记录验收、有效结论和状态；实现错误与方案错误走不同返回路径。"""
+    if args.agent not in {'inspector','human'}:
+        raise PermissionError('只有 Inspector/Human 可以验收实现')
+    result = parse_json_argument(args.review, 'review', dict)
+    content = str(result.get('content') or '').strip()
+    if not content:
+        raise ValueError('验收须说明结论、影响和必要的后续处理')
+    args.content = content
+    args.human_summary = getattr(args,'human_summary',None) or result.get('human_summary')
+    args.authorization_id = result.get('authorization_id')
+    with connect() as conn:
+        issue = issue_row(conn, args.issue_key)
+        authorization = require_dispatch(conn, issue, args)
+        require_issue_action('implementation-review', args.agent, issue['status'], authorization=authorization)
+        submission = current_implementation(conn, issue)
+        if result.get('submission_id') != submission['id'] or result.get('submission_revision') != submission['amendment_count']:
+            raise RuntimeError('验收未绑定当前实现及其修订；请重新核对实现提交')
+        submitted = loads(submission['metadata_json'], {})
+        if submitted.get('authorization_id') != authorization['activity_id']:
+            raise RuntimeError('实现不是依据当前方案提交，不能使用旧方案的验收结果')
+        requirements = result.get('requirements', {})
+        checks = result.get('checks', [])
+        acceptance = authorization.get('plan', {}).get('acceptance', [])
+        expected = {f'AC-{number}' for number in range(1,len(acceptance)+1)}
+        if not isinstance(checks, list) or {item.get('id') for item in checks if isinstance(item,dict)} != expected or len(checks) != len(expected):
+            raise ValueError('checks 必须用 AC-1..AC-n 覆盖当前方案验收项，不需重复抄写标准')
+        all_checks = [requirements, *checks]
+        if any(not isinstance(item,dict) or item.get('status') not in {'PASS','FAIL'}
+               or not nonempty_evidence(item.get('evidence')) for item in all_checks):
+            raise ValueError('原始需求 requirements 及每项验收都须有 PASS/FAIL 和有效证据')
+        findings = result.get('findings', [])
+        if not isinstance(findings,list):
+            raise ValueError('findings 必须是数组')
+        blockers = []
+        for finding in findings:
+            if not isinstance(finding,dict) or finding.get('level') not in FINDING_LEVELS or not finding.get('summary'):
+                raise ValueError('finding 须包含 level 和具体问题 summary')
+            if finding['level'] in {'BLOCKER','MUST'}:
+                if not nonempty_evidence(finding.get('evidence')) or not str(finding.get('risk') or '').strip():
+                    raise ValueError('阻断项必须说明具体证据和实际风险/违反的约束')
+                blockers.append(finding)
+        passed = all(item['status'] == 'PASS' for item in all_checks) and not blockers
+        decision = result.get('decision', 'pass' if passed else 'fix')
+        if decision not in {'pass','fix','replan'}:
+            raise ValueError('decision 只允许 pass/fix/replan')
+        if (decision == 'pass') != passed:
+            raise RuntimeError('需求或验收未通过不得关闭；仅有非阻断建议且验收通过必须放行')
+        snapshot = result.get('snapshot', {})
+        if submitted.get('snapshot') and snapshot != submitted['snapshot']:
+            raise RuntimeError('本轮验收快照与实现提交不一致，请核对当前代码、依赖和环境')
+        validate_evidence_references(conn, issue['id'], result.get('evidence_refs', []), snapshot)
+        metadata = {**result, 'authorization_id': authorization['activity_id'], 'implementation_review': True}
+        activity_type = 'VERIFICATION_PASSED' if passed else 'VERIFICATION_FAILED'
+        target = 'CONFIRMED' if passed else 'REDESIGN_REQUIRED' if decision == 'replan' else 'IN_PROGRESS'
+        cursor = insert_activity(conn,args,"""INSERT INTO issue_activity(
+            issue_id,attempt_no,activity_type,operator_type,operator_id,content,result_status,metadata_json)
+            VALUES(?,?,?,?,?,?,?,?)""", (issue['id'],issue['current_attempt_no'],activity_type,
+            operator_type(args.agent),actor_id(args),content,'PASS' if passed else 'FAIL',dumps(metadata)))
+        record_issue_decision(conn,args,issue,'VERIFICATION','APPROVED' if passed else 'REJECTED',
+                              decision_summary(None, supplied_human_summary(args) or content, '自动结论'), scope_key=f"attempt:{issue['current_attempt_no']}",
+                              source_activity_id=cursor.lastrowid, metadata=metadata)
+        update_action_progress(conn,args,issue,result)
+        state = apply_status_update(conn,args,args.issue_key,target,content)
+        audit(conn,actor_id(args),'implementation.review','review_issue',args.issue_key,True)
+    print_json({**state,'decision':decision,'verification_activity_id':cursor.lastrowid})
 
 DISCUSSION_TOPICS = {"GENERAL", "DESIGN", "IMPLEMENTATION", "VERIFICATION"}
 
@@ -3331,6 +3618,11 @@ def supplied_human_summary(args: argparse.Namespace) -> str | None:
     }:
         summary = getattr(args, "summary", None)
     if summary is None:
+        content = str(getattr(args, "content", None) or "").strip()
+        if content and len(content) <= 600 and len(content.splitlines()) <= 12:
+            return content
+        if content and args.agent != "human":
+            raise ValueError("长技术正文需要独立的人类摘要；短正文可直接复用")
         return None
     text = summary.strip()
     if not text or len(text) > 600 or len(text.splitlines()) > 12:
@@ -3418,6 +3710,11 @@ def discussion_append(args: argparse.Namespace) -> None:
         issue = issue_row(conn, args.issue_key)
         require_issue_action("discussion-append", args.agent, issue["status"])
         topic_id = resolve_discussion_topic(conn, args, issue["id"])
+        if topic_id is None:
+            existing = conn.execute("SELECT id FROM issue_discussion_topic WHERE issue_id=? AND category=? ORDER BY id DESC LIMIT 1", (issue['id'], args.topic)).fetchone()
+            topic_id = existing['id'] if existing else conn.execute(
+                "INSERT INTO issue_discussion_topic(issue_id,category,title,attempt_no,created_by) VALUES(?,?,?,?,?)",
+                (issue['id'], args.topic, '问题讨论' if args.topic == 'GENERAL' else args.topic, issue['current_attempt_no'], actor_id(args))).lastrowid
         legacy_topic = args.topic
         if topic_id is not None:
             category = conn.execute("SELECT category FROM issue_discussion_topic WHERE id=?", (topic_id,)).fetchone()["category"]
@@ -3660,6 +3957,8 @@ def activity_append(args: argparse.Namespace) -> None:
         raise PermissionError(f"agent {args.agent} 无权追加活动 {args.activity_type}")
     if args.activity_type in {"COMMENT_ADDED", "DESIGN_GUIDANCE"}:
         raise ValueError("讨论内容必须使用 discussion-append，不再追加到处理历史")
+    if args.activity_type in {'IMPLEMENTATION_SUBMITTED','REDESIGN_SUBMITTED','STATUS_CHANGED'}:
+        raise ValueError('正式提交和状态只能通过对应业务命令产生，不能用 activity add 伪造')
     metadata = parse_json_argument(args.metadata, "metadata", dict, empty_default={})
     code_reference = parse_json_argument(
         args.code_reference, "code-reference", list, empty_default=[],
@@ -3667,11 +3966,20 @@ def activity_append(args: argparse.Namespace) -> None:
 
     with connect() as conn:
         row = conn.execute(
-            "SELECT id, current_attempt_no FROM review_issue WHERE issue_key = ?",
+            "SELECT id, status, current_attempt_no FROM review_issue WHERE issue_key = ?",
             (args.issue_key,),
         ).fetchone()
         if not row:
             raise KeyError(f"问题不存在: {args.issue_key}")
+        if args.agent != 'human' and args.activity_type in {'VERIFICATION_PASSED','VERIFICATION_FAILED','REVIEW_APPROVED','REVIEW_REJECTED'}:
+            authorization = require_dispatch(conn,row,args)
+            if row['status'] != 'IMPLEMENTED_PENDING_REVIEW':
+                raise RuntimeError('正式审核结果必须针对当前待验收的实现提交')
+            submission = current_implementation(conn,row)
+            if authorization.get('plan_owner') == 'inspector':
+                raise RuntimeError('当前派工使用 impl review 一次完成验收与收口，不能拆成无约束的活动记录')
+            metadata.update(submission_id=submission['id'],submission_revision=submission['amendment_count'],
+                            authorization_id=authorization['activity_id'])
         if args.attempt_no is not None and args.attempt_no < 0:
             raise ValueError("attempt_no 不能为负数")
         attempt_no = args.attempt_no if args.attempt_no is not None else row["current_attempt_no"]
@@ -3723,6 +4031,7 @@ def activity_amend(args: argparse.Namespace) -> None:
         raise ValueError("activity-id 必须是正整数")
 
     with connect() as conn:
+        conn.execute("BEGIN")
         row = conn.execute(
             """SELECT a.*, i.issue_key, i.status AS issue_status
                FROM issue_activity a
@@ -4227,8 +4536,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("design-request")
     p.add_argument("--issue-key", required=True)
-    p.add_argument("--content", required=True)
+    p.add_argument("--content")
+    p.add_argument('--plan')
     p.set_defaults(func=design_request)
+
+    p = sub.add_parser('design-dispatch')
+    p.add_argument('--issue-key',required=True)
+    p.add_argument('--plan',required=True)
+    p.add_argument('--human-summary')
+    p.set_defaults(func=design_dispatch)
+
+    p = sub.add_parser('implementation-review')
+    p.add_argument('--issue-key',required=True)
+    p.add_argument('--review',required=True)
+    p.add_argument('--human-summary')
+    p.set_defaults(func=implementation_review)
 
     p = sub.add_parser("design-submit")
     p.add_argument("--issue-key", required=True)
@@ -4527,6 +4849,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=discussion_topic_list)
 
     for name, command_parser in sub.choices.items():
+        if name in {'implementation-submit','stage-prepare','stage-submit','stage-review','issue-update-status','activity-append'}:
+            command_parser.add_argument('--authorization-id',type=int)
         if "--content" in command_parser._option_string_actions:
             command_parser.add_argument("--human-summary", help="AI 撰写的独立人类摘要，最多 600 字、12 行；可用 Markdown，不截取正文")
         if name in {"discussion-append", "discussion-list", "design-submit", "implementation-submit", "stage-submit"}:

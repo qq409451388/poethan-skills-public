@@ -80,6 +80,7 @@ EVENT_NODES = {"ISSUE_CREATED": "PROPOSED", "DESIGN_REQUESTED": "DESIGN_REQUIRED
 
 
 def workflow_graph(issue, activities, stages, current_execution_stage=None, discussions=None):
+    inspector_dispatch = any((a.get('metadata') or {}).get('plan_owner') == 'inspector' for a in activities)
     nodes = []
     for row, (lane, entries) in enumerate(LANES):
         for col, (key, title, owner, description) in enumerate(entries):
@@ -123,7 +124,7 @@ def workflow_graph(issue, activities, stages, current_execution_stage=None, disc
     current = issue["status"]
     if current == "IN_PROGRESS" and current_execution_stage:
         current = ("STAGE_SUBMITTED" if current_execution_stage["status"] == "PENDING_REVIEW"
-                   else "STAGE_IN_PROGRESS" if current_execution_stage.get("prepared_at")
+                   else "STAGE_IN_PROGRESS" if inspector_dispatch or current_execution_stage.get("prepared_at")
                    else "STAGE_PLAN_CREATED")
     visited.add(current)
     for node in nodes:
@@ -157,7 +158,7 @@ def workflow_graph(issue, activities, stages, current_execution_stage=None, disc
     if result["paused_stage"]:
         stage = result["paused_stage"]
         anchor = ("STAGE_SUBMITTED" if stage["status"] == "PENDING_REVIEW"
-                  else "STAGE_IN_PROGRESS" if stage.get("prepared_at") else "STAGE_PLAN_CREATED")
+                  else "STAGE_IN_PROGRESS" if inspector_dispatch or stage.get("prepared_at") else "STAGE_PLAN_CREATED")
         for node in graph["nodes"]:
             node["waiting_here"] = node["key"] == anchor
     result["stage_context"] = None
@@ -205,21 +206,42 @@ def workflow_graph(issue, activities, stages, current_execution_stage=None, disc
     for edge in graph["edges"]:
         edge["visited"] = edge["visited"] or f"{edge['source']}|{edge['target']}" in recorded_forward_edges
 
-    configure_flow_mode(graph, stages, trail)
-    result["flow_mode_label"] = "分阶段流程：创建计划 → 启动首阶段 → 逐阶段验收" if graph["staged"] else "直接开发流程：开发修复 → 提交整体实现 → 最终审核"
+    configure_flow_mode(graph, stages, trail, inspector_dispatch)
+    result["flow_mode_label"] = ("Inspector 派工 → 分阶段实施 → 整体验收收口" if graph['staged'] else 'Inspector 派工 → 实现提交 → 验收收口') if inspector_dispatch else ("分阶段流程：创建计划 → 启动首阶段 → 逐阶段验收" if graph["staged"] else "直接开发流程：开发修复 → 提交整体实现 → 最终审核")
     return result
 
 
-def configure_flow_mode(graph, stages, trail):
+def configure_flow_mode(graph, stages, trail, inspector_dispatch=False):
     """显示 Issue 实际采用的流程；底层完整节点保留历史事实与路径索引。"""
     staged = any(stage.get("plan_status", "ACTIVE") == "ACTIVE" for stage in stages)
     graph["staged"] = staged
     hidden = {"IN_PROGRESS"} if staged else {
         "STAGE_PLAN_CREATED", "STAGE_SCOPE_DECLARED", "STAGE_IN_PROGRESS",
         "STAGE_SUBMITTED", "STAGE_APPROVED", "STAGE_REJECTED"}
+    if inspector_dispatch:
+        hidden.update(key for key in {'DESIGN_REQUIRED','DESIGN_PENDING_REVIEW','DESIGN_REJECTED','REDESIGN_SUBMITTED','STAGE_SCOPE_DECLARED','REVIEW_APPROVED'} if not next((n['visited'] for n in graph['nodes'] if n['key'] == key), False))
+        for node in graph['nodes']:
+            if node['key'] == 'DESIGN_APPROVED':
+                node.update(title='方案发布与派工',owner='Inspector')
     graph["display_nodes"] = [node for node in graph["nodes"] if node["key"] not in hidden]
     graph["display_edges"] = [dict(edge) for edge in graph["edges"]
                               if edge["source"] not in hidden and edge["target"] not in hidden]
+    if inspector_dispatch:
+        nodes = {node['key']: node for node in graph['display_nodes']}
+        # 聚合命令没有旧提案/准备/单独审核活动；只画真实动作之间的连线。
+        design_source = 'DESIGN_REQUIRED' if 'DESIGN_REQUIRED' in nodes else 'PROPOSED'
+        shortcuts = [(design_source, 'DESIGN_APPROVED', None),
+                     ('IMPLEMENTED_PENDING_REVIEW', 'VERIFICATION_PASSED', None),
+                     ('IMPLEMENTED_PENDING_REVIEW', 'VERIFICATION_FAILED', 'M195,1024 V1050 H505 V1074')]
+        if staged:
+            shortcuts.append(('STAGE_PLAN_CREATED', 'STAGE_IN_PROGRESS', 'M440,524 V550 H685 V574'))
+        for source, target, path in shortcuts:
+            a, b = nodes[source], nodes[target]
+            graph['display_edges'].append({
+                'source': source, 'target': target,
+                'path': path or f"M{a['x']+190},{a['y']+38} H{b['x']}",
+                'label': '', 'label_x': 0, 'label_y': 0,
+                'visited': source in trail and target in trail, 'cross_layer': False})
     if staged:
         plan = next(node for node in graph["nodes"] if node["key"] == "STAGE_PLAN_CREATED")
         graph["display_edges"].append({
@@ -253,17 +275,19 @@ def reading_route(issue, activities, stages, current_stage, current, visited, by
         (stage for stage in stages if stage.get("plan_status", "ACTIVE") == "ACTIVE"),
         key=lambda stage: (stage.get("plan_no", 0), stage.get("stage_no", 0)),
     )
+    inspector_dispatch = any((a.get('metadata') or {}).get('plan_owner') == 'inspector' for a in activities)
+    steps = [*ROUTE_STEPS[:3], ('review','验收并收口',{'IMPLEMENTED_PENDING_REVIEW','VERIFICATION_PASSED','VERIFICATION_FAILED','CONFIRMED'},{'CONFIRMED'})] if inspector_dispatch else ROUTE_STEPS
     route = []
-    current_group = next((key for key, _, keys, _ in ROUTE_STEPS if current in keys), None)
+    current_group = next((key for key, _, keys, _ in steps if current in keys), None)
     # 等待确认/暂停是覆盖状态，保留事实上的最近主流程位置，不将它当作已通过。
     if current_group is None:
         for activity in reversed(activities):
             event = EVENT_NODES.get(activity["activity_type"], activity["activity_type"])
-            group = next((key for key, _, keys, _ in ROUTE_STEPS if event in keys), None)
+            group = next((key for key, _, keys, _ in steps if event in keys), None)
             if group:
                 current_group = group
                 break
-    current_index = next((i for i, step in enumerate(ROUTE_STEPS) if step[0] == current_group), -1)
+    current_index = next((i for i, step in enumerate(steps) if step[0] == current_group), -1)
     descriptions = {
         "discovery": "核实问题、影响与完成标准。",
         "design": "明确修复边界，由审核方确认方案。",
@@ -272,7 +296,7 @@ def reading_route(issue, activities, stages, current_stage, current, visited, by
         "verification": "验证实际效果，保留可复查的证据。",
         "closure": "明确满足完成标准后，确认关闭 Issue。",
     }
-    for index, (key, title, keys, completed_by) in enumerate(ROUTE_STEPS):
+    for index, (key, title, keys, completed_by) in enumerate(steps):
         if key == "design" and not (visited & keys):
             continue
         recorded = bool(visited & keys)
@@ -329,6 +353,14 @@ def reading_route(issue, activities, stages, current_stage, current, visited, by
         "CONFIRMED": "该 Issue 已确认关闭；可在协作记录中追查结论。",
         "CANCELLED": "该 Issue 已取消，不代表修复验证通过。",
     }.get(status, "完成当前修改与验证后，提交整体实现供审核。")
+    if inspector_dispatch:
+        next_step = {
+            'DESIGN_REQUIRED': 'Inspector 完成必要确认，发布当前方案并派工。',
+            'REDESIGN_REQUIRED': 'Inspector 修订方案并重新派工，旧授权不能继续使用。',
+            'IMPLEMENTED_PENDING_REVIEW': 'Inspector 按原始需求、实际行为和有效证据验收并收口。',
+        }.get(status, next_step)
+    if status == "PROPOSED":
+        next_step = 'Inspector 核实原因、边界和验收方法，发布方案并派工。'
     if status == "IN_PROGRESS" and current_stage:
         next_step = ("Inspector 验收当前阶段；通过后再继续后续阶段。" if current_stage["status"] == "PENDING_REVIEW"
                      else "完成当前阶段的验收要求，再提交阶段结果。")

@@ -537,6 +537,60 @@ DESIGN_REJECT_SCHEMA = {
     "examples": [{"content": "方案未回答幂等问题，驳回并要求补充重试边界设计"}],
 }
 
+DESIGN_DISPATCH_SCHEMA = {
+    '$schema': DRAFT_2020_12, 'title': 'Inspector 可执行方案或已确认草稿引用',
+    'type': 'object', 'additionalProperties': False,
+    'properties': {
+        'content': {'type':'string','minLength':1},
+        'boundaries': {'type':'string','minLength':1},
+        'acceptance': {'type':'array','minItems':1,'items':{'type':'string','minLength':1}},
+        'execution_mode': {'type':'string','enum':['direct','staged']},
+        'stages': {'type':'array','minItems':1,'items':_STAGE_PLAN_ITEM},
+        'scope_changes': DESIGN_SUBMIT_SCHEMA['properties']['scope_changes'],
+        'draft_id': {'type':'integer','minimum':1},
+        'confirmation_ids': {'type':'array','items':{'type':'integer','minimum':1}},
+        'human_summary': {'type':'string','minLength':1},
+        'progress': {'type':'integer','minimum':0,'maximum':99},
+        'progress_reason': {'type':'string','minLength':1},
+    },
+    'examples': [{'content':'修复查询范围并验证','boundaries':'保留恢复逻辑','acceptance':['查询覆盖全部事件'],'execution_mode':'direct'}],
+}
+
+IMPL_REVIEW_SCHEMA = {
+    '$schema': DRAFT_2020_12, 'title': '当前实现验收并收口',
+    'type':'object','additionalProperties':False,
+    'required':['submission_id','submission_revision','authorization_id','content','requirements','checks'],
+    'properties': {
+        'submission_id': {'type':'integer','minimum':1},
+        'submission_revision': {'type':'integer','minimum':0},
+        'authorization_id': {'type':'integer','minimum':1},
+        'content': {'type':'string','minLength':1},
+        'decision': {'type':'string','enum':['pass','fix','replan']},
+        'requirements': {'type':'object','required':['status','evidence'], 'properties':{
+            'status': {'type':'string','enum':['PASS','FAIL']},
+            'evidence': {'description':'原始需求与实际行为的验证依据，可引用有效证据。'}}},
+        'checks': {'type':'array','items':{'type':'object','required':['id','status','evidence'],
+            'properties':{'id':{'type':'string','description':'当前方案验收项 AC-1..AC-n'},
+                'status':{'type':'string','enum':['PASS','FAIL']},'evidence':{}}}},
+        'findings': {'type':'array','items':{'type':'object','required':['level','summary'],
+            'properties':{'level':{'type':'string','enum':['BLOCKER','MUST','SHOULD','NIT']},
+                'summary':{'type':'string','minLength':1},'evidence':{},'risk':{'type':'string'},
+                'why_not_found_earlier':{'type':'string'}}}},
+        'evidence_refs': {'type':'array','items':{'type':'object',
+            'required':['activity_id','amendment_count','applicability'],
+            'properties':{'activity_id':{'type':'integer','minimum':1},
+                'amendment_count':{'type':'integer','minimum':0},
+                'applicability':{'type':'string','minLength':1,'description':'本轮验证范围仍适用的依据'},
+                'differences':{'type':'string','description':'快照变化为何不影响覆盖，否则应补验'},
+                'source_conditions':{'type':'string','description':'旧证据没有快照时说明原代码、依赖与环境'}}}},
+        'snapshot': {'type':'object'},
+        'human_summary': {'type':'string','minLength':1},
+        'progress': {'type':'integer','minimum':0,'maximum':99},
+        'progress_reason': {'type':'string','minLength':1},
+    },
+    'examples': [{'submission_id':1,'submission_revision':0,'authorization_id':1,'content':'需求核实通过','requirements':{'status':'PASS','evidence':'实际查询覆盖全部事件'},'checks':[{'id':'AC-1','status':'PASS','evidence':'范围测试通过'}]}],
+}
+
 STAGE_PREPARE_SCHEMA = {
     "$schema": DRAFT_2020_12,
     "title": "cictl stage prepare 动态参数",
@@ -675,11 +729,12 @@ STAGE_REVIEW_SCHEMA = {
 ACTIVITY_ADD_SCHEMA = {
     "$schema": DRAFT_2020_12,
     "title": "cictl activity add 动态参数",
-    "description": "追加 Activity 时的结构化代码定位。",
+    "description": "追加 Activity 时的代码定位及证据快照。",
     "type": "object",
     "additionalProperties": False,
     "properties": {
         "code_reference": {"type": "array", "items": _CODE_REFERENCE_ITEM},
+        "metadata": {"type": "object"},
     },
     "examples": [{"code_reference": [{"file_path": "OrderService.java", "symbol": "place"}]}],
 }
@@ -763,6 +818,7 @@ IMPL_SUBMIT_SCHEMA = {
     "additionalProperties": False,
     "properties": {
         "code_reference": {"type": "array", "items": _CODE_REFERENCE_ITEM},
+        "metadata": {"type": "object"},
     },
     "examples": [{"code_reference": [{"file_path": "OrderService.java", "symbol": "place"}]}],
 }
@@ -1344,8 +1400,13 @@ COMMANDS: list[Command] = [
             options=[_o("profile-id")]),
     # ---- design ----
     Command("design", "request", "design-request", "发起设计请求",
-            positionals=[_p("issue", legacy="issue-key")],
-            options=[_o("content", required=True)]),
+            positionals=[_p("issue", legacy="issue-key"), _p('plan',kind='@json',required=False)],
+            options=[_o("content")], schema=DESIGN_DISPATCH_SCHEMA,
+            derive=lambda ctx, errors: {**({'plan':ctx.payload} if ctx.payload is not None else {}), 'content':(ctx.payload or {}).get('content') or ctx.values.get('content')}),
+    Command('design','dispatch','design-dispatch','发布 Inspector 方案并派工',
+            positionals=[_p('issue',legacy='issue-key'),_p('plan',kind='@json')],
+            schema=DESIGN_DISPATCH_SCHEMA,
+            derive=lambda ctx,errors: {'plan':ctx.payload}),
     Command("design", "submit", "design-submit", "提交设计方案",
             positionals=[_p("issue", legacy="issue-key"),
                          _p("design", kind="@json", required=False, help="范围变化与代码定位 @文件 或 -")],
@@ -1488,6 +1549,10 @@ COMMANDS: list[Command] = [
                          _p("impl", kind="@json", required=False, help="代码定位 @文件 或 -")],
             options=[_o("content", required=True), _o("status-content")],
             schema=IMPL_SUBMIT_SCHEMA),
+    Command('impl','review','implementation-review','一次验收当前实现并收口',
+            positionals=[_p('issue',legacy='issue-key'),_p('review',kind='@json')],
+            schema=IMPL_REVIEW_SCHEMA,
+            derive=lambda ctx,errors: {'review':ctx.payload}),
     # ---- watch ----
     Command("watch", "issue", "watch-probe", "观察 Issue 状态",
             positionals=[_p("target")], options=[_o("plan-no", kind="int")],
@@ -1506,7 +1571,7 @@ COMMANDS: list[Command] = [
             transform=lambda payload, ctx: {"kind": "task-status"}),
 ]
 
-# 面向人的摘要与技术正文分开提交。保留底层旧命令的兼容读取。
+# 短正文可直接展示，长技术正文另附摘要；具体讨论话题可自动关联。
 COMMANDS.extend([
     Command("discussion", "topic-create", "discussion-topic-create", "创建具体讨论话题",
             positionals=[_p("issue", legacy="issue-key")],
@@ -1519,10 +1584,13 @@ SUMMARY_COMMANDS = {
     "discussion-append", "discussion-amend", "activity-append", "activity-amend",
     "design-request", "design-submit", "design-review", "stage-submit", "stage-review",
     "implementation-submit", "fast-review-record",
+    'design-dispatch','implementation-review',
 }
 for _command in COMMANDS:
+    if _command.legacy in {'implementation-submit','stage-prepare','stage-submit','stage-review','issue-update-status','activity-append'}:
+        _command.options.append(_o('authorization-id',kind='int',help='当前有效的 Inspector 派工活动 ID'))
     if _command.legacy in SUMMARY_COMMANDS:
-        _command.options.append(_o("human-summary", help="面向初中级开发的独立 Markdown 摘要；AI 写入必填"))
+        _command.options.append(_o("human-summary", help="长技术正文的人话摘要；短正文可省略并直接复用"))
     if _command.legacy in {"discussion-append", "discussion-list", "design-submit", "stage-submit", "implementation-submit"}:
         _command.options.append(_o("topic-id", kind="int", help="当前 Issue 下的具体讨论话题"))
 
@@ -2043,10 +2111,13 @@ def main(argv: list[str] | None = None, trusted_operator_id: str | None = None) 
 
     if agent != "human" and command.legacy in SUMMARY_COMMANDS:
         summary = values.get("human-summary") or values.get("summary")
-        if not summary:
-            errors.add("human-summary", "SUMMARY_REQUIRED", "AI 写入必须提供独立的人类可读摘要 --human-summary")
-    if agent != "human" and command.legacy == "discussion-append" and not values.get("topic-id"):
-        errors.add("topic-id", "TOPIC_REQUIRED", "先创建或选择话题，再通过 --topic-id 归属讨论")
+        content = values.get('content')
+        if not content and isinstance(payload, dict):
+            content = payload.get('content')
+        if not summary and isinstance(payload, dict):
+            summary = payload.get('human_summary')
+        if not summary and content and (len(content) > 600 or len(content.splitlines()) > 12):
+            errors.add('human-summary','SUMMARY_REQUIRED','长正文需要独立摘要；短正文可直接复用')
     ctx = Context(command, values, payload, agent, operator_id)
 
     # stage review-template：只读生成动态模板

@@ -1,4 +1,4 @@
-version: 4.2.0
+version: 5.0.0
 
 issue_content:
   default_required: [title, summary, dimension, severity]
@@ -184,146 +184,51 @@ issue_status_authority:
   inspector_and_developer: 必须遵守 transitions、设计原子命令、实现提交与验证前置条件。
   human: 可通过 issue-update-status 覆盖到任一合法状态，包括 HUMAN_CONFIRMATION_REQUIRED、CONFIRMED 和重开终态；变更会记录 STATUS_CHANGED 与审计。
   agent_escalation: Inspector 进入 HUMAN_CONFIRMATION_REQUIRED 仍使用 human-escalate；Developer 不得发起升级。
-  agent_final_confirmation: Inspector 转 CONFIRMED 前必须为当前 implementation attempt 留有 VERIFICATION_PASSED。
+  agent_final_confirmation: Inspector关闭前核对当前正式实现、修订、派工授权及对应标准验收记录。
 
 design_workflow:
-  principle: >-
-    Inspector 决定 What / Why / Boundary / Architecture Direction / Acceptance，Developer 决定 How / Code / Test。
-    Inspector 是能力更强的模型，负责高层判断与技术方向，但不下沉到具体类、方法和代码实现；
-    Developer 是执行模型，在 Inspector 给出的框架内自主决定具体实现，不重新决定已确定的架构级方向。
-  responsibility_split:
-    inspector_owns:
-      root_cause: 问题为什么发生、真正应该解决的根因是什么。
-      architecture_direction: >-
-        问题应该在哪一层解决、推荐采用什么架构方向、明确禁止哪些明显错误的方向；
-        必要时明确数据流、生命周期、职责归属、source of truth 等架构级约束。
-        不要求指定具体类、方法和代码结构，不把 Developer 变成纯打字工具。
-      boundaries: >-
-        哪些业务语义不可破坏、哪些模块/接口/数据兼容性需要保护、
-        哪些变化属于当前 Issue、哪些属于 scope change。
-      design_questions: Developer 的具体方案必须回答哪些关键问题。
-      acceptance: 什么条件满足后才能认为问题真正解决，包括必要的测试、兼容性、回归要求。
-    developer_owns:
-      - 修改哪些模块、类、方法与具体代码组织。
-      - 数据如何在具体实现中流转，API / DB / 状态如何落地。
-      - 幂等、并发、事务等具体实现与测试怎么写。
-      - 具体 Diff 与 Commit。
-    direction_dispute:
-      - Developer 发现 Architecture Direction 存在事实错误或无法实现时，必须通过 discussion（topic DESIGN）或 INSPECTOR_CONFIRMATION_REQUIRED 反馈，由 Inspector 修订方向；不得静默改用另一套架构方向。
-      - Inspector 可以修改自己的 Architecture Direction，但不能因为 Developer 的具体实现方式和自己偏好不同就要求重做；满足方向、边界、验收且风险可控时应允许 Developer 自主选择实现。
-  request:
-    atomic_command: design-request
-    roles: [inspector, human]
-    allowed_from: [PROPOSED, IN_PROGRESS, REDESIGN_REQUIRED]
-    activity: DESIGN_REQUESTED
-    target: DESIGN_REQUIRED
-    content_structure: 正文仍是自由文本，按 design_depth 分级组织内容；结构由本契约和文档约束，不做机器级拆分校验，不为字段结构化迁移数据库。
-    redesign_note: >-
-      从 REDESIGN_REQUIRED 发起的 design-request 是修订版架构指导。Inspector 必须先重新检查
-      Root Cause 是否判断错误、Architecture Direction 是否需要改变、Boundaries 是否遗漏、
-      Acceptance 是否错误，再提交修订后的指导；不能只重复原文，也不能把修订责任留给 Developer。
-  submit:
-    atomic_command: design-submit
-    roles: [developer, human]
-    allowed_from: [DESIGN_REQUIRED, REDESIGN_REQUIRED]
-    activity: DESIGN_SUBMITTED
-    target: DESIGN_PENDING_REVIEW
-    attempt_effect: none
-    redesign_gate: >-
-      REDESIGN_REQUIRED 状态下，Runtime 在 Inspector 提交新的 design-request（修订版架构指导）之前
-      拒绝 Developer 的 design-submit；Human 仍可用 issue-update-status 人工纠正。
-    scope_changes:
-      argument: --scope-changes
-      developer_required: true
-      item_fields: [id, summary, impacts]
-      meaning: 列出范围扩大或新增持久化、迁移、外部行为等需确认变化；没有则传空数组，旁支问题优先转 Candidate。
-  review_approved:
-    atomic_command: design-review --decision approved --design-activity-id <id> --execution-mode <direct|staged> --confirmation <not-needed|recorded>
-    roles: [inspector, human]
-    allowed_from: [DESIGN_PENDING_REVIEW]
-    activity: DESIGN_APPROVED
-    target: IN_PROGRESS
-    execution_modes:
-      direct: 禁止存在或提交 Stage Plan，直接进入实现。
-      staged: 必须提交 stages，或兼容使用升级前已存在的 active plan；原子创建计划、批准设计并激活 Stage 1。
-    design_binding: design_activity_id 必须属于当前 Issue 最新的 DESIGN_SUBMITTED。
-    cli_confirmation:
-      primary_surface: 当前 Inspector CLI 对话；Issue 仅自动留档，用户无需打开 Web 阅读。
-      preview_command: design-preview
-      not_needed: 当前设计没有 scope_changes。
-      must_record: [新增持久化或基础设施, 数据迁移或补写删除, 改变对外接口或可见行为, 新增外部依赖, 扩大需求范围, 多个影响明显不同的合理方案]
-      record_command: design-choice-record
-      coverage: 每个 scope change id 必须由确认记录覆盖；一个无关确认不能批准整份设计。
-      wording: 使用日常中文说明变化、原因、主要影响、选项和推荐；专业术语必须紧接通俗解释。
-      binding: recorded 必须通过 confirmation-id 绑定当前设计；设计修订后旧确认失效。
-    meaning: 仅表示基于当前证据允许开始实现，不保证方案永久正确。
-  review_rejected:
-    atomic_command: design-review --decision rejected
-    roles: [inspector, human]
-    allowed_from: [DESIGN_PENDING_REVIEW]
-    activity: DESIGN_REJECTED
-    target: DESIGN_REQUIRED
-    content_required: [理解错误, 无效边界, 必须调整点, 下一版建议方向]
-  review_quality:
-    checks:
-      - Developer 是否遵守 Architecture Direction
-      - 是否解决 Root Cause，而不是局部打补丁
-      - 是否突破 Boundaries
-      - 是否回答全部 Design Questions
-      - Acceptance 是否可验证
-      - 是否出现无必要的复杂化
-      - 是否引入 scope change
-    approve_when: >-
-      满足方向、边界、验收且风险可控时，Inspector 必须允许 Developer 自主选择的具体实现通过；
-      SHOULD/NIT 级别的实现偏好差异不构成驳回理由。
-  guidance:
-    discussion_command: discussion-append --topic-id <方案话题ID> --human-summary <人类摘要>
-    roles: [inspector, developer, human]
-    status_effect: none
-  coding_prohibited_in: [DESIGN_REQUIRED, DESIGN_PENDING_REVIEW, REDESIGN_REQUIRED]
+  default: Inspector分析讨论 -> design-dispatch -> implementation-submit -> implementation-review
+  inspector_owns: [原始需求, 原因与事实, 可执行方案, 边界, 关键方向选择, 验收标准, 是否分阶段, 最终验收]
+  developer_owns: [实现, 调查与验证, 命名和局部组织, 事实反证报告]
+  plan_fields: [content, boundaries, acceptance, execution_mode]
+  dispatch:
+    roles: [inspector]
+    command: design dispatch ISSUE @plan.json
+    effects: [保存不可变DESIGN_APPROVED方案与授权, 自动记录有效结论, 必要时原子创建Stage并激活首阶段, 进入IN_PROGRESS]
+    authorization: 状态和通用活动不能替代真实批准；推进引用context中的authorization.activity_id。
+    revision: 新草稿、重设计和新方案使旧授权失效；旧活动保留审计。
+  confirmation:
+    optional_draft: design request ISSUE @plan.json 保存Inspector草稿，不等待dev提案。
+    ordinary: 沿用preview/confirm绑定草稿及变化项；dispatch引用draft_id和confirmation_ids，不重抄正文。
+    human: 已授权技术判断由Inspector决定；业务取舍、范围变化或风险授权才询问Human，不重复到Web确认。
+    invalidation: 修订草稿后不匹配的确认失效，不自动转移到另一方案。
+  compatibility: 旧dev提案与审批入口仅保留明确历史协作；新任务默认派工流程，不存在批准的旧任务不自动放行。
+  boundary: 命令与业务层校验不等同于文件系统隔离。
+  minimum_design:
+    rule: 双方只使用当前需求和有依据失败场景所需的最少机制；不为未来假设无限加固。
+    change: 新增机制或方向变化先说明最直接方案、具体收益、成本和失败语义，由Inspector判断，必要时询问Human。
+    no_extra_workflow: 不增加防过度设计审批表，不吞异常或自行降级掩盖错误。
 
 design_depth:
-  rule: >-
-    设计深度随 Issue 复杂度自适应：SIMPLE 保持简单，COMPLEX 才要求完整架构指导。
-    分级由 Inspector 在决定是否发起设计时判定，复用现有状态和命令，不新增状态、不落库；
-    内容长度随复杂度伸缩，禁止让所有 Issue 强制输出五段式长设计文档。
-  tiers:
-    SIMPLE:
-      signals: [局部且明确的Bug, 唯一合理修复方式, 不改变外部行为, 不新增持久化, 不改变基础设施, 不涉及跨模块职责调整, 风险低]
-      flow: Inspector 确认问题和边界后直接 PROPOSED -> IN_PROGRESS -> implementation-submit。
-      not_required: [design-request, Architecture Direction, design-submit, Stage Plan]
-    NORMAL:
-      signals: [需要Developer做一定设计判断, 可能涉及多个类或方法, 存在兼容/状态/事务/数据流问题, 不涉及明显架构调整或高风险变更]
-      request_must_cover: [root_cause, boundaries, design_questions, acceptance]
-      architecture_direction: 可选；只在确实存在方向性约束时提供。
-      flow: design-request -> design-submit -> design-review -> 实现 -> 验证。
-    COMPLEX:
-      signals: [跨模块职责调整, 状态机调整, 并发事务一致性设计, 持久化模型变化, 数据迁移, 对外接口或行为变化, 新基础设施或新依赖, 大范围重构, 高回归风险, 多种实现方向且影响差异明显]
-      request_must_cover: [root_cause, architecture_direction, boundaries, design_questions, acceptance]
-      architecture_direction_required: true
-      architecture_direction_floor: >-
-        必须明确到架构层，例如：状态归属于哪个领域对象、谁是 source of truth、数据 push 还是 pull、
-        生命周期由谁管理、是否允许跨层直接访问、应在哪一层解决而不是在哪一层打补丁、
-        哪些路径必须保持幂等、哪种旧方案明确不应继续扩展。
-      vague_direction_forbidden: [注意兼容, 考虑并发, 避免破坏现有逻辑, 请给出合理方案]
-      flow: design-request（五段式）-> design-submit -> design-review（优先 staged）-> Stage 实施/验收 -> 最终实现 -> 最终验证。
-  prefer_design_for: [跨模块, Schema或数据迁移, 历史修复或回灌, 状态机变化, 幂等并发变化, ACK重试恢复变化, 多数据源融合, 公共API或第三方兼容, 大范围重构, 边界不确定, 方向曾被推翻, 连续实现失败, 高验证成本]
-  simple_issue: 可直接 PROPOSED -> IN_PROGRESS -> implementation-submit，不机械增加设计流程。
+  rule: Inspector依据原因、边界、处理方式与验证方法是否清楚决定开工；不能由dev自行放行。
+  simple: 几句话形成可执行方案，一次dispatch；不强制草稿、dev提案或Stage。
+  complex: 充分展开关键方向与容易返工的选择，可仍采用direct，不按数据库或状态机关键词自动升级。
+  stage_independence: 复杂度和Stage独立；中间成果具有独立验收价值、能降低后续风险才staged。
 
 stage_workflow:
-  principle: Stage 是复杂 Issue 内的串行执行与验收单元，也是递增验收基线；不属于 Issue.status，执行期间 Issue 保持 IN_PROGRESS。
-  use_for: [改动范围大, 多模块或多数据流, 一次性实施容易逐渐偏离已批准设计, 阶段边界可独立验收]
+  principle: Stage 是有独立验收价值的串行执行单元，也是递增验收基线；不属于 Issue.status，执行期间 Issue 保持 IN_PROGRESS。
+  use_for: [中间结果可独立验收且降低后续风险]
   simple_issue: 不创建 Stage Plan，保持原有直接实现路径。
   statuses: [PLANNED, IN_PROGRESS, PENDING_REVIEW, APPROVED, SUPERSEDED]
   identity: [issue_id, plan_no, stage_no]
   governance_versions:
     1: migration 前已有 Stage，保留原命令行为以便继续完成，不强制补历史结构化数据。
-    2: 新建 Stage Plan 默认版本，强制开发前声明、结构化审核、累计回归与 baseline gate。
+    2: 结构化审核、累计回归和baseline gate；Inspector新派工继承边界，旧计划仍要求开发前声明。
   plan_create:
-    atomic_command: design-review --decision approved --execution-mode staged --confirmation <not-needed|recorded> --stages <json>
+    atomic_command: design-dispatch（execution_mode为staged）；旧审批入口保持兼容
     roles: [inspector, human]
     normal_role: inspector
-    allowed_from_issue_status: DESIGN_PENDING_REVIEW
+    allowed_from_issue_status: 发布方案所允许的非终态
     required_stage_fields: [stage_no, title, objective, acceptance_criteria]
     conditional_stage_field: 设计存在 scope_changes 时，相关 Stage 必须填写 scope_change_ids，且全部变化都要分配；未知或遗漏引用时原子审批失败。
     activity: STAGE_PLAN_CREATED 与 DESIGN_APPROVED 同事务写入
@@ -342,14 +247,14 @@ stage_workflow:
     atomic_command: stage-prepare
     roles: [developer, human]
     normal_role: developer
-    timing: 修改业务代码前
+    timing: 旧计划修改业务代码前；Inspector 新派工仅在需要补充局部影响时使用
     allowed_stage_status: IN_PROGRESS
     required: [change_scope, change_reason, protected_behaviors]
     activity: STAGE_SCOPE_DECLARED
     rules:
       - change_scope 明确预计修改的模块、文件、类或方法以及原因
       - Stage 2+ 必须读取所有历史 PASSED baseline，并声明哪些历史行为不得改变
-      - 缺少历史 baseline 或 protected_behaviors 时禁止开始后续 Stage
+      - 旧计划沿用 prepare 前置条件；新派工直接继承边界和历史 baseline，仍须核对历史行为
   submit:
     atomic_command: stage-submit
     roles: [developer, human]
@@ -360,7 +265,7 @@ stage_workflow:
     transition: IN_PROGRESS -> PENDING_REVIEW
     attempt_effect: none
     rules:
-      - governance v2 必须已有 stage-prepare
+      - governance v2 的旧计划必须prepare；Inspector新派工继承已发布边界
       - code_reference 与 diff_summary 表达本阶段实际 Diff，test_evidence 同时覆盖当前测试与历史累计回归
       - 驳回后的再次提交只需修 BLOCKER/MUST，并在 resolved_findings 中逐项列出对应 id
       - SHOULD/NIT 不要求 Dev 为当前 Stage 修复
@@ -374,7 +279,7 @@ stage_workflow:
     baseline_required:
       fields: [verified_behaviors, input_output_contracts, business_semantics, tests]
       status: PASSED
-      inheritance: 当前 baseline 记录继承的全部历史 stage_no；后续 Stage 必须逐项回归。
+      inheritance: 当前 baseline 记录继承的全部历史 stage_no；后续 Stage 逐项核对仍适用的验证证据，失效或未覆盖时补验。
   review_rejected:
     atomic_command: stage-review --decision rejected
     roles: [inspector, human]
@@ -387,7 +292,7 @@ stage_workflow:
     activities: [STAGE_REJECTED, STAGE_PLAN_SUPERSEDED]
     issue_transition: IN_PROGRESS -> REDESIGN_REQUIRED
     plan_effect: 当前计划 plan_status -> SUPERSEDED；未完成 Stage -> SUPERSEDED，已 APPROVED Stage 保留原状态、时间和验收记录。
-    recovery: design-request（Inspector 修订架构指导）-> design-submit -> DESIGN_PENDING_REVIEW -> design-review approved --execution-mode staged --stages <json>。
+    recovery: Inspector修订方案，必要时保存草稿确认，然后design-dispatch；无需dev重新提案。
   final_submission_gate: 有 active Stage Plan 时，全部 Stage APPROVED 后才允许 implementation-submit；最终整体验证不可被阶段验收替代。
   historical_regression_gate:
     required_for: Stage 2 及以后每轮验收
@@ -416,31 +321,25 @@ stage_workflow:
 
 implementation_review:
   submission:
-    preferred_command: implementation-submit
-    atomic_effects: [追加 IMPLEMENTATION_SUBMITTED, current_attempt_no 加一, 转为 IMPLEMENTED_PENDING_REVIEW]
-    forbidden_from: [DESIGN_REQUIRED, DESIGN_PENDING_REVIEW, REDESIGN_REQUIRED]
-    stage_precondition: 若存在 active Stage Plan，所有 Stage 必须为 APPROVED。
-  implementation_failure:
-    condition: 已批准方向成立，仅有遗漏分支、判断错误、测试不足或未完整执行方案。
-    activity: VERIFICATION_FAILED
-    runtime_precondition: 必须为当前 attempt 先追加 VERIFICATION_FAILED，且状态 content 必填。
-    transition: IMPLEMENTED_PENDING_REVIEW -> IN_PROGRESS
-    rule: 继续按原设计修正，并明确失败原因、必改点和验证标准。
-  design_failure:
-    condition: 新证据推翻方向、范围显著扩大、破坏其他链路或需要重做数据模型、状态、幂等或数据流。
-    transition: IMPLEMENTED_PENDING_REVIEW -> REDESIGN_REQUIRED
-    runtime_precondition: 状态 content 必填，必须明确记录推翻原设计的原因。
-    guidance_gate: >-
-      进入 REDESIGN_REQUIRED 时 Runtime 唤醒 Inspector 而不是 Developer，并阻止 Developer 直接
-      design-submit。Inspector 必须重新检查 Root Cause 是否判断错误、Architecture Direction 是否
-      需要改变、Boundaries 是否遗漏、Acceptance 是否错误，先用 design-request 提交修订后的架构级
-      指导，Developer 才能提交新的 Concrete Design。Human 仍可用 issue-update-status 人工纠正。
-    rule: 禁止继续直接编码；必须 design-request（修订指导）-> design-submit -> DESIGN_PENDING_REVIEW -> DESIGN_APPROVED -> IN_PROGRESS。
-  repeated_failure_guard:
-    threshold: 2
-    runtime_auto_transition: false
-    inspector_requirement: 连续两次实现失败后必须判断是实现错误还是设计错误；不得机械重复提交循环。
-  human_override: Human 可用 issue-update-status 人工指定任一合法状态，不受上述 Agent 前置条件限制；必须通过 STATUS_CHANGED 和审计保留可追踪性。
+    command: implementation-submit
+    precondition: 当前有效派工授权，IN_PROGRESS；有Stage时全部通过。
+    atomic_effects: [正式实现活动, attempt加一, IMPLEMENTED_PENDING_REVIEW]
+    reference: 新派工必须显式authorization-id，不隐式采用最新方案。
+  review:
+    command: implementation-review
+    roles: [inspector, human]
+    binds: [submission_id, submission_revision, authorization_id]
+    checks: [原始需求requirements, 当前方案AC-n验收项, 具体阻断项, 有效证据]
+    atomic_effects: [验证活动, 有效结论, 状态, 可选进度]
+    pass: CONFIRMED且自动进度100；不能仅因实现照方案写就通过。
+    fix: IN_PROGRESS，沿用方案；说明具体错误、证据和风险。
+    replan: REDESIGN_REQUIRED，撤销授权并废弃旧Stage Plan，由Inspector重新规划。
+    convergence: 非阻断建议不阻止通过；需求或验收失败不得关闭。
+  evidence_reuse:
+    identity: 引用本Issue的真实证据活动与修订号。
+    applicability: Inspector说明代码、依赖、环境及范围仍适用；快照不同提供differences，没有旧快照补source_conditions，否则补验。
+    scope: Runtime核对引用与明确冲突，Inspector对覆盖语义负责；不建设通用证据中心。
+  human_override: 真实Human保留人工覆盖入口，记录为人工决定，不生成伪造dev提交或标准验收。
 
 human_escalation:
   principle: Human escalation 是极低频异常路径；正常设计、实现、验证与确认由 Inspector 和 Developer 自主闭环。
@@ -483,11 +382,12 @@ human_escalation:
 confirmation_protocol:
   developer_request: {status: INSPECTOR_CONFIRMATION_REQUIRED, content_required: true}
   inspector_response:
-    required_activity: INSPECTOR_CONFIRMATION_PROVIDED
-    next_status: [IN_PROGRESS, ON_HOLD, BLOCKED, CANCELLED]
+    command: issue status ISSUE IN_PROGRESS --authorization-id ID --content 本次澄清
+    atomic_effects: [绑定本次问询和授权的INSPECTOR_CONFIRMATION_PROVIDED, 有效结论, 恢复执行]
+    direction_change: 不复用旧授权，Inspector修订方案并重新派工；dev可只提供事实。
   final_confirmation:
-    inspector_precondition: 当前 implementation attempt 的 VERIFICATION_PASSED
-    human_override: Human 可通过 issue-update-status 直接设为 CONFIRMED。
+    inspector_precondition: 当前实现活动、修订和授权对应的VERIFICATION_PASSED；FastMode不能替代标准验收。
+    human_override: Human可人工设置合法状态并保留审计。
 
 activity_types:
   design: [DESIGN_REQUESTED, DESIGN_SUBMITTED, DESIGN_APPROVED, DESIGN_REJECTED]
